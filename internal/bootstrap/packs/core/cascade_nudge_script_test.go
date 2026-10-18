@@ -58,7 +58,10 @@ func TestCascadeNudgeAbsorbsDuplicateCloseEvents(t *testing.T) {
 	eventsPath := filepath.Join(dir, "events.jsonl")
 	binDir, logPath := fakeGCBin(t, `case "$1" in
 events) cat '`+eventsPath+`' ;;
-bd) printf '%s\n' '[{"id":"ga-dep","status":"open","assignee":"worker-1"}]' ;;
+bd) case "$*" in
+    *direction=down*) printf '%s\n' '[{"id":"ga-blk","status":"closed"}]' ;;
+    *) printf '%s\n' '[{"id":"ga-dep","status":"open","assignee":"worker-1"}]' ;;
+    esac ;;
 esac
 exit 0
 `)
@@ -84,5 +87,109 @@ exit 0
 	_, logged := countNudges(t, logPath)
 	if !strings.Contains(logged, "gc session nudge worker-1 blocker ga-blk closed") {
 		t.Fatalf("the nudge must reach the dependent's assignee and name the blocker; gc calls:\n%s", logged)
+	}
+}
+
+// cascadeNudgeOnce runs the script once over one close of ga-blk whose
+// dependent ga-dep, assigned to worker-1, has the blockers down answers for
+// (a JSON array, or a shell command's exit for a failed read), and returns
+// the nudges it sent.
+func cascadeNudgeOnce(t *testing.T, down string) (int, string) {
+	t.Helper()
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available; cascade-nudge-on-blocker-close.sh requires it")
+	}
+	dir := t.TempDir()
+	eventsPath := filepath.Join(dir, "events.jsonl")
+	event := `{"seq":7,"type":"bead.closed","actor":"gc","subject":"ga-blk","payload":{"bead":{"id":"ga-blk","status":"closed"}}}`
+	if err := os.WriteFile(eventsPath, []byte(event+"\n"), 0o644); err != nil {
+		t.Fatalf("write events: %v", err)
+	}
+	binDir, logPath := fakeGCBin(t, `case "$1" in
+events) cat '`+eventsPath+`' ;;
+bd) case "$*" in
+    *direction=down*) `+down+` ;;
+    *) printf '%s\n' '[{"id":"ga-dep","status":"open","assignee":"worker-1"}]' ;;
+    esac ;;
+esac
+exit 0
+`)
+	if out, err := runCascadeNudge(t, binDir, filepath.Join(dir, "state")); err != nil {
+		t.Fatalf("cascade-nudge-on-blocker-close.sh failed: %v\n%s", err, out)
+	}
+	return countNudges(t, logPath)
+}
+
+// A dependent another open blocker still holds is not nudged: its assignee
+// has nothing to do yet, and a nudge would wake an asleep seat parked on it
+// for nothing (ga-ylpbsy.16, RCA R4). The seat wakes on its own once the
+// dependent is ready.
+func TestCascadeNudgeSkipsADependentStillBlocked(t *testing.T) {
+	for _, status := range []string{"open", "in_progress", "blocked", "deferred", "hooked"} {
+		t.Run(status, func(t *testing.T) {
+			down := `printf '%s\n' '[{"id":"ga-blk","status":"closed"},{"id":"ga-other","status":"` + status + `"}]'`
+			if got, logged := cascadeNudgeOnce(t, down); got != 0 {
+				t.Fatalf("nudges = %d, want 0 while ga-other is %s; gc calls:\n%s", got, status, logged)
+			}
+		})
+	}
+}
+
+// The close of a dependent's last open blocker nudges its assignee once.
+func TestCascadeNudgeNudgesOnTheLastBlockersClose(t *testing.T) {
+	for name, down := range map[string]string{
+		"every blocker closed":                      `printf '%s\n' '[{"id":"ga-blk","status":"closed"},{"id":"ga-other","status":"closed"}]'`,
+		"the other blocker pinned (bd: satisfied)":  `printf '%s\n' '[{"id":"ga-blk","status":"closed"},{"id":"ga-other","status":"pinned"}]'`,
+		"the closing blocker read before its close": `printf '%s\n' '[{"id":"ga-blk","status":"open"}]'`,
+		"no blocker listed":                         `printf '%s\n' '[]'`,
+		// A read that fails proves nothing: the nudge goes out, as before.
+		"a failed blocker read":       `exit 1`,
+		"an unparseable blocker read": `printf 'not json\n'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, logged := cascadeNudgeOnce(t, down)
+			if got != 1 || !strings.Contains(logged, "gc session nudge worker-1 blocker ga-blk closed") {
+				t.Fatalf("nudges = %d, want one to worker-1; gc calls:\n%s", got, logged)
+			}
+		})
+	}
+}
+
+// A still-blocked pair is recorded: the lookback's later runs see the same
+// close again and must not read the dependent's blockers again.
+func TestCascadeNudgeRecordsAStillBlockedPair(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available; cascade-nudge-on-blocker-close.sh requires it")
+	}
+	dir := t.TempDir()
+	eventsPath := filepath.Join(dir, "events.jsonl")
+	event := `{"seq":7,"type":"bead.closed","actor":"gc","subject":"ga-blk","payload":{"bead":{"id":"ga-blk","status":"closed"}}}`
+	if err := os.WriteFile(eventsPath, []byte(event+"\n"), 0o644); err != nil {
+		t.Fatalf("write events: %v", err)
+	}
+	binDir, logPath := fakeGCBin(t, `case "$1" in
+events) cat '`+eventsPath+`' ;;
+bd) case "$*" in
+    *direction=down*) printf '%s\n' '[{"id":"ga-blk","status":"closed"},{"id":"ga-other","status":"open"}]' ;;
+    *) printf '%s\n' '[{"id":"ga-dep","status":"open","assignee":"worker-1"}]' ;;
+    esac ;;
+esac
+exit 0
+`)
+	stateDir := filepath.Join(dir, "state")
+	for i := range 2 {
+		if out, err := runCascadeNudge(t, binDir, stateDir); err != nil {
+			t.Fatalf("run %d: cascade-nudge-on-blocker-close.sh failed: %v\n%s", i+1, err, out)
+		}
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(logged), "--direction=down"); got != 1 {
+		t.Fatalf("blocker reads = %d, want 1 across two runs; gc calls:\n%s", got, logged)
+	}
+	if n, _ := countNudges(t, logPath); n != 0 {
+		t.Fatalf("nudges = %d, want 0", n)
 	}
 }
