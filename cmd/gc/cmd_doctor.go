@@ -303,6 +303,14 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 		for _, c := range rolloutGateChecks(opts.RolloutFlags, opts.RolloutResolveErr) {
 			register(c)
 		}
+		// The ops-recording line sits with the rollout gates it reports on, so
+		// it runs before the bead-store preflight and opens its own store
+		// rather than the preflight's shared factory. With every ops gate off
+		// (the default) the check reads at most one op row, and scans for
+		// expired legacy ops only once that read finds one; during a store
+		// outage it reports the outage too, beside the preflight's line.
+		registerCityStoreCheck(newOpsRecordingDoctorCheck(cityPath, cfg, opts.RolloutFlags, opts.RolloutResolveErr))
+		registerCityStoreCheck(newConversationLanesDoctorCheck(cityPath, cfg))
 		register(doctor.NewConfigRefsCheck(cfg, cityPath))
 		register(doctor.NewStaleLocalPackDirCheck(cfg.Packs, cfg.Imports, cfg.DefaultRigImports, cityPath, cfg.Rigs...))
 		register(doctor.NewPreStartScriptsCheck(cfg))

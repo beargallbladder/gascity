@@ -879,6 +879,9 @@ func LoadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraInc
 	if err := validateBeadsModes(root.Beads); err != nil {
 		return nil, nil, err
 	}
+	if err := validateOpsModes(root.Ops); err != nil {
+		return nil, nil, err
+	}
 
 	// Capture revision inputs after all config and pack discovery so callers
 	// can compare the loaded snapshot to future reloads without re-reading
@@ -1178,6 +1181,22 @@ func mergeFragment(base, fragment *City, fragMeta toml.MetaData, fragPath string
 		if !fragMeta.IsDefined("beads", "ledger_feed") {
 			base.Beads.LedgerFeed = ledgerFeed
 		}
+	}
+	// [ops] merges per key: each field is a rollout gate, so a fragment
+	// defining one gate keeps the base's others.
+	if fragMeta.IsDefined("ops", "content") {
+		base.Ops.ContentMode = fragment.Ops.ContentMode
+	}
+	if fragMeta.IsDefined("ops", "control") {
+		base.Ops.ControlMode = fragment.Ops.ControlMode
+	}
+	if fragMeta.IsDefined("ops", "lifecycle") {
+		base.Ops.LifecycleMode = fragment.Ops.LifecycleMode
+	}
+	// ops.authoritative is one list, not a gate per kind: a fragment that
+	// defines it replaces the base's list.
+	if fragMeta.IsDefined("ops", "authoritative") {
+		base.Ops.Authoritative = fragment.Ops.Authoritative
 	}
 	if fragMeta.IsDefined("dolt") {
 		base.Dolt = fragment.Dolt

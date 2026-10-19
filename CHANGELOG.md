@@ -386,6 +386,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cascade-nudge-on-blocker-close` order no longer nudges (and so wakes) the
   assignee of a dependent that another open blocker still holds.
 
+- **A config reload no longer creates or rebinds a city's bead store.** When a
+  city's `.beads/metadata.json` went missing (for example, a `git` checkout
+  deleted a file an older commit had tracked), the next reload fell back to
+  the default `hq` database, created it with `bd init`, and rebound the live
+  city to that empty store. Reload, including a plain `gc reload` with no
+  config change, now holds the city to the store binding it booted on. If
+  metadata.json is missing or unusable, or names a different store, the
+  reload fails and keeps the old config. The error says whether to restore
+  the file (do not restart first: boot treats a missing binding as a new
+  city) or to restart to adopt a deliberate rebinding. Switching a city from
+  a non-bd beads provider (such as `file`) to bd now also takes a restart; a
+  reload refuses it. Rig scopes and boot are unchanged.
+
 - **Codex structured history keeps every turn's model and token usage.**
   Usage was read only from the rollout tail, so older turns (and older
   history pages) lost it once the session grew (thanks @csells).

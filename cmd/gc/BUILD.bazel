@@ -100,6 +100,7 @@ go_library(
         "beads_proxied_idle_timeout.go",
         "beads_proxied_native.go",
         "beads_quiescence.go",
+        "beads_reload_store_guard.go",
         "beads_scope_ownership.go",
         "beads_scope_suspension.go",
         "beads_shared_server.go",
@@ -259,6 +260,10 @@ go_library(
         "controller_stop_client.go",
         "convergence_store.go",
         "convergence_tick.go",
+        "conversation_lane_exec.go",
+        "conversation_lane_host.go",
+        "conversation_lane_view.go",
+        "conversation_lane_worker.go",
         "convoy_fields.go",
         "crash_tracker.go",
         "cwd_fallback_guard.go",
@@ -276,12 +281,14 @@ go_library(
         "doctor_bd_read_memo.go",
         "doctor_census_owner_liveness.go",
         "doctor_codex_hooks.go",
+        "doctor_conversation_lanes.go",
         "doctor_executor_identity_residue_check.go",
         "doctor_fork_rate.go",
         "doctor_gate_sandbox.go",
         "doctor_hold_label_conventions.go",
         "doctor_hold_label_routed_to.go",
         "doctor_mcp_checks.go",
+        "doctor_ops_recording.go",
         "doctor_order_tracking_retention.go",
         "doctor_ownerless_runtimes.go",
         "doctor_pack_runtimes.go",
@@ -416,6 +423,7 @@ go_library(
         "nudge_poller_city_stop.go",
         "nudge_queue_seam.go",
         "nudge_queue_shim.go",
+        "op_sweep.go",
         "order_backend.go",
         "order_dispatch.go",
         "order_dispatch_seam.go",
@@ -715,6 +723,8 @@ go_library(
         "//internal/molecule",
         "//internal/nudgepoller",
         "//internal/nudgequeue",
+        "//internal/opjournal",
+        "//internal/opjournal/legacyop",
         "//internal/orderdiscovery",
         "//internal/orderdispatch",
         "//internal/orders",
@@ -1014,6 +1024,7 @@ go_test(
         "beads_proxied_idle_timeout_test.go",
         "beads_proxied_native_test.go",
         "beads_quiescence_test.go",
+        "beads_reload_store_guard_test.go",
         "beads_rig_inherits_external_test.go",
         "beads_scope_dolt_mode_authority_test.go",
         "beads_scope_legacy_city_rig_test.go",
@@ -1317,6 +1328,9 @@ go_test(
         "controller_watcher_fd_test.go",
         "converge_scope_store_test.go",
         "convergence_integration_test.go",
+        "conversation_lane_exec_test.go",
+        "conversation_lane_host_test.go",
+        "conversation_lane_steer_test.go",
         "convoy_chargolden_test.go",
         "core_formula_drain_ack_test.go",
         "crash_tracker_test.go",
@@ -1353,12 +1367,14 @@ go_test(
         "doctor_bd_read_memo_test.go",
         "doctor_census_owner_liveness_test.go",
         "doctor_codex_hooks_test.go",
+        "doctor_conversation_lanes_test.go",
         "doctor_executor_identity_residue_check_test.go",
         "doctor_fork_rate_test.go",
         "doctor_gate_sandbox_test.go",
         "doctor_hold_label_conventions_test.go",
         "doctor_hold_label_routed_to_test.go",
         "doctor_mcp_checks_test.go",
+        "doctor_ops_recording_test.go",
         "doctor_order_tracking_retention_test.go",
         "doctor_pack_runtimes_test.go",
         "doctor_payload_json_test.go",
@@ -1490,6 +1506,7 @@ go_test(
         "hook_non_turn_boundary_test.go",
         "hook_output_test.go",
         "hook_store_federated_scope_test.go",
+        "hook_work_started_e2e_test.go",
         "hook_work_started_test.go",
         "hooks_test.go",
         "hosted_beads_gateway_test.go",
@@ -1567,6 +1584,8 @@ go_test(
         "nudge_target_info_equiv_test.go",
         "oneshot_by_id_routes_test.go",
         "oneshot_class_routes_test.go",
+        "op_sweep_events_test.go",
+        "op_sweep_test.go",
         "order_args_channel_test.go",
         "order_backend_followup_test.go",
         "order_backend_test.go",
@@ -2209,6 +2228,8 @@ go_test(
         "//internal/molecule",
         "//internal/nudgepoller",
         "//internal/nudgequeue",
+        "//internal/opjournal",
+        "//internal/opjournal/legacyop",
         "//internal/orderdispatch",
         "//internal/orders",
         "//internal/overlay",
@@ -2371,8 +2392,9 @@ go_variant_test(
 # cover its first 64 seeds). --test_filter, --test_arg and --test_env do not
 # reach a range; build one with
 #   bazel build //cmd/gc:gc_sim_corpus_<n>_run
-# and replay one seed with
-#   GC_V2_SIM_SEED=<seed> go test -run '^TestSimCorpus$' ./cmd/gc/
+# and replay one seed on gc_test with
+#   bazel test //cmd/gc:gc_test --test_sharding_strategy=disabled \
+#     --test_filter='^TestSimCorpus$' --test_env=GC_V2_SIM_SEED=<seed>
 # (TestSimCorpusFlooredPending for the floored ranges).
 SIM_CORPORA = {
     "gc_sim_corpus": "TestSimCorpus",
@@ -2428,7 +2450,8 @@ go_variant_test(
 # pending creates), all 1024 seeds in sixteen ranges of 64 (CONTRACT v5.10l,
 # mc-su7hv); gc_test runs only its first 64. Ordinary test targets outside
 # SIM_CORPORA, as the shifted ranges are. Replay one seed with
-#   GC_V2_SIM_SEED=<seed> go test -run '^TestSimCorpusFloored$' ./cmd/gc/
+#   bazel test //cmd/gc:gc_test --test_sharding_strategy=disabled \
+#     --test_filter='^TestSimCorpusFloored$' --test_env=GC_V2_SIM_SEED=<seed>
 [go_variant_test(
     name = "gc_sim_corpus_floored_%d_test" % i,
     size = "medium",
