@@ -4,13 +4,14 @@
 
 Deploy bead: `ga-0wravkf`; build: `ga-yrodto`; review: `ga-jbflyyl` PASS with independently recomputed mechanical-conflict carryover. Single-bead successor of the unmerged PR #7975; no merge or binary deployment is performed by this gate.
 
-- Reviewed source: `649cf4c5b3a63b9ad1937dd4a83bfebc10dfc88b`.
-- Frozen main/base: `149ae8df7c956f4d06a36cae0c94ca5da3dff4e5`.
-- Canonical merge head: `72a942d7de9ca2d51185f979e7554e6670ec8c13`; tree: `80b4ce2af7bbfde026ee97974a70e717b66d236f`.
-- Evidence: `/var/tmp/deploy-ga-0wravkf-regate.p4wf7hap`.
-- merge_state: clean (origin/main@149ae8df7c956f4d06a36cae0c94ca5da3dff4e5; files: none).
+- Reviewed source: `eaca4ed1173eed0fc6536af0f93f1697fa84f496` (merged head, carrying `988eba796d0a0d93825c119cd4c2bb8fecf5e048`).
+- Frozen main/base: `ff7194cf9ccf4c1bd2dfcfcad3c8666af7aeb083`.
+- Canonical merge head: `eaca4ed1173eed0fc6536af0f93f1697fa84f496`; tree: `60928ee85fe3bb2dbdfd556314f8e7f226abdae8`.
+- Evidence: `/var/tmp/deploy-ga-0wravkf-regate.p4wf7hap` (original gate run); `/var/tmp/pr8290-evidence` (re-run on the merged head).
+- merge_state: clean (origin/main@ff7194cf9ccf4c1bd2dfcfcad3c8666af7aeb083; files: none).
 - gate_base_kind: current-tip.
-- gate_base: 149ae8df7c956f4d06a36cae0c94ca5da3dff4e5.
+- gate_base: ff7194cf9ccf4c1bd2dfcfcad3c8666af7aeb083.
+- `988eba7` moved directory validation from the caller (`probe`) into the worker (`Measure`); the original gate evidence below was gathered before that change, and the owned tests were re-run on the merged head.
 - merge_validation: canonical merge built/vetted here and tree identity independently checked against read-only merge-tree.
 
 | # | Criterion | Verdict | Evidence |
@@ -85,7 +86,7 @@ diff_tests_executed:
   TestMeasureFinishedReportsMeasuredTimeAndRemovesFile PASS (unit-d50e950eb1e22cc863ea.log)
   TestProbeBoundHoldsForCaller PASS (unit-d50e950eb1e22cc863ea.log)
   TestProbeFinished PASS (unit-d50e950eb1e22cc863ea.log)
-  TestProbeMissingDirIsErrorWithoutSpawning PASS (unit-d50e950eb1e22cc863ea.log)
+  TestProbeDoesNotTouchTargetDir PASS (/var/tmp/pr8290-evidence/owned-fsyncprobe-dolt-doctor.log)
   TestProbeRejectsUnknownWorkerStatus PASS (unit-d50e950eb1e22cc863ea.log)
   TestProbeSpawnFailureIsError PASS (unit-d50e950eb1e22cc863ea.log)
   TestProbeWorkerThatExitsWithoutAnswerIsError PASS (unit-d50e950eb1e22cc863ea.log)
