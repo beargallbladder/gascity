@@ -93,7 +93,7 @@ func Probe(dir string, timeout time.Duration) Result {
 	if err != nil {
 		return errorResult(fmt.Errorf("resolve gc executable: %w", err))
 	}
-	return probe(dir, timeout, func(result *os.File) error {
+	return probe(timeout, func(result *os.File) error {
 		cmd := workerCommand(exe, dir, result)
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("start fsync probe worker: %w", err)
@@ -118,13 +118,12 @@ func workerCommand(exe, dir string, result *os.File) *exec.Cmd {
 
 // probe hands start the write end of a result pipe and reads the worker's
 // Result from the read end under timeout. The write end is closed here once
-// start returns, so only the worker holds it open. The bound covers the wait
-// for the result, not start itself: a spawn that blocks (a stalled fork or
-// exec) delays the return past timeout.
-func probe(dir string, timeout time.Duration, start func(result *os.File) error) Result {
-	if err := requireDir(dir); err != nil {
-		return errorResult(err)
-	}
+// start returns, so only the worker holds it open. probe does no I/O on the
+// probed directory, so a stalled filesystem cannot block the caller; the
+// worker validates the directory and reports a bad path as StatusError. The bound covers the wait for the
+// result, not start itself: a spawn that blocks (a stalled fork or exec)
+// delays the return past timeout.
+func probe(timeout time.Duration, start func(result *os.File) error) Result {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 

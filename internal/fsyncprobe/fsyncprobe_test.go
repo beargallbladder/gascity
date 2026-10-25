@@ -113,7 +113,7 @@ func answerWith(t *testing.T, res Result) func(*os.File) error {
 
 // TestProbeFinished expects the worker's measurement back through the pipe.
 func TestProbeFinished(t *testing.T) {
-	res := probe(t.TempDir(), 10*time.Second, answerWith(t, Result{Status: StatusFinished, FsyncMS: 7}))
+	res := probe(10*time.Second, answerWith(t, Result{Status: StatusFinished, FsyncMS: 7}))
 	if res.Status != StatusFinished || res.FsyncMS != 7 {
 		t.Fatalf("got %+v, want finished with fsync_ms 7", res)
 	}
@@ -125,7 +125,7 @@ func TestProbeFinished(t *testing.T) {
 func TestProbeBoundHoldsForCaller(t *testing.T) {
 	bound := 300 * time.Millisecond
 	start := time.Now()
-	res := probe(t.TempDir(), bound, func(result *os.File) error {
+	res := probe(bound, func(result *os.File) error {
 		fd, err := syscall.Dup(int(result.Fd()))
 		if err != nil {
 			return err
@@ -150,7 +150,7 @@ func TestProbeBoundHoldsForCaller(t *testing.T) {
 // TestProbeWorkerThatExitsWithoutAnswerIsError reports a worker that dies
 // before writing as status=error, not as a stall.
 func TestProbeWorkerThatExitsWithoutAnswerIsError(t *testing.T) {
-	res := probe(t.TempDir(), 10*time.Second, func(*os.File) error { return nil })
+	res := probe(10*time.Second, func(*os.File) error { return nil })
 	if res.Status != StatusError || res.Error == "" {
 		t.Fatalf("got %+v, want status=error with a message", res)
 	}
@@ -159,32 +159,35 @@ func TestProbeWorkerThatExitsWithoutAnswerIsError(t *testing.T) {
 // TestProbeSpawnFailureIsError reports a worker that cannot start as
 // status=error rather than a silent success.
 func TestProbeSpawnFailureIsError(t *testing.T) {
-	res := probe(t.TempDir(), time.Second, func(*os.File) error { return errors.New("boom") })
+	res := probe(time.Second, func(*os.File) error { return errors.New("boom") })
 	if res.Status != StatusError || res.Error == "" {
 		t.Fatalf("got %+v, want status=error with a message", res)
 	}
 }
 
-// TestProbeMissingDirIsErrorWithoutSpawning checks the directory precondition
-// in the caller, so a bad path never costs a worker.
-func TestProbeMissingDirIsErrorWithoutSpawning(t *testing.T) {
-	spawned := false
-	res := probe(filepath.Join(t.TempDir(), "absent"), time.Second, func(*os.File) error {
-		spawned = true
-		return nil
+// TestProbeDoesNotTouchTargetDir checks that the caller leaves directory
+// validation to the worker: a stat on stalled storage would block the caller
+// before the bound starts, so even a missing directory goes to the worker.
+func TestProbeDoesNotTouchTargetDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent")
+	started := false
+	answer := answerWith(t, Result{Status: StatusError, Error: "probe directory: stat " + dir + ": no such file or directory"})
+	res := probe(10*time.Second, func(result *os.File) error {
+		started = true
+		return answer(result)
 	})
-	if res.Status != StatusError {
-		t.Fatalf("Status = %q, want %q", res.Status, StatusError)
+	if !started {
+		t.Fatal("probe did not start a worker for a missing directory; the caller must not check it")
 	}
-	if spawned {
-		t.Fatal("a worker was spawned for a missing directory")
+	if res.Status != StatusError || res.Error == "" {
+		t.Fatalf("got %+v, want the worker's status=error", res)
 	}
 }
 
 // TestProbeRejectsUnknownWorkerStatus keeps a worker from reporting a status
 // of its own choosing, such as unfinished.
 func TestProbeRejectsUnknownWorkerStatus(t *testing.T) {
-	res := probe(t.TempDir(), 10*time.Second, answerWith(t, Result{Status: StatusUnfinished, FsyncMS: 1}))
+	res := probe(10*time.Second, answerWith(t, Result{Status: StatusUnfinished, FsyncMS: 1}))
 	if res.Status != StatusError {
 		t.Fatalf("got %+v, want status=error for a worker-reported unfinished", res)
 	}
