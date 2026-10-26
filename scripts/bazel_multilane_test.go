@@ -326,7 +326,7 @@ func TestBazelMultiLaneWorkflowTriggersAndPermissions(t *testing.T) {
 		t.Errorf("top-level permissions = %v, want %v", wf.Permissions, readOnly)
 	}
 	wantJobs := map[string]map[string]string{
-		"rbe": {"contents": "read", "actions": "write"}, // dispatches rbe-worker-pool.yml
+		"rbe": {"contents": "read", "actions": "write", "pull-requests": "read"}, // dispatches rbe-worker-pool.yml; lists a PR's files (split-strict)
 		// The worker-env preflight lists drift issues (tools/rbe/worker-env-drift).
 		"lane":        {"contents": "read", "issues": "read"},
 		"coverage":    {"contents": "read", "issues": "read"},
@@ -386,14 +386,19 @@ func readStepOutput(t *testing.T, path, name string) (string, bool) {
 // multiLaneLanes runs the rbe job's Lanes step for an event, a mode and
 // fresh-test-results ("true" or "false") and returns its raw lanes output
 // (the string the lane job's if compares).
-func multiLaneLanes(t *testing.T, script, event, mode, fresh string) (string, error) {
+func multiLaneLanes(t *testing.T, script, event, mode, fresh string, splitPaths ...string) (string, error) {
 	t.Helper()
 	dir := t.TempDir()
 	output := filepath.Join(dir, "output")
+	paths := ""
+	if len(splitPaths) > 0 {
+		paths = splitPaths[0]
+	}
 	out, err := runWorkflowStepScript(t, dir, script, map[string]string{
 		"EVENT":               event,
 		"MODE":                mode,
 		"FRESH":               fresh,
+		"SPLIT_STRICT_PATHS":  paths,
 		"GITHUB_OUTPUT":       output,
 		"GITHUB_STEP_SUMMARY": filepath.Join(dir, "summary"),
 	})
@@ -417,8 +422,15 @@ var (
 	multiLaneModes  = []string{"remote", "fork-ro", "fork-rw", "cache", "local"}
 )
 
-// wantMultiLanes: the lanes each (event, mode) starts, in order.
+// wantMultiLanes: the lanes each (event, mode) starts, in order, for a pull
+// request that does not touch the split-strict storage paths.
 func wantMultiLanes(event, mode string) []string {
+	return wantMultiLanesPaths(event, mode, "false")
+}
+
+// wantMultiLanesPaths is wantMultiLanes with the Split-strict paths step's
+// answer for a pull request ("" off pull requests).
+func wantMultiLanesPaths(event, mode, splitPaths string) []string {
 	// Every mode tests (the gate fails a run with no lane). Acceptance and
 	// the gating integration lanes run in every mode, the fork pool's
 	// (fork-ro: no network) included: gc init no longer clones gascity-packs
@@ -430,8 +442,9 @@ func wantMultiLanes(event, mode string) []string {
 		lanes = append(lanes, "integration")
 	}
 	// The split-strict gate runs remotely only (no fork certificate, no
-	// local re-execution of two whole suites) and never in a merge group.
-	if mode == "remote" && event != "merge_group" {
+	// local re-execution of two whole suites): nightly, on dispatch, and on
+	// pull requests that touch the storage paths.
+	if mode == "remote" && (event == "schedule" || event == "workflow_dispatch" || (event == "pull_request" && splitPaths == "true")) {
 		lanes = append(lanes, "split-strict")
 	}
 	return lanes
@@ -446,9 +459,10 @@ func TestBazelMultiLaneLaneList(t *testing.T) {
 	wf := readMultiLaneWorkflow(t)
 	step := multiLaneRBEStep(t, wf, "lanes")
 	wantEnv := map[string]string{
-		"EVENT": "${{ github.event_name }}",
-		"MODE":  "${{ steps.decide.outputs.mode }}",
-		"FRESH": "${{ inputs.fresh-test-results }}",
+		"EVENT":              "${{ github.event_name }}",
+		"MODE":               "${{ steps.decide.outputs.mode }}",
+		"FRESH":              "${{ inputs.fresh-test-results }}",
+		"SPLIT_STRICT_PATHS": "${{ steps.splitpaths.outputs.touched }}",
 	}
 	if step.If != "" || !reflect.DeepEqual(step.Env, wantEnv) {
 		t.Errorf("Lanes step: if %q, env %v; want it unconditional with env %v", step.If, step.Env, wantEnv)
@@ -460,46 +474,51 @@ func TestBazelMultiLaneLaneList(t *testing.T) {
 	for _, event := range multiLaneEvents {
 		for _, mode := range multiLaneModes {
 			for _, fresh := range []string{"false", "true"} {
-				raw, err := multiLaneLanes(t, step.Run, event, mode, fresh)
-				if err != nil {
-					t.Errorf("Lanes step (event %s, mode %s, fresh %s) failed: %v\n%s", event, mode, fresh, err, raw)
-					continue
-				}
-				want := wantMultiLanes(event, mode)
-				var entries []map[string]any
-				if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-					t.Errorf("event %s, mode %s, fresh %s: lanes %q is not a JSON array of objects: %v", event, mode, fresh, raw, err)
-					continue
-				}
-				got := []string{}
-				for _, entry := range entries {
-					name, _ := entry["lane"].(string)
-					got = append(got, name)
-					wantCmd := multiLaneCommands[name]
-					if fresh == "true" {
-						wantCmd += multiLaneFreshTargets[name] + " --config=fresh"
+				for _, splitPaths := range []string{"false", "true"} {
+					if splitPaths == "true" && event != "pull_request" {
+						continue
 					}
-					if cmd, _ := entry["cmd"].(string); cmd != wantCmd {
-						t.Errorf("event %s, mode %s, fresh %s: lane %s cmd %q, want %q", event, mode, fresh, name, cmd, wantCmd)
+					raw, err := multiLaneLanes(t, step.Run, event, mode, fresh, splitPaths)
+					if err != nil {
+						t.Errorf("Lanes step (event %s, mode %s, fresh %s) failed: %v\n%s", event, mode, fresh, err, raw)
+						continue
 					}
-					// Evidence-only (exit 0 on failure): integration until G3,
-					// split-strict until split is the default.
-					ev, set := entry["evidence-only"]
-					if multiLaneEvidenceOnly[name] != (set && ev == true) {
-						t.Errorf("event %s, mode %s, fresh %s: lane %s evidence-only %v; want true on integration and split-strict only", event, mode, fresh, name, ev)
+					want := wantMultiLanesPaths(event, mode, splitPaths)
+					var entries []map[string]any
+					if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+						t.Errorf("event %s, mode %s, fresh %s: lanes %q is not a JSON array of objects: %v", event, mode, fresh, raw, err)
+						continue
 					}
-					for key := range entry {
-						if key != "lane" && key != "cmd" && key != "evidence-only" {
-							t.Errorf("event %s, mode %s, fresh %s: lane %s: unexpected matrix key %q", event, mode, fresh, name, key)
+					got := []string{}
+					for _, entry := range entries {
+						name, _ := entry["lane"].(string)
+						got = append(got, name)
+						wantCmd := multiLaneCommands[name]
+						if fresh == "true" {
+							wantCmd += multiLaneFreshTargets[name] + " --config=fresh"
+						}
+						if cmd, _ := entry["cmd"].(string); cmd != wantCmd {
+							t.Errorf("event %s, mode %s, fresh %s: lane %s cmd %q, want %q", event, mode, fresh, name, cmd, wantCmd)
+						}
+						// Evidence-only (exit 0 on failure): integration until G3,
+						// split-strict until split is the default.
+						ev, set := entry["evidence-only"]
+						if multiLaneEvidenceOnly[name] != (set && ev == true) {
+							t.Errorf("event %s, mode %s, fresh %s: lane %s evidence-only %v; want true on integration and split-strict only", event, mode, fresh, name, ev)
+						}
+						for key := range entry {
+							if key != "lane" && key != "cmd" && key != "evidence-only" {
+								t.Errorf("event %s, mode %s, fresh %s: lane %s: unexpected matrix key %q", event, mode, fresh, name, key)
+							}
 						}
 					}
-				}
-				if !reflect.DeepEqual(got, want) {
-					t.Errorf("event %s, mode %s, fresh %s: lanes %v, want %v", event, mode, fresh, got, want)
-				}
-				// The decide step reaches a fork mode on pull_request runs only.
-				if event == "pull_request" && strings.HasPrefix(mode, "fork-") && len(got) > multiLaneForkCertificates {
-					t.Errorf("event %s, mode %s, fresh %s: %d lanes; a fork run mints at most %d rbe-fork certificates", event, mode, fresh, len(got), multiLaneForkCertificates)
+					if !reflect.DeepEqual(got, want) {
+						t.Errorf("event %s, mode %s, fresh %s: lanes %v, want %v", event, mode, fresh, got, want)
+					}
+					// The decide step reaches a fork mode on pull_request runs only.
+					if event == "pull_request" && strings.HasPrefix(mode, "fork-") && len(got) > multiLaneForkCertificates {
+						t.Errorf("event %s, mode %s, fresh %s: %d lanes; a fork run mints at most %d rbe-fork certificates", event, mode, fresh, len(got), multiLaneForkCertificates)
+					}
 				}
 			}
 		}

@@ -34,9 +34,11 @@
 #     every mode: they
 #     never failed in 33 main runs of the full suite, which is still flaky;
 #   - split-strict runs cmd/gc and internal/api under the split-strict
-#     projection gate (GC_TEST_SPLIT_STRICT=1) and its new-violation-site
-#     ratchet, evidence-only, in mode remote outside merge groups, until it
-#     becomes required before new cities default to split;
+#     projection gate (GC_TEST_SPLIT_STRICT=1), evidence-only and allowed to
+#     fail as a job, in mode remote: nightly, on dispatch, and on PRs that
+#     touch the storage paths; its "Split-strict verdicts" step reports the
+#     ratchet and the failing-test check apart. Non-blocking until it becomes
+#     required before new cities default to split;
 #   - integration runs on the nightly schedule and dispatches only,
 #     evidence-only, until G3 (bazel-nightly.yml; off every push since
 #     rbe-ci-cost-latency-study.md recommendation 5: evidence-only, so its
@@ -133,6 +135,7 @@ jobs:
     permissions:
       contents: read
       actions: write # dispatch rbe-worker-pool.yml (pre-warm)
+      pull-requests: read # list a PR's files for the split-strict lane
     outputs:
       mode: ${{ steps.decide.outputs.mode }}
       enabled: ${{ steps.decide.outputs.enabled }}
@@ -232,6 +235,32 @@ jobs:
           echo "rrc=$rrc" >> "$GITHUB_OUTPUT"
           echo "Remote repo contents cache: **$rrc**" >> "$GITHUB_STEP_SUMMARY"
 
+      # Whether a pull request touches the bead-storage paths the split-strict
+      # lane guards. A PR's file list comes from the API (this job has no
+      # checkout); if it cannot be read the lane runs.
+      - name: Split-strict paths
+        id: splitpaths
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          touched=true
+          if files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename'); then
+            touched=false
+            while IFS= read -r f; do
+              case "$f" in
+                internal/beads/*|internal/storeref/*|internal/storebinding/*|internal/coordclass/*|internal/beadmeta/*|\
+                cmd/gc/class_store*|cmd/gc/*storage*|cmd/gc/cli_*store*|cmd/gc/split_strict*|cmd/gc/testdata/split_strict*|\
+                internal/api/residency*|internal/api/testdata/split_strict*|internal/api/fake_state_test.go)
+                  touched=true ;;
+              esac
+            done <<<"$files"
+          fi
+          echo "touched=$touched" >> "$GITHUB_OUTPUT"
+          echo "Split-strict paths touched: **$touched**" >> "$GITHUB_STEP_SUMMARY"
+
       # The lane job's matrix, as JSON: a lane left out never starts a runner
       # (nor mints an rbe-fork certificate, so a fork run mints at most 4).
       # A matrix's exclude cannot do this: GitHub applies include after
@@ -242,6 +271,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           MODE: ${{ steps.decide.outputs.mode }}
           FRESH: ${{ inputs.fresh-test-results }}
+          SPLIT_STRICT_PATHS: ${{ steps.splitpaths.outputs.touched }}
         run: |
           set -euo pipefail
           case "$MODE" in remote|fork-ro|fork-rw|cache|local) ;; *) echo "::error::mode '$MODE'"; exit 1 ;; esac
@@ -304,11 +334,15 @@ jobs:
           # gate it in a merge queue instead of moving it back onto push
           # (follow-up, not built here).
           case "$EVENT" in workflow_dispatch|schedule) lanes+=",$integration" ;; esac
-          # Mode remote only, so a fork run still mints at most 4 rbe-fork
-          # certificates and a cache/local run does not execute both suites
-          # again on its runner; never in a merge group, which it cannot gate.
-          if [ "$MODE" = remote ] && [ "$EVENT" != merge_group ]; then
-            lanes+=",$splitstrict"
+          # Nightly (schedule), dispatches, and pull requests that touch the
+          # storage paths (the Split-strict paths step); never a merge group,
+          # which it cannot gate, nor every push. Mode remote only, so a fork
+          # run still mints at most 4 rbe-fork certificates and a cache/local
+          # run does not execute both suites again on its runner.
+          if [ "$MODE" = remote ]; then
+            case "$EVENT/$SPLIT_STRICT_PATHS" in
+              schedule/*|workflow_dispatch/*|pull_request/true) lanes+=",$splitstrict" ;;
+            esac
           fi
           echo "lanes=[$lanes]" >> "$GITHUB_OUTPUT"
 
@@ -374,6 +408,10 @@ jobs:
     # on 2 vCPU, 23-34 s on 4 and 15-19 s on 8. Unit and acceptance are the
     # critical lanes (ga-vnycm2.12).
     runs-on: ${{ (matrix.lane == 'unit' || matrix.lane == 'acceptance') && 'blacksmith-8vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    # The split-strict lane is non-blocking twice over: evidence-only (its
+    # bazel step exits 0) and, should any other step of it fail, allowed to
+    # fail as a job, so the required gate's needs.lane.result never sees it.
+    continue-on-error: ${{ matrix.lane == 'split-strict' }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -607,6 +645,39 @@ jobs:
             exit 0
           fi
           exit "$rc"
+
+      # The split-strict lane's own verdicts, kept apart from its test
+      # failures: every shard's test.log ends with a RATCHET and a TESTS line
+      # (internal/beads/splittest/gate.go). A shard without them hung or
+      # crashed before reporting, which is a failure too. Reporting only.
+      - name: Split-strict verdicts
+        if: always() && matrix.lane == 'split-strict' && steps.test.outcome != 'skipped'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          ratchet_fail=0 tests_fail=0 missing=0 shards=0
+          for target in cmd/gc/gc_split_strict_test internal/api/api_split_strict_test; do
+            for log in bazel-testlogs/"$target"/shard_*_of_*/test.log bazel-testlogs/"$target"/test.log; do
+              [ -f "$log" ] || continue
+              shards=$((shards + 1))
+              r=$(grep -a '^SPLIT-STRICT RATCHET: ' "$log" | tail -1)
+              t=$(grep -a '^SPLIT-STRICT TESTS: ' "$log" | tail -1)
+              if [ -z "$r" ] || [ -z "$t" ]; then
+                missing=$((missing + 1))
+                echo "::error title=split-strict: no report::$log ended without its verdicts (hung or crashed)"
+                continue
+              fi
+              case "$r" in *": FAIL"*) ratchet_fail=$((ratchet_fail + 1)); echo "::error title=split-strict ratchet::$log: ${r#SPLIT-STRICT RATCHET: }" ;; esac
+              case "$t" in *": FAIL"*) tests_fail=$((tests_fail + 1)); echo "::error title=split-strict tests::$log: ${t#SPLIT-STRICT TESTS: }" ;; esac
+            done
+          done
+          {
+            echo "### split-strict"
+            echo "- ratchet: $([ "$ratchet_fail" -eq 0 ] && [ "$missing" -eq 0 ] && echo PASS || echo FAIL) ($ratchet_fail of $shards shard(s) failed)"
+            echo "- tests: $([ "$tests_fail" -eq 0 ] && [ "$missing" -eq 0 ] && echo PASS || echo FAIL) ($tests_fail of $shards shard(s) with new failing tests)"
+            echo "- shards without a report: $missing"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$shards" -gt 0 ] && [ "$ratchet_fail" -eq 0 ] && [ "$tests_fail" -eq 0 ] && [ "$missing" -eq 0 ]
 
       # R4: the client heap (setup-bazel sets -Xmx4g). Two weeks of these
       # numbers size any lane that needs a 4 vCPU (16 GB) runner instead; a
