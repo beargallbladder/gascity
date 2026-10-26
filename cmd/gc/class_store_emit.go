@@ -834,6 +834,19 @@ func (s *emittingClassStore) DepListBatch(ids []string) (map[string][]beads.Dep,
 	return batch.DepListBatch(ids)
 }
 
+// ReadyBlockedByAbsent forwards the absent-blocker listing
+// (beads.AbsentBlockedReader). It emits nothing because it writes nothing, and
+// it exists for the reason DepListBatch does: without it `gc ready` could not
+// see a graph row the SQLite binding strands behind a blocker held in the work
+// store, so that row would wait forever after its blocker closed.
+func (s *emittingClassStore) ReadyBlockedByAbsent(query beads.ReadyQuery) ([]beads.Bead, error) {
+	reader, ok := beads.ReadyBlockedByAbsentFor(s.Store)
+	if !ok {
+		return nil, nil
+	}
+	return reader.ReadyBlockedByAbsent(query)
+}
+
 // ReadyOrdered forwards a bounded ordered ready read (beads.OrderedReadyReader).
 // It emits nothing because it writes nothing, and it exists for the reason
 // DepListBatch does: a silent wrapper would send every bounded ready read of a

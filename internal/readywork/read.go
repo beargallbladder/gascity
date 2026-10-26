@@ -81,6 +81,19 @@ func ReadContext(ctx context.Context, legs []Leg, q Query) ([]ReadyBead, error) 
 	if err != nil {
 		return nil, err
 	}
+	if c.status == "" {
+		// The ready arm re-judges cross-store blockers (crossstore.go): it
+		// adds the rows a store strands behind an absent blocker, then
+		// withholds every row a blocker held open elsewhere still gates.
+		items, err = readyAnswer(ctx, legs, c, items, owners)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if err != nil {
+			return nil, err
+		}
+		return toReadyBeads(items, nil), nil
+	}
 	items = c.filter(items)
 	c.order(items)
 	if c.query.Limit > 0 && len(items) > c.query.Limit {
@@ -100,6 +113,43 @@ func ReadContext(ctx context.Context, legs []Leg, q Query) ([]ReadyBead, error) 
 		}
 	}
 	return toReadyBeads(items, blockers), nil
+}
+
+// readyAnswer turns the ready arm's merged candidates into its answer: the
+// stranded rows added, the predicates applied, the order imposed, and the
+// cross-store gate run over the ordered rows until the bound is met.
+//
+// A bounded read asked each leg only for its top rows, and boundedRead sized
+// each cut so the leg's top N survive the Go predicates and the merge. A row
+// the gate withholds was counted toward that cut, so once any is withheld a
+// leg's cut may have stopped short of a row the answer needs, and one that
+// ranks above rows the answer already holds. So the answer is read again from
+// every leg's whole ready set. That second read happens only when a
+// cross-store blocker actually withheld a row the bound considered.
+func readyAnswer(ctx context.Context, legs []Leg, c compiled, items []beads.Bead, owners map[string]int) ([]beads.Bead, error) {
+	answer := func(items []beads.Bead, owners map[string]int) ([]beads.Bead, int, error) {
+		items, err := readAbsentBlocked(ctx, legs, readyReadQuery(c), items, owners)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = c.filter(items)
+		c.order(items)
+		return gateTopN(ctx, legs, owners, items, c.query.Limit)
+	}
+	rows, withheld, err := answer(items, owners)
+	if err != nil {
+		return nil, err
+	}
+	_, bounded := boundedOrder(c)
+	if !bounded || withheld == 0 {
+		return rows, nil
+	}
+	items, owners, err = federate(ctx, legs, readyRead(beads.ReadyQuery{TierMode: beads.FederatedReadTier}))
+	if err != nil {
+		return nil, err
+	}
+	rows, _, err = answer(items, owners)
+	return rows, err
 }
 
 // readCandidates reads the merged candidate set from the legs, and which leg
@@ -308,7 +358,7 @@ func blockedByForRows(ctx context.Context, items []beads.Bead, legs []Leg, owner
 	perLeg := make([]legBlockers, len(legOrder))
 	fanout.Bounded(len(legOrder), LegFanOut, func(i int) {
 		idx := legOrder[i]
-		perLeg[i] = readLegBlockers(ctx, legs[idx], byLeg[idx])
+		perLeg[i] = readLegBlockers(ctx, legs, idx, byLeg[idx])
 	})
 	// Report the failure of the first row, in answer order, whose enrichment
 	// failed: the row the sequential walk would have stopped at.
@@ -341,13 +391,22 @@ type legBlockers struct {
 	errs     map[string]error
 }
 
-// readLegBlockers resolves the blockers of ids, every one of them served by leg.
+// readLegBlockers resolves the blockers of ids, every one of them served by
+// legs[own].
 //
 // Each row's edges are read with the same per-row DepList the sequential walk
 // used, so every row's blockers come back in the order that read returns them;
 // the rows and then the distinct blocking targets are read concurrently, at most
 // LegFanOut at a time.
-func readLegBlockers(ctx context.Context, leg Leg, ids []string) legBlockers {
+//
+// A blocker the serving leg does not hold is judged through the other legs
+// (resolveBlockers, crossstore.go): reported with the status of the store that
+// holds it, and with a reason. One no store holds is reported as
+// BlockerUnresolved, which every blocked_by reader treats as gated: an
+// unresolvable blocker blocks its row, and never fails the tier. A blocker
+// read that FAILS still fails the answer, naming the row and the blocker.
+func readLegBlockers(ctx context.Context, legs []Leg, own int, ids []string) legBlockers {
+	leg := legs[own]
 	out := legBlockers{blockers: make(map[string][]ReadyBeadBlocker, len(ids)), errs: make(map[string]error)}
 	live := beads.HandlesFor(leg.Store).Live
 	deps := make([][]beads.Dep, len(ids))
@@ -377,14 +436,7 @@ func readLegBlockers(ctx context.Context, leg Leg, ids []string) legBlockers {
 			targets = append(targets, dep.DependsOnID)
 		}
 	}
-	got := make([]beads.Bead, len(targets))
-	getErrs := make([]error, len(targets))
-	fanout.Bounded(len(targets), LegFanOut, func(i int) {
-		if getErrs[i] = ctx.Err(); getErrs[i] != nil {
-			return
-		}
-		got[i], getErrs[i] = live.Get(targets[i])
-	})
+	verdicts := resolveBlockers(ctx, legs, own, targets)
 	for i, id := range ids {
 		if depErrs[i] != nil {
 			continue
@@ -394,17 +446,13 @@ func readLegBlockers(ctx context.Context, leg Leg, ids []string) legBlockers {
 			if !beads.IsReadyBlockingDependencyType(dep.Type) {
 				continue
 			}
-			t := byTarget[dep.DependsOnID]
-			if getErrs[t] != nil {
-				// A blocking edge whose target this leg cannot resolve is a
-				// cross-store dependency, which the split topology forbids (strict
-				// residence), so it is a real fault, not an absence: treating it as
-				// "no blocker" would serve a gated bead.
-				out.errs[id] = fmt.Errorf("%s store: resolving blocker %q of %q: %w", leg.Label, dep.DependsOnID, id, getErrs[t])
+			v := verdicts[byTarget[dep.DependsOnID]]
+			if v.err != nil {
+				out.errs[id] = fmt.Errorf("%s store: resolving blocker %q of %q: %w", leg.Label, dep.DependsOnID, id, v.err)
 				blockers = nil
 				break
 			}
-			blockers = append(blockers, ReadyBeadBlocker{ID: got[t].ID, Status: got[t].Status})
+			blockers = append(blockers, ReadyBeadBlocker{ID: dep.DependsOnID, Status: v.status, Reason: v.reason})
 		}
 		if _, failed := out.errs[id]; !failed {
 			out.blockers[id] = blockers

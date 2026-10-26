@@ -284,6 +284,26 @@ func (s *beadPolicyStore) ReadyOrdered(query beads.ReadyQuery, order beads.Ready
 }
 
 var (
+	_ beads.AbsentBlockedReader = (*beadPolicyStore)(nil)
+	_ beads.AbsentBlockedReader = (*beadPolicyGraphStore)(nil)
+)
+
+// ReadyBlockedByAbsent forwards the absent-blocker listing
+// (beads.AbsentBlockedReader) at the policy's expanded read tier, exactly as
+// Ready reads. Explicit for the reason DeleteBatch is: the embedded Store
+// interface does not promote optional capabilities, and a silent wrapper would
+// hide from `gc ready` every work row a file- or SQLite-backed ledger strands
+// behind a blocker held in the class binding. An inner store without the
+// listing strands nothing and reports none.
+func (s *beadPolicyStore) ReadyBlockedByAbsent(query beads.ReadyQuery) ([]beads.Bead, error) {
+	reader, ok := beads.ReadyBlockedByAbsentFor(s.Store)
+	if !ok {
+		return nil, nil
+	}
+	return reader.ReadyBlockedByAbsent(expandPolicyReadyQuery(query))
+}
+
+var (
 	_ beads.ChildrenBatchLister = (*beadPolicyStore)(nil)
 	_ beads.ChildrenBatchLister = (*beadPolicyGraphStore)(nil)
 )

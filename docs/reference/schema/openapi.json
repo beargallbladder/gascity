@@ -7761,6 +7761,9 @@
           "id": {
             "type": "string"
           },
+          "reason": {
+            "type": "string"
+          },
           "status": {
             "type": "string"
           }

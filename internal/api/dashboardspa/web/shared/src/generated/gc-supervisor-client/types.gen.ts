@@ -3231,6 +3231,7 @@ export type ReadyBead = {
 
 export type ReadyBeadBlocker = {
     id: string;
+    reason?: string;
     status: string;
 };
 

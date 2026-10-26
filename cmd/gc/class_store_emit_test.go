@@ -1742,7 +1742,11 @@ func TestEmittingClassStoreOverClaimsArePinnedPerEngine(t *testing.T) {
 		reflect.TypeOf(&beads.NativeDoltStore{}): {
 			"AdvanceSequenceFloor", "AtomicConditionalCloserHandle", "CachedReadExact",
 			"ConditionalWritesModeSource", "CreateWithStorage", "DepAddWithMetadata",
-			"HasResidentOutside", "NamespaceCensusHandle", "ReadyContext",
+			"HasResidentOutside", "NamespaceCensusHandle",
+			// ReadyBlockedByAbsent over native Dolt reports no rows: bd never
+			// strands a dependent behind an absent blocker (it reads it as
+			// external), which is what the listing's absence tells a caller.
+			"ReadyBlockedByAbsent", "ReadyContext",
 			"SequenceFloor", "SetSequenceFloor", "StoreHealthPath",
 		},
 		reflect.TypeOf(&beads.SQLiteStore{}): {

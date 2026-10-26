@@ -4559,8 +4559,9 @@ type ReadyBead struct {
 
 // ReadyBeadBlocker defines model for ReadyBeadBlocker.
 type ReadyBeadBlocker struct {
-	Id     string `json:"id"`
-	Status string `json:"status"`
+	Id     string  `json:"id"`
+	Reason *string `json:"reason,omitempty"`
+	Status string  `json:"status"`
 }
 
 // ReadyBeadDep defines model for ReadyBeadDep.
