@@ -7,6 +7,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/splittest"
 	"github.com/gastownhall/gascity/internal/config"
 )
 
@@ -52,6 +53,16 @@ func TestSlingFormulaRoutesTheWispRootThroughTheStoreThatMintedIt(t *testing.T) 
 	}
 	if len(result.MetadataErrors) != 0 {
 		t.Errorf("MetadataErrors = %v, want none", result.MetadataErrors)
+	}
+	// The fixture formula compiles to work-class rows, and sling pours every
+	// recipe into the graph store, so the strict graph leaf records each one
+	// as a wrong-class create: the S3a sling misroute (route work-class
+	// recipes to the work store). This test pins today's routing of the root,
+	// so it claims those creates and nothing else.
+	for _, v := range splittest.TakeSplitViolations(graph) {
+		if v.Op != "create" || v.Class != "work" {
+			t.Errorf("unexpected split violation on the graph leaf: %s", v)
+		}
 	}
 
 	root, err := graph.Get(result.BeadID)
