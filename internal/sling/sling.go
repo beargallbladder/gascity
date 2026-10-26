@@ -1668,6 +1668,18 @@ func existingGraphV2Root(store beads.Store, recipe *formula.Recipe) (*molecule.R
 	}, nil
 }
 
+// privatizeAttachedRootOnlyWisp keeps an attached root-only wisp out of
+// Ready(): the source bead it is attached to is the routed, claimable unit, so
+// the root is typed as a molecule container instead of an executable task.
+//
+// The root KEEPS its gc.kind=wisp marker. It is still a wisp — graph class,
+// poured through the graph store — and the marker is what classifies it so.
+// Stripping it (as this did before) turned the root into a work-class
+// molecule: on a city that relocates the graph class that is a work row in
+// the binding, invisible to work readers and refused by the containment
+// checks, and on any city it hid the wisp from the wisp GC's root scan.
+// Readers that treat a gc.kind=wisp bead as executable all exclude the
+// molecule type (see beads.IsMoleculeType), so the type alone keeps it private.
 func privatizeAttachedRootOnlyWisp(recipe *formula.Recipe, sourceBeadID string) {
 	if recipe == nil || !recipe.RootOnly || strings.TrimSpace(sourceBeadID) == "" || len(recipe.Steps) == 0 {
 		return
@@ -1677,24 +1689,6 @@ func privatizeAttachedRootOnlyWisp(recipe *formula.Recipe, sourceBeadID string) 
 		return
 	}
 	root.Type = "molecule"
-	root.Metadata = mapsCloneWithout(root.Metadata, beadmeta.KindMetadataKey)
-}
-
-func mapsCloneWithout(in map[string]string, drop string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		if key == drop {
-			continue
-		}
-		out[key] = value
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // ShouldPromoteWorkflowLaunchStatus reports whether a bead's status should

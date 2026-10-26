@@ -119,7 +119,11 @@ func preflight(opts SlingOpts, deps SlingDeps, querier BeadQuerier) (SlingResult
 
 	// Pre-flight idempotency check.
 	if shouldCheckBeadState(opts) {
-		if resolveIdempotentShortCircuit(opts, a, deps, querier, &result) {
+		idempotent, err := resolveIdempotentShortCircuit(opts, a, deps, querier, &result)
+		if err != nil {
+			return result, err
+		}
+		if idempotent {
 			return result, nil
 		}
 	}
@@ -170,13 +174,15 @@ func preflight(opts SlingOpts, deps SlingDeps, querier BeadQuerier) (SlingResult
 // formula still attaches. If the molecule-attachment probe cannot complete, the
 // fail-closed idempotent state is preserved and the probe failure is surfaced
 // as a bead warning rather than silently flipping into a mutating attach path.
-func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDeps, querier BeadQuerier, result *SlingResult) bool {
+func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDeps, querier BeadQuerier, result *SlingResult) (bool, error) {
 	check := CheckBeadStateWithOptions(querier, opts.BeadOrFormula, a, deps, BeadCheckOptions{
 		NoConvoy: opts.NoConvoy,
 	})
 	if check.Idempotent {
 		decision, probeErr := onFormulaNeedsAttachment(opts, querier, deps)
 		switch {
+		case decision.Conflict != nil:
+			return false, decision.Conflict
 		case probeErr != nil:
 			// The attachment probe failed, so we cannot prove the routed bead
 			// lacks a live molecule. Preserve the fail-closed idempotent result
@@ -211,7 +217,7 @@ func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDep
 	}
 	if !check.Idempotent {
 		result.BeadWarnings = append(result.BeadWarnings, check.Warnings...)
-		return false
+		return false, nil
 	}
 	result.Idempotent = true
 	result.DryRun = opts.DryRun
@@ -227,7 +233,7 @@ func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDep
 	if opts.Nudge && !opts.DryRun {
 		result.NudgeAgent = &a
 	}
-	return true
+	return true, nil
 }
 
 // rigSuspended reports whether the named rig is marked suspended in config.
@@ -285,6 +291,29 @@ type attachmentDecision struct {
 	SkippedForClaim bool
 	// Assignee is the claiming identity when SkippedForClaim is true.
 	Assignee string
+	// Conflict is set when an explicit --on names a formula other than the
+	// one the bead's live attachment was poured from. The sling must fail
+	// with it rather than read as an idempotent no-op.
+	Conflict *MoleculeAttachedError
+}
+
+// conflictingOnFormulaAttachment reports a live attachment that an explicit
+// --on formula would collide with: one whose recorded formula differs from the
+// requested one. An attachment that records no formula, or a sling that only
+// implies its formula through default_sling_formula, never conflicts here.
+func conflictingOnFormulaAttachment(opts SlingOpts, live beads.Bead) *MoleculeAttachedError {
+	requested := strings.TrimSpace(opts.OnFormula)
+	if requested == "" {
+		return nil
+	}
+	attached := strings.TrimSpace(live.Metadata[beadmeta.FormulaNameMetadataKey])
+	if attached == "" {
+		attached = strings.TrimSpace(live.Ref)
+	}
+	if attached == "" || attached == requested {
+		return nil
+	}
+	return &MoleculeAttachedError{BeadID: opts.BeadOrFormula, Label: AttachmentLabel(live), AttachmentID: live.ID}
 }
 
 // onFormulaNeedsAttachment reports whether this is an --on sling whose target
@@ -309,12 +338,19 @@ func onFormulaNeedsAttachment(opts SlingOpts, querier BeadQuerier, deps SlingDep
 	if !usesFormulaBackedRoute(opts) {
 		return attachmentDecision{}, nil
 	}
-	hasMolecule, err := HasMoleculeChildren(querier, opts.BeadOrFormula, deps.Store)
+	live, err := findBlockingAttachment(querier, opts.BeadOrFormula, deps.attachmentScope())
+	if live != nil {
+		// Re-slinging the formula that is already attached is the idempotent
+		// retry. An explicit --on naming a DIFFERENT formula is a request the
+		// idempotent no-op would silently drop; report the live attachment
+		// instead, as the attach path does for an assigned source.
+		if conflict := conflictingOnFormulaAttachment(opts, live.Bead); conflict != nil {
+			return attachmentDecision{Conflict: conflict}, nil
+		}
+		return attachmentDecision{}, nil
+	}
 	if err != nil {
 		return attachmentDecision{}, err
-	}
-	if hasMolecule {
-		return attachmentDecision{}, nil
 	}
 	// No molecule attached. Only override idempotency for an UNCLAIMED bead — the
 	// routed-raw footgun (gc.routed_to set, no assignee, no molecule). If a worker
@@ -561,7 +597,7 @@ func attachFormulaToBead(opts SlingOpts, deps SlingDeps, querier BeadQuerier, be
 		}
 		var fellBackToPlainRoute bool
 		lockedResult, lockedErr := withGraphV2SourceWorkflowLock(context.Background(), deps, beadID, func() (SlingResult, error) {
-			if err := CheckNoMoleculeChildrenAllowLiveWorkflow(querier, beadID, deps.Store, &result); err != nil {
+			if err := checkNoMoleculeChildren(querier, beadID, deps.attachmentScope(), &result, true); err != nil {
 				var molErr *MoleculeAttachedError
 				if fallbackToPlainOnMoleculeConflict && errors.As(err, &molErr) {
 					// Mirrors the legacy branch's fallback below: the caller
@@ -650,7 +686,7 @@ func attachFormulaToBead(opts SlingOpts, deps SlingDeps, querier BeadQuerier, be
 	// isGraph is always false here, so the former `isGraph && opts.Force`
 	// live-workflow allowance could never fire. Attachments are always checked
 	// with CheckNoMoleculeChildren on this path.
-	if err := CheckNoMoleculeChildren(querier, beadID, deps.Store, &result); err != nil {
+	if err := checkNoMoleculeChildren(querier, beadID, deps.attachmentScope(), &result, false); err != nil {
 		var molErr *MoleculeAttachedError
 		if fallbackToPlainOnMoleculeConflict && errors.As(err, &molErr) {
 			// The caller never asked for this formula attach -- it was only
@@ -1986,11 +2022,7 @@ func DoSlingBatch(opts SlingOpts, deps SlingDeps, querier BeadChildQuerier) (Sli
 		if err := validateBatchSlingFormulaRuntimeVars(context.Background(), useFormula, searchPaths, opts, open, a, deps); err != nil {
 			return SlingResult{}, fmt.Errorf("instantiating formula %q on %s %s: %w", useFormula, b.Type, b.ID, err)
 		}
-		checkAttachments := CheckBatchNoMoleculeChildren
-		if isGraph && opts.Force {
-			checkAttachments = CheckBatchNoMoleculeChildrenAllowLiveWorkflow
-		}
-		if err := checkAttachments(querier, open, deps.Store, &batchResult); err != nil {
+		if err := checkBatchNoMoleculeChildren(querier, open, deps.attachmentScope(), &batchResult, isGraph && opts.Force); err != nil {
 			return batchResult, fmt.Errorf("%w", err)
 		}
 	}

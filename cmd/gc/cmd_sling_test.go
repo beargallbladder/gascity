@@ -4380,8 +4380,9 @@ version = 1
 	if root.Type != "molecule" {
 		t.Fatalf("attached root type = %q, want molecule", root.Type)
 	}
-	if root.Metadata["gc.kind"] == "wisp" {
-		t.Fatalf("attached root leaked gc.kind=wisp metadata: %+v", root.Metadata)
+	// The root stays a wisp (graph class): only its type keeps it private.
+	if root.Metadata["gc.kind"] != "wisp" {
+		t.Fatalf("attached root lost its gc.kind=wisp marker: %+v", root.Metadata)
 	}
 	ready, err := deps.Store.Ready()
 	if err != nil {

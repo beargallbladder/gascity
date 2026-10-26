@@ -2370,7 +2370,7 @@ func TestWispGC_LeavesSteplessExemptRootPastTTL(t *testing.T) {
 // TestWispGC_LeavesSteplessRootWithLiveAttachmentSourcePastTTL pins the
 // attached-wisp exception. privatizeAttachedRootOnlyWisp
 // (internal/sling/sling.go) leaves an attached root-only wisp as a type=molecule
-// root with gc.kind stripped, deliberately never routed and never claimed — the
+// root (it keeps gc.kind=wisp), deliberately never routed and never claimed — the
 // SOURCE bead is the claimable unit — so it is unclaimed by construction and the
 // claim predicate alone would close it one TTL after pour. The source bead's
 // forward molecule_id pointer is what keeps it alive; closing the root out from
