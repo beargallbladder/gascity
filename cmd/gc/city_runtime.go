@@ -1867,7 +1867,15 @@ func (cr *CityRuntime) tickReconcileExecutionCompletions(p *tickPass) bool {
 func (cr *CityRuntime) tickWispGC(p *tickPass) bool {
 	if graphStore := cr.graphBeadStore(); cr.wg != nil && graphStore.Store != nil && cr.wg.shouldRun(time.Now()) {
 		phaseStart := time.Now()
-		purged, gcErr := cr.wg.runGC(graphStore, cr.infraSessionLedger(), cr.mailBeadStore(), time.Now())
+		// On a city that relocates the graph class, the attachment holders and
+		// the v1 poured molecule roots live on the work legs, not the binding
+		// the GC sweeps (wispGCLegs). A single-store city hands none: its
+		// graph-class store is its work store.
+		var legs wispGCLegs
+		if _, relocated := graphClassBinding(cr.storageRoutes); relocated { // residency:allow — asks only whether the graph class is relocated; the legs come from the census plan (workLegs)
+			legs = cr.workLegs()
+		}
+		purged, gcErr := cr.wg.runGC(legs, graphStore, cr.infraSessionLedger(), cr.mailBeadStore(), time.Now())
 		p.recordPhase(TraceSiteControllerTickPhase, "wisp_gc", phaseStart, map[string]any{"purged": purged})
 		if gcErr != nil {
 			for _, line := range strings.Split(gcErr.Error(), "\n") {

@@ -165,7 +165,28 @@ type wispGC interface {
 	// relocatedSQLiteSessionLedger); otherwise its Store is nil and the closed
 	// session purge arm does nothing. Sessions on a work store belong to the
 	// reaper order's step 6, with its own pattern, backup and anomaly guards.
-	runGC(graphStore beads.GraphStore, sessionLedger beads.SessionStore, mailStore beads.MailStore, now time.Time) (int, error)
+	//
+	// legs is the work side of a split city: the stores that hold attachment
+	// holders and work-class molecule roots (see wispGCLegs). nil means the
+	// graph-class store is the city's only store, and every read stays on it.
+	runGC(legs wispGCLegs, graphStore beads.GraphStore, sessionLedger beads.SessionStore, mailStore beads.MailStore, now time.Time) (int, error)
+}
+
+// wispGCLegs is the leg set a wisp GC pass reads beyond the graph-class store
+// on a city that relocates the graph class: the city work store, the serving
+// rigs and the relocated bindings, in plan order (WorkLegs satisfies it).
+//
+// Two of the GC's reads belong there. The abandoned-root sweep's live-holder
+// guard looks for the beads still pointing at a root through molecule_id /
+// workflow_id, and those holders are WORK beads (R7). And a v1 POURED molecule
+// is work class, so its root is on the work ledger rather than in the binding:
+// the GC must find it there to close it when abandoned and collect it once
+// expired.
+type wispGCLegs interface {
+	each(visit func(beads.Store))
+	// unusable is why the leg set answers nothing (a refused city). A holder
+	// guard that cannot read its legs fails closed.
+	unusable() error
 }
 
 // memoryWispGC is the production implementation of wispGC.
@@ -210,7 +231,7 @@ func (m *memoryWispGC) shouldRun(now time.Time) bool {
 	return now.Sub(m.lastRun) >= m.interval
 }
 
-func (m *memoryWispGC) runGC(graphStore beads.GraphStore, sessionLedger beads.SessionStore, mailStore beads.MailStore, now time.Time) (int, error) {
+func (m *memoryWispGC) runGC(legs wispGCLegs, graphStore beads.GraphStore, sessionLedger beads.SessionStore, mailStore beads.MailStore, now time.Time) (int, error) {
 	m.lastRun = now
 	// The molecule/wisp/workflow purge arm operates on the graph-class store; the
 	// read-message retention arm on the messaging-class store. Pass the unwrapped
@@ -242,7 +263,8 @@ func (m *memoryWispGC) runGC(graphStore beads.GraphStore, sessionLedger beads.Se
 		// same tick when it has already aged past m.ttl (the purge gates on
 		// CreatedAt, not close time), or on a later tick otherwise. Best-effort:
 		// never fails the GC tick.
-		if abandonedErr := closeAbandonedRoots(store, now); abandonedErr != nil {
+		holders := wispGCHolders{graph: store, legs: legs}
+		if abandonedErr := closeAbandonedRoots(store, holders, now); abandonedErr != nil {
 			deleteErr = errors.Join(deleteErr, abandonedErr)
 		}
 
@@ -265,6 +287,14 @@ func (m *memoryWispGC) runGC(graphStore beads.GraphStore, sessionLedger beads.Se
 		orphanReaped, orphanErr := reapOrphanedClosedWisps(store, cutoff, wispGCReapOrphanBatchCap)
 		purged += orphanReaped
 		deleteErr = errors.Join(deleteErr, orphanErr)
+
+		// The work-class molecule roots the legs hold (see wispGCLegs): the
+		// same close-then-collect pass, over v1 poured molecule roots only. A
+		// work ledger holds no other root this GC owns, and nothing else on it
+		// is ever enumerated, so a plain work bead is never touched.
+		workPurged, workErr := m.collectWorkClassMoleculeRoots(legs, store, holders, now, cutoff)
+		purged += workPurged
+		deleteErr = errors.Join(deleteErr, workErr)
 	}
 
 	// Closed agent-session rows (gcg-session-*, gcs-*) in a SQLite infra ledger
@@ -303,6 +333,65 @@ func (m *memoryWispGC) runGC(graphStore beads.GraphStore, sessionLedger beads.Se
 	}
 
 	return purged, deleteErr
+}
+
+// collectWorkClassMoleculeRoots closes abandoned and collects expired v1
+// poured molecule roots on every leg other than the graph-class store. With no
+// legs (a single-store city) the graph-class pass above already covered them,
+// because the graph store IS the work store.
+func (m *memoryWispGC) collectWorkClassMoleculeRoots(legs wispGCLegs, graph beads.Store, holders wispGCHolders, now, cutoff time.Time) (int, error) {
+	if legs == nil || legs.unusable() != nil {
+		return 0, nil
+	}
+	purged := 0
+	var errs error
+	legs.each(func(work beads.Store) {
+		if work == nil || sameBeadStore(work, graph) {
+			return
+		}
+		open, err := enumerateWorkClassMoleculeRoots(work, "open", "in_progress")
+		if err != nil {
+			errs = errors.Join(errs, fmt.Errorf("listing open work-class molecule roots for abandoned-root sweep: %w", err))
+		} else if err := closeAbandonedRootCandidates(work, open, holders, now); err != nil {
+			errs = errors.Join(errs, err)
+		}
+		closed, err := enumerateWorkClassMoleculeRoots(work, "closed")
+		if err != nil {
+			errs = errors.Join(errs, fmt.Errorf("listing closed work-class molecule roots: %w", err))
+			return
+		}
+		n, err := purgeExpiredBeadClosures(work, closed, cutoff, wispGCClosurePurgeBatchCap)
+		purged += n
+		errs = errors.Join(errs, err)
+	})
+	return purged, errs
+}
+
+// enumerateWorkClassMoleculeRoots lists the v1 poured molecule roots on a work
+// leg in the given statuses: type=molecule roots that classify as work. It
+// reads with the molecule selector alone, so a work ledger pays one query per
+// status rather than the graph store's four.
+func enumerateWorkClassMoleculeRoots(store beads.Store, statuses ...string) ([]beads.Bead, error) {
+	roots, err := enumerateWispGCRootsWith(store, []wispGCRootSelector{wispGCMoleculeRootSelector()}, statuses...)
+	if err != nil {
+		return nil, err
+	}
+	out := roots[:0]
+	for _, root := range roots {
+		if beads.IsMoleculeType(root.Type) && strings.TrimSpace(root.ParentID) == "" && coordclass.Classify(root) == coordclass.ClassWork {
+			out = append(out, root)
+		}
+	}
+	return out, nil
+}
+
+// wispGCHolders answers the abandoned-root sweep's live-holder question: does
+// any bead still point at a root through molecule_id or workflow_id. Holders
+// are work beads, so on a split city they are read from every leg
+// (wispGCLegs) as well as the graph-class store.
+type wispGCHolders struct {
+	graph beads.Store
+	legs  wispGCLegs
 }
 
 // closeGeneratedMembersForClosedRoots repairs terminal workflow roots whose
@@ -352,20 +441,30 @@ type wispGCRootSelector struct {
 // collectible by the closed-root purge (closedWispGCEntries).
 func wispGCRootSelectors() []wispGCRootSelector {
 	return []wispGCRootSelector{
-		{"molecule", beads.ListQuery{Type: "molecule", TierMode: beads.TierBoth}},
+		wispGCMoleculeRootSelector(),
 		{"wisp", beads.ListQuery{Metadata: map[string]string{beadmeta.KindMetadataKey: beadmeta.KindWisp}, TierMode: beads.TierBoth}},
 		{"graph.v2", beads.ListQuery{Metadata: map[string]string{beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2}, TierMode: beads.TierBoth}},
 		{"workflow", beads.ListQuery{Metadata: map[string]string{beadmeta.KindMetadataKey: beadmeta.KindWorkflow}, TierMode: beads.TierBoth}},
 	}
 }
 
+// wispGCMoleculeRootSelector is the type=molecule root selector: v1 poured
+// molecule roots, the one root shape a work ledger holds on a split city.
+func wispGCMoleculeRootSelector() wispGCRootSelector {
+	return wispGCRootSelector{"molecule", beads.ListQuery{Type: "molecule", TierMode: beads.TierBoth}}
+}
+
 // enumerateWispGCRoots unions wispGCRootSelectors across the given statuses,
 // deduping by bead ID so a root matching more than one selector (for example a
 // graph.v2 root that also carries gc.kind=workflow) appears once.
 func enumerateWispGCRoots(store beads.Store, statuses ...string) ([]beads.Bead, error) {
+	return enumerateWispGCRootsWith(store, wispGCRootSelectors(), statuses...)
+}
+
+// enumerateWispGCRootsWith is enumerateWispGCRoots over the given selectors.
+func enumerateWispGCRootsWith(store beads.Store, selectors []wispGCRootSelector, statuses ...string) ([]beads.Bead, error) {
 	entries := make([]beads.Bead, 0)
 	seen := make(map[string]struct{})
-	selectors := wispGCRootSelectors()
 	for _, status := range statuses {
 		for _, sel := range selectors {
 			q := sel.query
@@ -827,7 +926,7 @@ func hasParentChildDepEdge(store interface {
 //     raced.
 //  2. Stepless: a root with no descendants has no completion signal of its own,
 //     so it closes only when steplessRootIsAbandoned says it was never claimed
-//     AND steplessRootHasLiveAttachmentSource finds no live source bead still
+//     AND wispGCHolders.liveAttachmentSource finds no live source bead still
 //     attached to it. A claimed stepless root is held by a live worker; an
 //     unclaimed one that outlived the TTL is a leaked pour. (The reactive
 //     autocloseMoleculeIfComplete skips stepless roots outright — it has no TTL
@@ -841,7 +940,7 @@ func hasParentChildDepEdge(store interface {
 //     GC tick.
 //  5. Dry-run default: unless closeAbandonedEnforced() returns true the sweep
 //     only logs/counts the candidates it WOULD close and mutates nothing.
-func closeAbandonedRoots(store beads.Store, now time.Time) error {
+func closeAbandonedRoots(store beads.Store, holders wispGCHolders, now time.Time) error {
 	if store == nil {
 		return nil
 	}
@@ -850,7 +949,12 @@ func closeAbandonedRoots(store beads.Store, now time.Time) error {
 		// Best-effort: a list failure must not fail the GC tick.
 		return fmt.Errorf("listing open workflow roots for abandoned-root sweep: %w", err)
 	}
+	return closeAbandonedRootCandidates(store, candidates, holders, now)
+}
 
+// closeAbandonedRootCandidates is closeAbandonedRoots over candidates already
+// listed from store, which is where they live and where they are closed.
+func closeAbandonedRootCandidates(store beads.Store, candidates []beads.Bead, holders wispGCHolders, now time.Time) error {
 	enforce := closeAbandonedEnforced()
 	cutoff := now.Add(-wispGCCloseAbandonedTTL)
 
@@ -881,8 +985,8 @@ func closeAbandonedRoots(store beads.Store, now time.Time) error {
 		}
 		// Guard 2: a stepless root is only closable once it is provably
 		// unclaimed AND no live source bead is still attached to it — see
-		// steplessRootIsAbandoned and steplessRootHasLiveAttachmentSource.
-		if descendants == 0 && (!steplessRootIsAbandoned(root) || steplessRootHasLiveAttachmentSource(store, root.ID)) {
+		// steplessRootIsAbandoned and wispGCHolders.liveAttachmentSource.
+		if descendants == 0 && (!steplessRootIsAbandoned(root) || holders.liveAttachmentSource(root.ID)) {
 			continue
 		}
 
@@ -962,13 +1066,13 @@ func isAbandonedRootCandidate(b beads.Bead) bool {
 // The attached case is NOT in that arm. An attached root-only wisp
 // (privatizeAttachedRootOnlyWisp, internal/sling/sling.go) is unclaimed by
 // construction and would otherwise land here, so the caller pairs this
-// predicate with steplessRootHasLiveAttachmentSource; the root is reaped
+// predicate with wispGCHolders.liveAttachmentSource; the root is reaped
 // normally once its source bead goes terminal.
 func steplessRootIsAbandoned(b beads.Bead) bool {
 	return sling.ShouldPromoteWorkflowLaunchStatus(b.Status)
 }
 
-// steplessRootHasLiveAttachmentSource reports whether any bead still points at
+// liveAttachmentSource reports whether any bead still points at
 // this root as its attachment. An attached root-only wisp
 // (privatizeAttachedRootOnlyWisp, internal/sling/sling.go) is deliberately never
 // routed and never claimed — the SOURCE bead is the claimable unit — so it stays
@@ -983,7 +1087,36 @@ func steplessRootIsAbandoned(b beads.Bead) bool {
 //
 // Fails CLOSED: any query error reports true so an unreadable store never
 // widens what the sweep destroys.
-func steplessRootHasLiveAttachmentSource(store beads.Store, rootID string) bool {
+//
+// The holders are read from every store a holder may live in: the graph-class
+// store, then each leg (a work bead is the usual holder, so on a split city
+// the work legs are where it is found — R7). A leg set that cannot be read
+// fails CLOSED, like a failed query.
+func (h wispGCHolders) liveAttachmentSource(rootID string) bool {
+	if h.legs != nil {
+		if err := h.legs.unusable(); err != nil {
+			log.Printf("wisp gc: cannot read the work legs for holders of stepless root %s (%v); leaving it open", rootID, err)
+			return true
+		}
+	}
+	if h.graph != nil && storeHoldsLiveAttachmentSource(h.graph, rootID) {
+		return true
+	}
+	live := false
+	if h.legs != nil {
+		h.legs.each(func(store beads.Store) {
+			if live || store == nil || sameBeadStore(store, h.graph) {
+				return
+			}
+			live = storeHoldsLiveAttachmentSource(store, rootID)
+		})
+	}
+	return live
+}
+
+// storeHoldsLiveAttachmentSource is the holder query against one store. Fails
+// CLOSED on a query error.
+func storeHoldsLiveAttachmentSource(store beads.Store, rootID string) bool {
 	for _, key := range []string{beadmeta.MoleculeIDMetadataKey, "workflow_id"} {
 		holders, err := store.List(beads.ListQuery{
 			Metadata:      map[string]string{key: rootID},

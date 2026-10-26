@@ -2163,6 +2163,7 @@ go_test(
         "wisp_autoclose_test.go",
         "wisp_gc_batch_test.go",
         "wisp_gc_fenced_delete_test.go",
+        "wisp_gc_split_test.go",
         "wisp_gc_test.go",
         "wisp_step_api_test.go",
         "wisp_step_inject_prewake_test.go",
