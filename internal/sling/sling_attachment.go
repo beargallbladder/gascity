@@ -158,6 +158,7 @@ func getFromStores(id string, stores []beads.Store) (beads.Bead, beads.Store, er
 	return beads.Bead{}, nil, notFoundErr
 }
 
+// residency:allow — filters the caller's own handle list; resolves no owner.
 func nonNilStores(stores []beads.Store) []beads.Store {
 	out := stores[:0:0]
 	for _, s := range stores {
@@ -192,6 +193,10 @@ func (deps SlingDeps) attachmentScope() attachmentScope {
 // stores returns the stores an attachment may live in, in lookup order: the
 // graph store the sling pours through, then the work store that holds the
 // source bead. On a single-store city both are the same store, listed once.
+//
+// residency:allow — the sling's own two handles (the work store it was given
+// and the graph store it pours through), in lookup order; no topology, no
+// binding census and no namespace is consulted.
 func (s attachmentScope) stores() []beads.Store {
 	switch {
 	case s.graph == nil && s.work == nil:

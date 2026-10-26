@@ -302,7 +302,7 @@ func (cs *controllerState) runAutocloseSweepPass(now time.Time) autocloseSweepRe
 		suspendedStore := cs.anySuspendedRigStoreLocked(stores)
 		cs.mu.RUnlock()
 		if relic, ok := probe.residentStore(id); ok {
-			stores, storeRef, suspendedStore = []beads.Store{relic}, "", false
+			stores, storeRef, suspendedStore = []beads.Store{relic}, "", false // residency:allow — the one owner the by-id residency plan proved
 		}
 		if len(stores) == 0 {
 			continue

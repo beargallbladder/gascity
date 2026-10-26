@@ -164,3 +164,49 @@ func TestWorkIDEventKeepsItsPrefixRouteOnAMigratedCity(t *testing.T) {
 		t.Fatalf("event stores for work bead %s = %d store(s), want exactly the city work store", work.ID, len(stores))
 	}
 }
+
+// ga-s1ms9: an event whose id no configured prefix owns (an id-less one
+// included) is broadcast to every store the watcher feeds. The relocated
+// class binding is one of them: it has a controller cache of its own, and a
+// broadcast that skips it leaves that cache stale until its rescan.
+func TestUnownedBeadEventBroadcastIncludesTheBinding(t *testing.T) {
+	f := newRelicEventFixture(t, false)
+	for _, id := range []string{"", "zz-404"} {
+		stores := f.cs.beadEventStores(id)
+		found := 0
+		for _, s := range stores {
+			if s == f.binding {
+				found++
+			}
+		}
+		if found != 1 {
+			t.Errorf("broadcast stores for id %q hold the binding %d time(s), want exactly once (%d stores)", id, found, len(stores))
+		}
+		for _, want := range []beads.Store{f.cs.cityBeadStore, f.cs.beadStores["alpha"]} {
+			has := false
+			for _, s := range stores {
+				if s == want {
+					has = true
+				}
+			}
+			if !has {
+				t.Errorf("broadcast stores for id %q dropped a work store", id)
+			}
+		}
+	}
+}
+
+// A city that relocates nothing broadcasts to its work stores exactly as
+// before.
+func TestUnownedBeadEventBroadcastIsUnchangedWithoutRoutes(t *testing.T) {
+	work := beads.NewMemStore()
+	rig := beads.NewMemStore()
+	cs := &controllerState{
+		cfg:           &config.City{Workspace: config.Workspace{Name: "test-city"}, Rigs: []config.Rig{{Name: "alpha", Path: t.TempDir(), Prefix: "ra"}}},
+		cityBeadStore: work,
+		beadStores:    map[string]beads.Store{"alpha": rig},
+	}
+	if got := cs.beadEventStores(""); len(got) != 2 {
+		t.Fatalf("broadcast stores = %d, want the two work stores", len(got))
+	}
+}

@@ -1061,7 +1061,7 @@ func (cs *controllerState) applyBeadEventToStores(evt events.Event) {
 	if residentProven {
 		// A relic's events belong to the binding that holds it, and its
 		// close is autoclosed there in the ID-only mode relocated ids use.
-		stores, storeRef = []beads.Store{relic}, ""
+		stores, storeRef = []beads.Store{relic}, "" // residency:allow — the one owner the by-id residency plan proved
 	}
 
 	// A cache event (either actor) carries a CachingStore's own post-absorb
@@ -1278,13 +1278,16 @@ func (cs *controllerState) beadCloseAutoclose(beadID string, store beads.Store, 
 // beadEventStores is beadEventStoresLocked plus the residence probe for a
 // migrated id (beadEventRelicProbeLocked): the stores a bead event for id is
 // applied to. It takes cs.mu itself and probes outside it.
+//
+// residency:allow — the event watcher's apply set (beadEventStoresLocked's
+// prefix table) narrowed to the one owner the by-id residency plan proved.
 func (cs *controllerState) beadEventStores(id string) []beads.Store {
 	cs.mu.RLock()
 	stores := cs.beadEventStoresLocked(id)
 	probe := cs.beadEventRelicProbeLocked(id)
 	cs.mu.RUnlock()
 	if relic, ok := probe.residentStore(id); ok {
-		return []beads.Store{relic}
+		return []beads.Store{relic} // residency:allow — the one owner the by-id residency plan proved
 	}
 	return stores
 }
@@ -1314,7 +1317,7 @@ type beadEventRelicProbe struct {
 // the zero probe when it needs none: a city that relocates nothing, or an id
 // inside a reserved class namespace. cs.mu must be held.
 func (cs *controllerState) beadEventRelicProbeLocked(id string) beadEventRelicProbe {
-	if id == "" || cs.storageRoutes == nil || len(cs.storageRoutes.stores) == 0 || bdIDIsClassReserved(id) {
+	if id == "" || cs.storageRoutes == nil || len(cs.storageRoutes.stores) == 0 || bdIDIsClassReserved(id) { // residency:allow — reserved ids already route by prefix; this only decides whether to probe
 		return beadEventRelicProbe{}
 	}
 	return beadEventRelicProbe{routes: cs.storageRoutes}
@@ -1353,14 +1356,35 @@ func (cs *controllerState) beadEventStoresLocked(id string) []beads.Store {
 		}
 	}
 
-	stores := make([]beads.Store, 0, len(cs.beadStores)+1)
+	stores := make([]beads.Store, 0, len(cs.beadStores)+2)
 	for _, s := range cs.beadStores {
 		stores = append(stores, s)
 	}
 	if cs.cityBeadStore != nil {
 		stores = append(stores, cs.cityBeadStore)
 	}
+	// The relocated class binding is a store the watcher feeds too: it has a
+	// controller cache of its own, and a broadcast that skipped it left that
+	// cache stale until its rescan (ga-s1ms9). Each distinct binding once; a
+	// city that relocates nothing adds none.
+	for _, class := range infraMigrationClasses {
+		store, relocated := cs.storageRoutes.storeFor(coordclassFor(string(class))) // residency:allow — extends the watcher's broadcast set with the binding it feeds; resolves no bead
+		if !relocated || store == nil || containsBeadStore(stores, store) {
+			continue
+		}
+		stores = append(stores, store)
+	}
 	return stores
+}
+
+// containsBeadStore reports whether stores already holds store.
+func containsBeadStore(stores []beads.Store, store beads.Store) bool {
+	for _, s := range stores {
+		if sameBeadStore(s, store) {
+			return true
+		}
+	}
+	return false
 }
 
 func (cs *controllerState) beadEventConfiguredStoreLocked(id string) (beads.Store, bool) {

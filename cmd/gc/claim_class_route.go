@@ -880,7 +880,7 @@ func (r *hookClaimClassRoute) resolvesToBinding(ctx context.Context, base hookCl
 	if r.knownResident(id) {
 		return true, nil
 	}
-	if base.ReadWorkMeta == nil || bdIDIsClassReserved(id) {
+	if base.ReadWorkMeta == nil || bdIDIsClassReserved(id) { // residency:allow — skips a work read no work store can answer; the binding probe below still decides
 		return r.holds(id)
 	}
 	_, err := base.ReadWorkMeta(ctx, dir, env, id, "")
