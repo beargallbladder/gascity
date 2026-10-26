@@ -24,6 +24,7 @@ go_test(
         "coordination_orders_pin_test.go",
         "coordination_test.go",
         "guard_test.go",
+        "owned_class_test.go",
         "owned_test.go",
         "testenv_import_test.go",
     ],
