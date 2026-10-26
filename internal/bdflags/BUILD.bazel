@@ -6,6 +6,7 @@ go_library(
         "bdargs.go",
         "bdflags.go",
         "scan.go",
+        "verbs.go",
     ],
     importpath = "github.com/gastownhall/gascity/internal/bdflags",
     visibility = ["//:__subpackages__"],
@@ -20,6 +21,7 @@ go_test(
         "freshness_test.go",
         "testenv_import_test.go",
         "update_force_test.go",
+        "verbs_test.go",
     ],
     data = select({
         "//:gotags_integration": [

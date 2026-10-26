@@ -111,3 +111,62 @@ func TestBdFlagManifestCurrent(t *testing.T) {
 		})
 	}
 }
+
+// helpVerbRE matches one command line in a `bd --help` command group: two
+// spaces, the verb, then its description.
+var helpVerbRE = regexp.MustCompile(`^  ([a-zA-Z][a-zA-Z0-9-]*)\s+\S`)
+
+// TestBdTopLevelVerbsCurrent guards the verb inventory the same way
+// TestBdFlagManifestCurrent guards the flag manifests: it fails when the
+// installed bd lists a top-level verb TopLevelVerbs is missing. The
+// class-must-not-flip guard's coverage test in cmd/gc requires a row for every
+// verb in the inventory, so a new bd verb reaches that test through here.
+// The reverse (the inventory lists a verb this bd lacks) is reported, not
+// failed: the inventory tracks the newest bd the fleet runs.
+func TestBdTopLevelVerbsCurrent(t *testing.T) {
+	bdPath, err := exec.LookPath("bd")
+	if err != nil {
+		t.Skip("bd not found in PATH; skipping verb-inventory freshness check")
+	}
+	out, _ := exec.Command(bdPath, "--help").CombinedOutput()
+	known := map[string]bool{}
+	for _, v := range TopLevelVerbs() {
+		known[v] = true
+	}
+	live := map[string]bool{}
+	inGroup := false
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "Flags:"):
+			inGroup = false
+		case strings.HasSuffix(line, ":") && !strings.HasPrefix(line, " "):
+			inGroup = line != "Usage:"
+		case inGroup:
+			if m := helpVerbRE.FindStringSubmatch(line); m != nil {
+				live[m[1]] = true
+			}
+		}
+	}
+	if len(live) == 0 {
+		t.Fatalf("parsed zero verbs from `bd --help`; output format may have changed:\n%s", out)
+	}
+	var missing, ahead []string
+	for v := range live {
+		if !known[v] {
+			missing = append(missing, v)
+		}
+	}
+	for v := range known {
+		if !live[v] {
+			ahead = append(ahead, v)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(ahead)
+	if len(ahead) > 0 {
+		t.Logf("TopLevelVerbs lists %d verb(s) absent from this bd's --help (hidden, or newer than the installed bd): %v", len(ahead), ahead)
+	}
+	if len(missing) > 0 {
+		t.Errorf("`bd --help` lists verb(s) TopLevelVerbs is missing: %v\nAdd them to internal/bdflags/verbs.go, then give each a row in cmd/gc's TestGcBdEveryVerbIsGuardedOrCannotFlipClass.", missing)
+	}
+}
