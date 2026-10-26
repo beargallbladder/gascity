@@ -479,12 +479,15 @@ var bdRelocatedClassCreateVerbs = map[string]string{
 // against infraMigrationClasses and resolves every entry in the real command
 // tree, so neither a new class nor a renamed command can leave a refusal
 // pointing at nothing.
+//
+// The commands themselves are coordclass.MintCommand's, the one table every
+// class refusal quotes (the class-must-not-flip guard's included).
 var bdRelocatedClassMintPaths = map[string]string{
-	config.BeadClassGraph:     "gc sling",
-	config.BeadClassMessaging: "gc mail send",
-	config.BeadClassSessions:  "gc session new",
-	config.BeadClassOrders:    "gc order run",
-	config.BeadClassNudges:    "gc nudge",
+	config.BeadClassGraph:     coordclass.MintCommand(coordclass.ClassGraph),
+	config.BeadClassMessaging: coordclass.MintCommand(coordclass.ClassMessaging),
+	config.BeadClassSessions:  coordclass.MintCommand(coordclass.ClassSessions),
+	config.BeadClassOrders:    coordclass.MintCommand(coordclass.ClassOrders),
+	config.BeadClassNudges:    coordclass.MintCommand(coordclass.ClassNudges),
 }
 
 // bdRelocatedClassCreateShapeFlags are the create-dialect flags that state a
@@ -574,14 +577,13 @@ func bdRelocatedClassCreateAddMetadata(shape *beads.Bead, value string) {
 // JSON object bd expects likewise contributes nothing to the shape rather than a
 // wrong guess.)
 //
-// Three MINT VERBS are outside the guard entirely, because
-// bdRelocatedClassCreateVerbs holds only create/new/q: `bd import` replays a
-// JSONL export with issue_type and labels carried verbatim, `bd batch` reads a
-// create grammar from stdin or a file, and `bd create-form` mints from a form.
-// Each can still land a relocated-class bead in the work ledger at exit 0. None
-// of them was ever guarded, so this is a limit of the floor rather than a
-// regression — but it is a limit, and `import` in particular is the natural
-// restore path, since JSONL is what `bd export` emits.
+// Three MINT VERBS are outside THIS guard, because bdRelocatedClassCreateVerbs
+// holds only create/new/q: `bd import` replays a JSONL export with issue_type
+// and labels carried verbatim, `bd batch` reads a create grammar from stdin or
+// a file, and `bd create-form` mints from a form. The class-must-not-flip guard
+// (class_flip_guard.go) judges all three on a split city: import classifies
+// every row (and --skip-infra imports the work rows only), batch classifies
+// every create line, and create-form, which cannot be classified, is refused.
 //
 // The guard is a floor on stranded mints, not a proof of their impossibility:
 // the file-backed forms above close the two highest-value doors on the create
@@ -740,8 +742,8 @@ func bdRelocatedClassGraphPlanClass(scopeRoot, path string) (class coordclass.Cl
 //
 // This is the write side of the same split the read guard above covers, over
 // the create verbs that state their beads in argv — not over every way bd can
-// mint: `import`, `batch` and `create-form` remain unguarded, as documented on
-// bdRelocatedClassCreateShape. Where it does fire it fails differently from the
+// mint: `import`, `batch` and `create-form` are judged by the class-must-not-flip
+// guard instead, as documented on bdRelocatedClassCreateShape. Where it does fire it fails differently from the
 // read guard: a blind READ answers emptily and can be re-run once the operator
 // knows better, while a blind CREATE leaves a row in the wrong ledger under the
 // wrong prefix — a bead no later read finds, and no migration moves, because

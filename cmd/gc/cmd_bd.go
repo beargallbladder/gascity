@@ -555,6 +555,36 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 		return doBdReleaseIfCurrent(cityPath, cfg, target, id, expectedAssignee, stdout, stderr)
 	}
 
+	// The class-must-not-flip guard (class_flip_guard.go). On a split city the
+	// work store holds work beads only, and bd would write whatever it is told:
+	// `update --add-label wisp`, `label add <id> gc:session`, `update --type
+	// message`, or an `import` of an archive taken before the split each turn
+	// work-store rows into infrastructure-class rows in place, and one such row
+	// makes every later routed gc command refuse until the fleet is stopped. It
+	// runs after the by-id door, which has already served or refused every
+	// binding resident, so what reaches it is the work scope's. A single-store
+	// city holds every class in its one store and the guard passes everything
+	// through unchanged.
+	var classGuardStore beads.Store
+	classGuard := bdClassFlipGuard(cfg, target.ScopeRoot, bdArgs, os.Stdin, func(id string) (beads.Bead, bool) {
+		if classGuardStore == nil {
+			classGuardStore = bdWriteGuardStore(target.ScopeRoot, cityPath, cfg)
+		}
+		bead, err := classGuardStore.Get(id)
+		return bead, err == nil
+	})
+	if classGuard.refusal != "" {
+		fmt.Fprintf(stderr, "%s\n", classGuard.refusal) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	if classGuard.cleanup != nil {
+		defer classGuard.cleanup()
+	}
+	if classGuard.notice != "" {
+		fmt.Fprint(stderr, classGuard.notice) //nolint:errcheck // best-effort stderr
+	}
+	bdArgs = classGuard.args
+
 	// Disclose which store answers a read-only passthrough, so a zero-row
 	// result is distinguishable from a true empty (gastownhall/gascity#5170).
 	// resolveBdScopeTarget's priority chain (explicit --rig > explicit --city
@@ -688,6 +718,11 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	cmd := exec.Command(bdPath, bdArgs...)
 	cmd.Dir = target.ScopeRoot
 	cmd.Stdin = os.Stdin
+	if classGuard.stdin != nil {
+		// The guard read stdin to judge it (import -, batch); bd gets what
+		// it read.
+		cmd.Stdin = classGuard.stdin
+	}
 	cmd.Stdout = stdout
 	// Tee stderr through a bounded head buffer alongside the operator's
 	// pipe so we can scan it post-exec for bd's silent-fallback-to-on-disk

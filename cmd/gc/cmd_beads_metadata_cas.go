@@ -9,6 +9,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/coordclass"
 	"github.com/spf13/cobra"
 )
 
@@ -229,6 +230,11 @@ func cmdBeadsMetadataCAS(request beadsMetadataCASRequest, stdout, stderr io.Writ
 		fmt.Fprintf(stderr, "gc beads metadata-cas: opening %s: %v\n", canonicalRef, err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+	if refusal := beadsMetadataCASClassFlipRefusal(store, request, workStoreClassHolds(cfg)); refusal != "" {
+		_ = closeBeadsMetadataCASStore(store)
+		fmt.Fprintf(stderr, "%s\n", refusal) //nolint:errcheck // best-effort stderr
+		return 1
+	}
 	result, err := applyBeadsMetadataCAS(store, request)
 	closeErr := closeBeadsMetadataCASStore(store)
 	if err != nil {
@@ -240,6 +246,28 @@ func cmdBeadsMetadataCAS(request beadsMetadataCASRequest, stdout, stderr io.Writ
 		return 1
 	}
 	return renderBeadsMetadataCAS(result, request.format, stdout, stderr)
+}
+
+// beadsMetadataCASClassFlipRefusal is the metadata-cas door onto the one
+// class-must-not-flip guard (coordclass.CheckFlip). The command writes a
+// caller-named key on a bead in an exact city or rig work store, and its key
+// grammar admits gc.kind and gc.root_bead_id; on a split city a swap that would
+// make the work bead an infrastructure-class bead strands it there. holds is
+// nil on a single-store city, where nothing is refused. A bead that cannot be
+// read is left to the CAS, which reports it.
+func beadsMetadataCASClassFlipRefusal(store beads.Store, request beadsMetadataCASRequest, holds []coordclass.Class) string {
+	if holds == nil {
+		return ""
+	}
+	before, err := store.Get(request.beadID)
+	if err != nil {
+		return ""
+	}
+	after := coordclass.Mutation{SetMetadata: map[string]string{request.key: request.next}}.Apply(before)
+	if flip := coordclass.CheckFlip(before, after, holds); flip != nil {
+		return classFlipRefusalText(fmt.Sprintf("gc beads metadata-cas %s --key %s", request.beadID, request.key), flip)
+	}
+	return ""
 }
 
 func applyBeadsMetadataCAS(store beads.Store, request beadsMetadataCASRequest) (beadsMetadataCASResult, error) {

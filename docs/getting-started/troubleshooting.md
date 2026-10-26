@@ -821,7 +821,10 @@ store (the city and every rig) with `bd export` into a text-diffable JSONL
 snapshot inside a local git repository (the "JSONL archive"): one issue per
 line, with its labels, dependencies and comments. The archive serves as a
 disaster-recovery backup: a snapshot from any commit restores with
-`gc bd import <file>`.
+`gc bd import <file>`. On a split-store city, a snapshot that holds
+infrastructure rows (from before the split) is refused. Re-run it with
+`gc bd import <file> --skip-infra` to import only the work rows, because the
+class binding already holds the live infrastructure state.
 
 `jsonl-export` (every 15 minutes) and `reaper` (every 30 minutes) ship in
 the core pack, so they are active in every city by default — including

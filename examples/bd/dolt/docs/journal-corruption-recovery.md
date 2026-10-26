@@ -170,6 +170,14 @@ gc bd import .gc/runtime/packs/core/jsonl-archive/<dbname>/issues.jsonl
 gc bd list --status in_progress --json | jq '.[] | {id, title, status}'
 ```
 
+> **Split-store cities.** On a city that serves its infrastructure classes
+> (graph, sessions, messaging, orders, nudges) from a separate binding, the
+> work store holds work beads only. An archive taken before the split carries
+> infrastructure rows, and `gc bd import` refuses such a file rather than
+> strand them in the work store. It names the rows by class. Re-run it with
+> `--skip-infra` to import the work rows only. The binding already holds the
+> live infrastructure state, so those rows are left out, not restored over it.
+
 ---
 
 ## Step 5: Verify

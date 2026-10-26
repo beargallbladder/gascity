@@ -207,6 +207,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/coordclass"
 	"github.com/gastownhall/gascity/internal/storebinding"
 )
 
@@ -779,6 +780,10 @@ type bdByIDClassDoor struct {
 	// here is released.
 	Store   beads.Store
 	Binding string
+	// Classes are the coordination classes this binding holds. The
+	// class-must-not-flip guard judges a served update against them: a write
+	// that would leave a resident outside every one of them strands it.
+	Classes []coordclass.Class
 	// CityPath is what resolve plans over. The residence probe belongs to
 	// storeref, and storeref reaches this city's bindings by path — so the door
 	// carries the path rather than a second derivation of the binding list.
@@ -846,7 +851,7 @@ func openBdByIDClassFrontDoor(cityPath string) (bdByIDClassDoor, bool, error) {
 	if err != nil {
 		return bdByIDClassDoor{}, false, fmt.Errorf("projecting the class front door of binding %q: %w", binding.Name, err)
 	}
-	return bdByIDClassDoor{Graph: graph, Store: binding.Store, Binding: binding.Name, CityPath: cityPath}, true, nil
+	return bdByIDClassDoor{Graph: graph, Store: binding.Store, Binding: binding.Name, Classes: binding.Classes, CityPath: cityPath}, true, nil
 }
 
 // resolve asks the open front door whether it owns id.
@@ -1290,6 +1295,13 @@ func serveBdByIDResolved(door bdByIDClassDoor, op bdByIDOp, bdArgs []string, rig
 	case bdByIDDepTree:
 		return doBdByIDDepTree(resolution.Graph, resolution.Bead, op, stdout, stderr), true
 	case bdByIDUpdate:
+		// The class-must-not-flip guard, binding side: an update that would
+		// leave the resident a class this binding does not hold — a graph step
+		// whose only graph marker is removed reads as work — strands it here.
+		if flip := coordclass.CheckFlip(resolution.Bead, bdByIDUpdateMutation(op.Update).Apply(resolution.Bead), door.Classes); flip != nil {
+			fmt.Fprintf(stderr, "%s\n", classFlipRefusalText("gc bd update "+op.ID, flip)) //nolint:errcheck // best-effort stderr
+			return 1, true
+		}
 		return doBdByIDUpdate(resolution.Graph, op, door.bindingName(), stdout, stderr), true
 	case bdByIDClose:
 		return doBdByIDClose(resolution.Graph, op, resolution.Bead, door.bindingName(), stdout, stderr), true
@@ -1938,6 +1950,18 @@ func printBdByIDBead(b beads.Bead, jsonOut bool, binding string, stdout, stderr 
 		fmt.Fprintf(stdout, "  %s\n", descLine) //nolint:errcheck // best-effort stdout
 	}
 	return 0
+}
+
+// bdByIDUpdateMutation states a served update's class-relevant fields as the
+// mutation coordclass.CheckFlip judges.
+func bdByIDUpdateMutation(u beads.UpdateOpts) coordclass.Mutation {
+	return coordclass.Mutation{
+		Type:          u.Type,
+		AddLabels:     u.Labels,
+		RemoveLabels:  u.RemoveLabels,
+		SetMetadata:   u.Metadata,
+		UnsetMetadata: u.UnsetMetadata,
+	}
 }
 
 // doBdByIDUpdate applies a field and metadata write through the closed graph
