@@ -1760,7 +1760,7 @@ calls = 2
 [[count]]
 path = "internal/bdflags/freshness_test.go"
 resource = "subprocess"
-calls = 1
+calls = 2
 tagged = true
 
 [[count]]

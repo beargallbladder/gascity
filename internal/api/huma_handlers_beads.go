@@ -1215,7 +1215,7 @@ func (s *Server) storeClassHolds(store beads.Store) []coordclass.Class {
 		return nil
 	}
 	for _, binding := range topo.Bindings {
-		if binding.Leg.Store == store {
+		if binding.Leg.Store == store { // residency:allow — identifies which binding the already-resolved owner store is, to read its classes; resolves no bead
 			return binding.Classes
 		}
 	}
