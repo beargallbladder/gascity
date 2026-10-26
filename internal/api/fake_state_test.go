@@ -165,6 +165,7 @@ func (f *fakeState) StartedAt() time.Time                  { return f.startedAt 
 func (f *fakeState) IsQuarantined(sessionName string) bool { return f.quarantined[sessionName] }
 func (f *fakeState) ClearCrashHistory(sessionName string)  { delete(f.quarantined, sessionName) }
 func (f *fakeState) CityBeadStore() beads.Store            { return splittest.GateWorkView(f.cityBeadStore) }
+
 func (f *fakeState) ScopedStoreLike(ctx context.Context, existing beads.Store) (beads.Store, error) {
 	if f.scopedStoreFn == nil {
 		return nil, nil
