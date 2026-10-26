@@ -84,8 +84,32 @@ func callerPCs() []uintptr {
 func TestFederatedReadMarkerNamesAreStable(t *testing.T) {
 	t.Parallel()
 	for _, name := range beads.FederatedReadMarkerFuncs() {
-		if !strings.HasPrefix(name, "github.com/gastownhall/gascity/internal/beads.Federated") {
-			t.Fatalf("marker func %q is not a beads.Federated* function", name)
+		if !strings.HasPrefix(name, "github.com/gastownhall/gascity/internal/beads.Federated") &&
+			name != "github.com/gastownhall/gascity/internal/beads.RelicRead" {
+			t.Fatalf("marker func %q is not a beads.Federated* or RelicRead function", name)
 		}
+	}
+}
+
+// TestRelicReadIsADistinctMarker pins that a relic leg is told apart from a
+// legitimate federation leg, innermost marker first.
+func TestRelicReadIsADistinctMarker(t *testing.T) {
+	t.Parallel()
+	var got beads.ReadMarker
+	if err := beads.RelicRead(func() error { got = beads.ReadMarkerOnStack(callerPCs()); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got != beads.RelicReadMarker {
+		t.Fatalf("marker inside RelicRead = %v, want RelicReadMarker", got)
+	}
+	_ = beads.FederatedRead(func() error {
+		_ = beads.RelicRead(func() error { got = beads.ReadMarkerOnStack(callerPCs()); return nil })
+		return nil
+	})
+	if got != beads.RelicReadMarker {
+		t.Fatalf("innermost marker = %v, want RelicReadMarker", got)
+	}
+	if beads.ReadMarkerOnStack(callerPCs()) != beads.NoReadMarker {
+		t.Fatal("a marker was reported outside any marker")
 	}
 }
