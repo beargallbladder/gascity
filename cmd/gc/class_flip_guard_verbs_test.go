@@ -40,10 +40,12 @@ const (
 	// coordclass.Classify does not read (status, assignee, priority, text,
 	// edges, ids, the ephemeral bit).
 	verdictNoClassField
-	// verdictMints: it mints NEW beads whose shape bd builds or copies from a
-	// proto/formula; it never rewrites an existing bead's type, labels or
-	// metadata. bd itself never stamps a classifier marker (no gc:* label,
-	// no gc.* key, no wisp type or label).
+	// verdictMints: it mints NEW beads whose shape bd fixes itself (a gate,
+	// a swarm molecule, a todo task) and copies from no formula; it never
+	// rewrites an existing bead's type, labels or metadata, and bd never
+	// stamps a classifier marker (no gc:* label, no gc.* key, no wisp type or
+	// label). The verbs that copy a formula's step shapes (mol, cook
+	// --persist) are guarded instead.
 	verdictMints
 	// verdictReadOnly: it reads beads and writes none.
 	verdictReadOnly
@@ -52,8 +54,9 @@ const (
 	// compacts).
 	verdictNoBeadRows
 	// verdictReplication: it moves whole revisions of the SAME ledger
-	// (backup, branches, remotes, federation); it applies no per-bead type,
-	// label or metadata write.
+	// (branches, remotes, federation) — the split city's own, post-split
+	// history; it applies no per-bead type, label or metadata write. A backup
+	// restore can bring back a PRE-split revision, so backup is guarded.
 	verdictReplication
 )
 
@@ -81,6 +84,10 @@ var bdVerbClassRows = map[string]bdVerbClassRow{
 	"batch":       {verdict: verdictGuarded, flip: []string{"batch"}, keep: []string{"batch", "-f", "work.jsonl"}, stdin: "create session 2 s\n", file: "close demo-1 done\n"},
 	"create-form": {verdict: verdictGuarded, flip: []string{"create-form"}},
 	"sql":         {verdict: verdictGuarded, flip: []string{"sql", "update issues set issue_type='message'"}, keep: []string{"sql", "select id from issues"}},
+	"mol":         {verdict: verdictGuarded, flip: []string{"mol", "pour", "infra-formula"}, keep: []string{"mol", "wisp", "work-formula", "--root-only"}},
+	"cook":        {verdict: verdictGuarded, flip: []string{"cook", "infra-formula", "--persist"}, keep: []string{"cook", "infra-formula"}},
+	"serve":       {verdict: verdictGuarded, flip: []string{"serve"}},
+	"backup":      {verdict: verdictGuarded, flip: []string{"backup", "restore", "/b"}, keep: []string{"backup", "restore", "/b", "--backup-postdates-split"}},
 	"jira":        {verdict: verdictGuarded, flip: []string{"jira", "sync"}},
 	"linear":      {verdict: verdictGuarded, flip: []string{"linear", "sync"}},
 	"github":      {verdict: verdictGuarded, flip: []string{"github", "sync"}},
@@ -122,8 +129,6 @@ var bdVerbClassRows = map[string]bdVerbClassRow{
 	"release-if-current": {verdict: verdictNoClassField, why: "gc's own verb: releases a claim (assignee/status) through the store"},
 
 	// Mints new beads; never rewrites an existing bead's class fields.
-	"mol":        {verdict: verdictMints, why: "pour/wisp/bond/seed/distill mint from protos; squash/burn close, delete or flip the ephemeral bit; current/show/progress read"},
-	"cook":       {verdict: verdictMints, why: "prints a proto, or with --persist writes one from the formula file"},
 	"gate":       {verdict: verdictMints, why: "creates gate beads (type gate, work class), registers waiters, resolves (closes)"},
 	"swarm":      {verdict: verdictMints, why: "creates a swarm molecule for an epic; status/list/validate read"},
 	"merge-slot": {verdict: verdictMints, why: "creates the merge-slot gate bead and acquires/releases it (holder fields)"},
@@ -191,7 +196,6 @@ var bdVerbClassRows = map[string]bdVerbClassRow{
 	"remember":       {verdict: verdictNoBeadRows, why: "stores a memory"},
 	"repo":           {verdict: verdictNoBeadRows, why: "multi-repo configuration"},
 	"rules":          {verdict: verdictNoBeadRows, why: "audits Claude rules files"},
-	"serve":          {verdict: verdictNoBeadRows, why: "serves the HTTP API"},
 	"setup":          {verdict: verdictNoBeadRows, why: "editor integration setup"},
 	"upgrade":        {verdict: verdictNoBeadRows, why: "bd version upgrades"},
 	"version":        {verdict: verdictNoBeadRows, why: "prints the version"},
@@ -209,7 +213,6 @@ var bdVerbClassRows = map[string]bdVerbClassRow{
 	"whoami":         {verdict: verdictNoBeadRows, why: "enterprise identity"},
 
 	// Replication of the same ledger.
-	"backup":     {verdict: verdictReplication, why: "Dolt backups of this ledger (restore replaces it with an earlier revision of itself)"},
 	"branch":     {verdict: verdictReplication, why: "Dolt branches"},
 	"conflicts":  {verdict: verdictReplication, why: "resolves merge conflicts between revisions"},
 	"dolt":       {verdict: verdictReplication, why: "Dolt server, remotes, push and pull"},
@@ -245,12 +248,9 @@ func TestGcBdEveryVerbIsGuardedOrCannotFlipClass(t *testing.T) {
 			t.Errorf("row %q names no bd verb in bdflags.TopLevelVerbs", v)
 		}
 	}
+	aliasOf := map[string][]string{}
 	for alias, verb := range bdflags.TopLevelAliases() {
-		if _, guarded := bdClassGuardVerbs[verb]; guarded {
-			if _, aliased := bdClassGuardVerbs[alias]; !aliased {
-				t.Errorf("alias %q runs the guarded verb %q but is not guarded itself", alias, verb)
-			}
-		}
+		aliasOf[verb] = append(aliasOf[verb], alias)
 	}
 
 	// The guarded rows and the guard agree, both ways.
@@ -301,7 +301,13 @@ func TestGcBdEveryVerbIsGuardedOrCannotFlipClass(t *testing.T) {
 	// Each guarded row's flip is refused on a split city and forwarded on a
 	// single-store one; its keep is forwarded on both.
 	work := beads.Bead{ID: "demo-1", Type: "task"}
-	read := func(string) (beads.Bead, bool) { return work, true }
+	read := func(id string) (beads.Bead, bdReadResult) {
+		if strings.HasSuffix(id, "-formula") {
+			return beads.Bead{}, bdReadNotFound
+		}
+		return work, bdReadFound
+	}
+	runBd := stubCookRunner
 	for v, row := range bdVerbClassRows {
 		if row.verdict != verdictGuarded {
 			continue
@@ -314,7 +320,7 @@ func TestGcBdEveryVerbIsGuardedOrCannotFlipClass(t *testing.T) {
 				}
 			}
 			run := func(cfg *config.City, argv []string) bdClassGuard {
-				g := bdClassFlipGuard(cfg, scope, argv, bytes.NewBufferString(row.stdin), read)
+				g := bdClassFlipGuard(cfg, scope, argv, bdClassGuardDeps{stdin: bytes.NewBufferString(row.stdin), read: read, runBd: runBd})
 				if g.cleanup != nil {
 					t.Cleanup(g.cleanup)
 				}
@@ -322,6 +328,13 @@ func TestGcBdEveryVerbIsGuardedOrCannotFlipClass(t *testing.T) {
 			}
 			if g := run(splitGuardTestCity(), row.flip); g.refusal == "" {
 				t.Errorf("split city: gc bd %s was not refused", strings.Join(row.flip, " "))
+			}
+			// An alias bd runs as this verb is refused the same way.
+			for _, alias := range aliasOf[v] {
+				aliased := append([]string{alias}, row.flip[1:]...)
+				if g := run(splitGuardTestCity(), aliased); g.refusal == "" {
+					t.Errorf("split city: gc bd %s (alias of %s) was not refused", strings.Join(aliased, " "), v)
+				}
 			}
 			if g := run(&config.City{}, row.flip); g.refusal != "" {
 				t.Errorf("single-store city: gc bd %s was refused: %s", strings.Join(row.flip, " "), g.refusal)
@@ -370,10 +383,10 @@ func TestGcBdImportSkipInfraWritesAWorkOnlyCopy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scope, "a.jsonl"), []byte(archive), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	read := func(string) (beads.Bead, bool) { return beads.Bead{}, false }
+	read := func(string) (beads.Bead, bdReadResult) { return beads.Bead{}, bdReadNotFound }
 
 	for _, argv := range [][]string{{"import", "a.jsonl", "--skip-infra"}, {"import", "--skip-infra", "-i", "a.jsonl"}, {"import", "--input=a.jsonl", "--skip-infra"}} {
-		g := bdClassFlipGuard(splitGuardTestCity(), scope, argv, nil, read)
+		g := bdClassFlipGuard(splitGuardTestCity(), scope, argv, bdClassGuardDeps{read: read})
 		if g.refusal != "" {
 			t.Fatalf("%v refused: %s", argv, g.refusal)
 		}
@@ -400,7 +413,7 @@ func TestGcBdImportSkipInfraWritesAWorkOnlyCopy(t *testing.T) {
 		}
 	}
 
-	g := bdClassFlipGuard(splitGuardTestCity(), scope, []string{"import", "-", "--skip-infra"}, bytes.NewBufferString(archive), read)
+	g := bdClassFlipGuard(splitGuardTestCity(), scope, []string{"import", "-", "--skip-infra"}, bdClassGuardDeps{stdin: bytes.NewBufferString(archive), read: read})
 	if g.refusal != "" || g.stdin == nil {
 		t.Fatalf("stdin import: refusal=%q stdin=%v", g.refusal, g.stdin)
 	}
@@ -423,4 +436,25 @@ func slicesContainsString(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// testFormulaJSON is what a stubbed `bd cook <name>` prints: a resolved
+// formula. "infra-formula" carries a step bd would mint as a graph-class bead
+// (gc.root_bead_id) and a child it would mint as a sessions-class bead;
+// "work-formula" is the shape every shipped formula has. Anything else is not
+// a formula, and the stub prints nothing.
+func testFormulaJSON(argv []string) string {
+	name := ""
+	for i, a := range argv {
+		if a == "cook" && i+1 < len(argv) {
+			name = argv[i+1]
+		}
+	}
+	switch name {
+	case "infra-formula":
+		return `{"formula":"infra-formula","version":1,"steps":[{"id":"plain","title":"p"},{"id":"graph","title":"g","metadata":{"gc.root_bead_id":"gcg-1"},"children":[{"id":"sess","title":"s","labels":["gc:session"]}]}]}`
+	case "work-formula":
+		return `{"formula":"work-formula","version":1,"steps":[{"id":"a","title":"a","type":"task","labels":["triage"],"metadata":{"gc.outcome":"pass"}},{"id":"b","title":"b","gate":{"type":"gh:pr","id":"g1"}}]}`
+	}
+	return ""
 }

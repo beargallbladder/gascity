@@ -41,6 +41,9 @@ gc dolt stop 2>/dev/null || true
 
 # 4a. Restore from backup (preferred)
 # WARNING: all changes after the backup snapshot are lost
+# SPLIT-STORE CITY: restore only a backup taken AFTER the split. One taken
+# before it holds that time's infrastructure rows, which land in the work
+# store, and the next boot refuses. Use 4b with --skip-infra for an older backup.
 gc dolt backup restore <dbname>-backup <dbname>
 
 # 4b. Reconstruct from the JSONL archive (fallback)
@@ -142,6 +145,14 @@ gc bd backup status --json              # the city scope; add --rig <rig> for a 
 gc bd backup restore /path/to/city/.dolt-backup/<dbname> --force
 gc start
 ```
+
+On a **split-store city** (one that serves its infrastructure classes from a
+separate binding), `gc bd backup restore` is refused. gc cannot look inside a
+backup, and a backup taken before the split brings that time's infrastructure
+rows back into the work store all at once. If the backup was taken after the
+split, add `--backup-postdates-split`. gc consumes that flag; bd never sees it.
+If the backup predates the split, restore it into a scratch scope, `bd export`
+it, and import the export with `gc bd import <file> --skip-infra` (Step 4b).
 
 No maintenance order ever runs a restore.
 

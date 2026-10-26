@@ -1125,6 +1125,7 @@ go_test(
         "class_flip_guard_bd_test.go",
         "class_flip_guard_cas_test.go",
         "class_flip_guard_cook_test.go",
+        "class_flip_guard_review_test.go",
         "class_flip_guard_verbs_test.go",
         "class_store_agreement_test.go",
         "class_store_cache_test.go",

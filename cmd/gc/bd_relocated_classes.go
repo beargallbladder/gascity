@@ -494,13 +494,22 @@ var bdRelocatedClassMintPaths = map[string]string{
 // prospective bead's CLASS, and how each lands on the bead the classifier
 // judges. Title, priority, description and assignee are absent because
 // classification does not read them — they are stepped over, not modeled.
-var bdRelocatedClassCreateShapeFlags = map[string]func(*beads.Bead, string){
-	"--type":     bdRelocatedClassCreateSetType,
-	"-t":         bdRelocatedClassCreateSetType,
+var bdRelocatedClassCreateShapeFlags = map[string]func(*beads.Bead, string) error{
+	"--type":     bdRelocatedClassCreateInfallible(bdRelocatedClassCreateSetType),
+	"-t":         bdRelocatedClassCreateInfallible(bdRelocatedClassCreateSetType),
 	"--labels":   bdRelocatedClassCreateAddLabels,
 	"-l":         bdRelocatedClassCreateAddLabels,
 	"--label":    bdRelocatedClassCreateAddLabels,
-	"--metadata": bdRelocatedClassCreateAddMetadata,
+	"--metadata": bdRelocatedClassCreateInfallible(bdRelocatedClassCreateAddMetadata),
+}
+
+// bdRelocatedClassCreateInfallible adapts a shape recorder that cannot fail to
+// the table's signature.
+func bdRelocatedClassCreateInfallible(apply func(*beads.Bead, string)) func(*beads.Bead, string) error {
+	return func(shape *beads.Bead, value string) error {
+		apply(shape, value)
+		return nil
+	}
 }
 
 // bdRelocatedClassCreateSetType records a --type value on the prospective bead.
@@ -509,14 +518,18 @@ func bdRelocatedClassCreateSetType(shape *beads.Bead, value string) {
 }
 
 // bdRelocatedClassCreateAddLabels records a --labels value, which bd parses as
-// a comma-separated list (a cobra StringSlice), so `-l triage,gc:nudge` states
-// two labels and the second one decides the class.
-func bdRelocatedClassCreateAddLabels(shape *beads.Bead, value string) {
-	for _, label := range strings.Split(value, ",") {
-		if label = strings.TrimSpace(label); label != "" {
-			shape.Labels = append(shape.Labels, label)
-		}
+// a cobra StringSlice — ONE CSV record, quotes stripped — so `-l triage,gc:nudge`
+// states two labels and the second one decides the class, and `-l '"wisp"'`
+// states the label wisp. bdLabelFlagValues parses it the same way; a value bd
+// itself would reject is an error, and the create is refused rather than
+// guessed at.
+func bdRelocatedClassCreateAddLabels(shape *beads.Bead, value string) error {
+	labels, err := bdLabelFlagValues(value)
+	if err != nil {
+		return err
 	}
+	shape.Labels = append(shape.Labels, labels...)
+	return nil
 }
 
 // bdRelocatedClassCreateAddMetadata records a --metadata value, which bd parses
@@ -589,25 +602,29 @@ func bdRelocatedClassCreateAddMetadata(shape *beads.Bead, value string) {
 // the file-backed forms above close the two highest-value doors on the create
 // verbs it covers, and the migration's containment check only REPORTS strays
 // already on disk — it detects them, it does not move them.
-func bdRelocatedClassCreateShape(manifest string, verbArgs []string) beads.Bead {
+func bdRelocatedClassCreateShape(manifest string, verbArgs []string) (beads.Bead, error) {
 	values := bdflags.ValueFlags(manifest)
 	var shape beads.Bead
 	for i := 0; i < len(verbArgs); i++ {
 		name, value, stated := bdRelocatedClassCreateFlagValue(verbArgs[i])
 		apply, statesTheShape := bdRelocatedClassCreateShapeFlags[name]
+		var err error
 		switch {
 		case !statesTheShape:
 			if !stated && values[name] {
 				i++
 			}
 		case stated:
-			apply(&shape, value)
+			err = apply(&shape, value)
 		case i+1 < len(verbArgs):
 			i++
-			apply(&shape, verbArgs[i])
+			err = apply(&shape, verbArgs[i])
+		}
+		if err != nil {
+			return beads.Bead{}, fmt.Errorf("%s: %w", name, err)
 		}
 	}
-	return shape
+	return shape, nil
 }
 
 // bdRelocatedClassCreateFlagValue splits one argv token into the flag it names
@@ -820,7 +837,11 @@ func bdRelocatedClassCreateRefusal(cfg *config.City, scopeRoot string, bdArgs []
 	}
 	// A work-class shape matches nothing: relocatedBeadClasses never names the
 	// work class, which is the residual one and the one bd's ledger holds.
-	return bdRelocatedClassMatch(verb, relocated, coordclass.Classify(bdRelocatedClassCreateShape(manifest, verbArgs)))
+	shape, err := bdRelocatedClassCreateShape(manifest, verbArgs)
+	if err != nil {
+		return fmt.Sprintf("bd %s: refused on this split city: gc cannot read %v the way bd does, so it cannot tell which storage class the bead would have. Nothing was written.", verb, err), true
+	}
+	return bdRelocatedClassMatch(verb, relocated, coordclass.Classify(shape))
 }
 
 // bdRelocatedClassMatch returns the create refusal for a prospective bead CLASS

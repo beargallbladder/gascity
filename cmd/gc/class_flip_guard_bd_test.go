@@ -97,8 +97,8 @@ func TestGcBdRefusesAClassFlipOnASplitCity(t *testing.T) {
 		{"batch create message", withFile("ops.txt", "close demo-abc done\ncreate message 2 hello there\n", "batch", "-f", "ops.txt"), "messaging-class"},
 		{"batch update an unknown key", withFile("ops.txt", "update demo-abc type=message\n", "batch", "--file=ops.txt"), "does not know"},
 		{"create-form", args("create-form"), "interactively"},
-		{"sql write", args("sql", "update issues set issue_type = 'message' where id = 'demo-abc'"), "only read statements"},
-		{"sql write behind a select", args("sql", "select 1; delete from labels"), "only read statements"},
+		{"sql write", args("sql", "update issues set issue_type = 'message' where id = 'demo-abc'"), "single plain read statement"},
+		{"sql write behind a select", args("sql", "select 1; delete from labels"), "single plain read statement"},
 		{"github sync", args("github", "sync"), "external-tracker"},
 	}
 	for _, c := range flips {
