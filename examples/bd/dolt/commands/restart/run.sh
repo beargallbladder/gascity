@@ -64,7 +64,7 @@ fi
 # dolt-enospc.sh without it.
 FSYNC_STALL_HELPER="$BD_SCRIPT_DIR/dolt-fsync-stall.sh"
 if [ ! -f "$FSYNC_STALL_HELPER" ]; then
-  FSYNC_STALL_HELPER="$(CDPATH= cd -- "$DOLT_PACK_DIR/../assets/scripts" 2>/dev/null && pwd)/dolt-fsync-stall.sh"
+  FSYNC_STALL_HELPER="$(CDPATH= cd -- "$DOLT_PACK_DIR/../assets/scripts" 2>/dev/null && pwd || printf '%s' "$BD_SCRIPT_DIR")/dolt-fsync-stall.sh"
 fi
 if [ -f "$FSYNC_STALL_HELPER" ]; then
   . "$FSYNC_STALL_HELPER"

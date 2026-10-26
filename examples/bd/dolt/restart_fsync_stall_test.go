@@ -209,3 +209,31 @@ func TestDotfileProbeFileIsInvisibleToDataDirListings(t *testing.T) {
 		t.Fatalf("health.sh output changed when a probe dotfile appeared in the data dir:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
+
+// TestRestartFsyncGuardFailsOpenWhenHelperDirMissing covers a dolt pack whose
+// sibling bd assets directory is absent: the fallback helper lookup must not
+// abort restart under set -e, and the guard fails open with one note.
+func TestRestartFsyncGuardFailsOpenWhenHelperDirMissing(t *testing.T) {
+	for _, args := range [][]string{nil, {"--force"}} {
+		t.Run(fmt.Sprintf("args %v", args), func(t *testing.T) {
+			root := repoRoot(t)
+			f := newStallFixture(t, "unfinished", 0)
+			// GC_PACK_DIR/../assets/scripts does not exist under this pack dir.
+			packDir := filepath.Join(t.TempDir(), "dolt")
+			if err := os.MkdirAll(packDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			env := append(append([]string{}, f.env...), "GC_PACK_DIR="+packDir)
+			out, err := runRestartWithEnv(t, f.cityPath, root, env, args...)
+			if err != nil {
+				t.Fatalf("gc dolt restart failed without the fsync-stall helper: %v\n%s", err, out)
+			}
+			if n := strings.Count(string(out), "fsync-stall guard skipped"); n != 1 {
+				t.Fatalf("fail-open lines = %d, want 1; output:\n%s", n, out)
+			}
+			if ops := f.opsRun(t); ops != "stop start" {
+				t.Fatalf("ops = %q, want %q", ops, "stop start")
+			}
+		})
+	}
+}
