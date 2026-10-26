@@ -907,6 +907,65 @@ func TestHealthScriptReportsRunningWhenLsofIsInconclusive(t *testing.T) {
 	}
 }
 
+// TestHealthScriptServerPIDPrefersTheRecordedServer pins server.pid to the
+// pid runtime state records whenever that pid holds the listener, the
+// preference managed_runtime_port already applies: a lower pid sharing the
+// listen socket (an inherited or reuse-port descriptor) must not become
+// server.pid — and with it the zombie scan's city-server exclusion — just
+// because the process-table walk meets it first.
+func TestHealthScriptServerPIDPrefersTheRecordedServer(t *testing.T) {
+	cityPath := t.TempDir()
+	fakeBin := t.TempDir()
+	root := repoRoot(t)
+
+	const port = 19906
+	const sharerPID = "424300"
+	const serverPID = 424301
+	writeManagedRuntimeStateForScriptWithPID(t, cityPath, port, serverPID)
+	procRoot := writeFakeProcRoot(t,
+		[]fakeProcRow{{port: port, state: "0A", inode: "800100"}},
+		[]fakeProcFD{
+			{pid: sharerPID, fd: "3", target: "socket:[800100]"},
+			{pid: strconv.Itoa(serverPID), fd: "5", target: "socket:[800100]"},
+		})
+	lsofMarker := writeLsofTripwire(t, fakeBin)
+	writeExecutable(t, filepath.Join(fakeBin, "gc"), "#!/bin/sh\nexit 1\n")
+	writeExecutable(t, filepath.Join(fakeBin, "nc"), "#!/bin/sh\nexit 1\n")
+	writeExecutable(t, filepath.Join(fakeBin, "dolt"), "#!/bin/sh\nexit 1\n")
+
+	env := append(filteredEnv("GC_CITY_PATH", "GC_PACK_DIR", "GC_DOLT_HOST", "GC_DOLT_PORT",
+		"GC_DOLT_USER", "GC_DOLT_PASSWORD", "GC_HEALTH_SKIP_ZOMBIE_SCAN", "PATH"),
+		"GC_CITY_PATH="+cityPath,
+		"GC_PACK_DIR="+root,
+		"GC_DOLT_PROC_ROOT="+procRoot,
+		"GC_DOLT_HOST=127.0.0.1",
+		"GC_DOLT_PORT="+strconv.Itoa(port),
+		"GC_DOLT_USER=root",
+		"GC_DOLT_PASSWORD=",
+		"GC_HEALTH_SKIP_ZOMBIE_SCAN=1",
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := newHealthScriptCmd(root, env, "--json").Output()
+	if err != nil {
+		t.Fatalf("health.sh --json failed: %v\n%s", err, out)
+	}
+
+	var report struct {
+		Server struct {
+			Running bool `json:"running"`
+			PID     int  `json:"pid"`
+		} `json:"server"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("health.sh --json returned invalid JSON: %v\n%s", err, out)
+	}
+	if !report.Server.Running || report.Server.PID != serverPID {
+		t.Fatalf("server running=%t pid=%d, want running with the recorded pid %d over the lower sharer %s\n%s",
+			report.Server.Running, report.Server.PID, serverPID, sharerPID, out)
+	}
+	assertLsofNeverRan(t, lsofMarker)
+}
+
 func TestHealthScriptPortableTimestampFallbacksRemainNumeric(t *testing.T) {
 	tests := []struct {
 		name string

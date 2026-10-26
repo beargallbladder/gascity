@@ -101,6 +101,18 @@ func writeFakeProcRoot(t *testing.T, rows []fakeProcRow, fds []fakeProcFD) strin
 	return root
 }
 
+// addFakeProcPids adds count empty <pid>/fd directories to a fake proc
+// root, pids first through first+count-1: the bystander processes a busy
+// host's table walk reads past. A pid the root already holds keeps its fds.
+func addFakeProcPids(t *testing.T, root string, first, count int) {
+	t.Helper()
+	for pid := first; pid < first+count; pid++ {
+		if err := os.MkdirAll(filepath.Join(root, strconv.Itoa(pid), "fd"), 0o755); err != nil {
+			t.Fatalf("mkdir %d/fd: %v", pid, err)
+		}
+	}
+}
+
 // writeListenerProcRoot builds a fake proc root mapping each port to the
 // pid holding its LISTEN socket — the port→pid maps the zombie-scan
 // fixtures modeled with a fake lsof before the TCP-table switch (#7553).
@@ -199,6 +211,7 @@ func TestManagedRuntimeListenerPIDReadsProcTables(t *testing.T) {
 		name       string
 		rows       []fakeProcRow
 		fds        []fakeProcFD
+		bystanders int // empty <pid>/fd dirs added from pid 3000000 up
 		port       string
 		candidates []string
 		want       string
@@ -282,11 +295,29 @@ func TestManagedRuntimeListenerPIDReadsProcTables(t *testing.T) {
 			candidates: []string{"400"},
 			want:       "300",
 		},
+		{
+			// 12,500 7-digit pids join to a 137,499-byte "<pid>/fd"
+			// operand list, past the 128 KiB Linux lets one exec argument
+			// carry (MAX_ARG_STRLEN) — a table a busy host reaches at about
+			// 12k processes. Handing that list to awk as one argument fails
+			// its exec, and the holder silently goes missing.
+			name: "candidate holding nothing on a table past the per-argument exec limit still finds the holder",
+			rows: []fakeProcRow{{port: 24981, state: "0A", inode: "700009"}},
+			fds: []fakeProcFD{
+				{pid: "3006250", fd: "3", target: "socket:[700009]"},
+				{pid: "3000001", fd: "3", target: "/dev/null"},
+			},
+			bystanders: 12500,
+			port:       "24981",
+			candidates: []string{"3000001"},
+			want:       "3006250",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			procRoot := writeFakeProcRoot(t, tt.rows, tt.fds)
+			addFakeProcPids(t, procRoot, 3000000, tt.bystanders)
 			fakeBin := t.TempDir()
 			marker := writeLsofTripwire(t, fakeBin)
 

@@ -209,21 +209,32 @@ managed_runtime_listen_inodes() (
 # procfs links — it never stats through them — so an fd onto a stalled FUSE
 # mount cannot block it, and the strict 11-field line shape plus escape
 # quoting keeps a crafted link target from faking a socket entry.
+#
+# ls heads each directory's listing with "<pid>/fd:" only when it has more
+# than one operand, so a lone operand's name goes to awk up front. Never the
+# whole list: on a host past about 12k processes it outgrows the 128 KiB one
+# exec argument may carry (MAX_ARG_STRLEN), awk fails to start, and the
+# holder silently goes missing. The list rides ls's argv alone, whose 2 MiB
+# total bound (ARG_MAX) holds until about 100k processes.
 managed_runtime_socket_holder() (
   inodes="$1"
   shift
+
+  single=""
+  if [ "$#" -eq 1 ]; then
+    single="$1"
+  fi
 
   cd "$DOLT_PROC_ROOT" || return 1
 
   LC_ALL=C TIME_STYLE=locale QUOTING_STYLE=escape ls -ln "$@" 2>/dev/null | LC_ALL=C awk \
     -v want="$inodes" \
-    -v dirs="$*" '
+    -v single="$single" '
     BEGIN {
       for (i = 1; i <= split(want, w, /[^0-9]+/); i++)
         if (w[i] != "")
           wanted[w[i]] = 1
-      if (split(dirs, d, /[ \t]+/) == 1 && d[1] != "")
-        cur = d[1]
+      cur = single
       sub(/\/fd$/, "", cur)
     }
     $1 ~ /^[0-9]+\/fd:$/ {
