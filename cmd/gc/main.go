@@ -1758,7 +1758,7 @@ func openStoreResultAtForCityWithAuthority(storePath, cityPath string, modeOverr
 var openStoreFactoryForCity = beads.OpenStoreAtForCity
 
 func openStoreResultAtForCityWithConfig(storePath, cityPath string, cfg *config.City, modeOverride gate.Mode, haveMode, authoritative, longLived bool, nativeOverride *beads.NativeTransportMode) (beads.StoreOpenResult, error) {
-	return openStoreResultAtForCityScoped(storePath, cityPath, cfg, modeOverride, haveMode, authoritative, longLived, false, nativeOverride)
+	return openWorkStoreResultAtForCityScoped(storePath, cityPath, cfg, modeOverride, haveMode, authoritative, longLived, false, nativeOverride)
 }
 
 // openOneShotStoreAtForCityWithConfig is openStoreAtForCityWithConfig for a
@@ -1776,28 +1776,29 @@ func openStoreResultAtForCityWithConfig(storePath, cityPath string, cfg *config.
 // Nothing enforces that cfg is fresh; the one-shot entry points
 // (openCityStoreAtWithConfig, oneShotRigStoreOpener) are the only callers.
 func openOneShotStoreAtForCityWithConfig(storePath, cityPath string, cfg *config.City) (beads.Store, error) {
-	result, err := openStoreResultAtForCityScoped(storePath, cityPath, cfg, gate.ModeUnset, false, false, false, true, nil)
+	result, err := openWorkStoreResultAtForCityScoped(storePath, cityPath, cfg, gate.ModeUnset, false, false, false, true, nil)
 	if err != nil {
 		return nil, err
 	}
 	return result.Store, nil
 }
 
-// openStoreResultAtForCityScoped is the shared open body. oneShotConfig
-// reports that cfg is this one-shot invocation's own fresh load, which lets
-// the bd city-scope open reuse it; see openOneShotStoreAtForCityWithConfig.
-func openStoreResultAtForCityScoped(storePath, cityPath string, cfg *config.City, modeOverride gate.Mode, haveMode, authoritative, longLived, oneShotConfig bool, nativeOverride *beads.NativeTransportMode) (beads.StoreOpenResult, error) {
-	result, err := openScopeStoreResult(storePath, cityPath, cfg, modeOverride, haveMode, authoritative, longLived, oneShotConfig, nativeOverride)
+// openWorkStoreResultAtForCityScoped opens a scope store through the shared
+// open body. A scope store is a WORK store (the city or a rig ledger); under
+// the split-strict test gate it is handed out as the gate's work view
+// (split_strict_seam.go), and unchanged otherwise.
+func openWorkStoreResultAtForCityScoped(storePath, cityPath string, cfg *config.City, modeOverride gate.Mode, haveMode, authoritative, longLived, oneShotConfig bool, nativeOverride *beads.NativeTransportMode) (beads.StoreOpenResult, error) {
+	result, err := openStoreResultAtForCityScoped(storePath, cityPath, cfg, modeOverride, haveMode, authoritative, longLived, oneShotConfig, nativeOverride)
 	if err == nil {
-		// A scope store is a WORK store (city or rig ledger); under the
-		// split-strict test gate it is handed out as the gate's work view.
 		result.Store = splitStrictWorkView(result.Store)
 	}
 	return result, err
 }
 
-// openScopeStoreResult is openStoreResultAtForCityScoped's body.
-func openScopeStoreResult(storePath, cityPath string, cfg *config.City, modeOverride gate.Mode, haveMode, authoritative, longLived, oneShotConfig bool, nativeOverride *beads.NativeTransportMode) (beads.StoreOpenResult, error) {
+// openStoreResultAtForCityScoped is the shared open body. oneShotConfig
+// reports that cfg is this one-shot invocation's own fresh load, which lets
+// the bd city-scope open reuse it; see openOneShotStoreAtForCityWithConfig.
+func openStoreResultAtForCityScoped(storePath, cityPath string, cfg *config.City, modeOverride gate.Mode, haveMode, authoritative, longLived, oneShotConfig bool, nativeOverride *beads.NativeTransportMode) (beads.StoreOpenResult, error) {
 	runtimeCityPath := cityPath
 	if runtimeCityPath == "" {
 		runtimeCityPath = cityForStoreDir(storePath)
