@@ -509,7 +509,7 @@ func submitOpCity(t *testing.T, mode string, srv *httptest.Server) (*cliOpHarnes
 	}
 	h := newCLIOpHarness(t, env)
 	c := newCLIOpCity(t, h, nil)
-	oldIdentity, oldClient := apiRouteControllerIdentityHook, apiRouteSupervisorClientHook
+	oldIdentity, oldClient, oldGrants := apiRouteControllerIdentityHook, apiRouteSupervisorClientHook, apiRouteSupervisorGrantsHook
 	apiRouteControllerIdentityHook = func(string) controllerIdentityReply { return controllerIdentityReply{} }
 	apiRouteSupervisorClientHook = func(string) *api.Client {
 		if srv == nil {
@@ -517,7 +517,10 @@ func submitOpCity(t *testing.T, mode string, srv *httptest.Server) (*cliOpHarnes
 		}
 		return api.NewCityScopedClient(srv.URL, filepath.Base(c.dir))
 	}
-	t.Cleanup(func() { apiRouteControllerIdentityHook, apiRouteSupervisorClientHook = oldIdentity, oldClient })
+	apiRouteSupervisorGrantsHook = func() bool { return false }
+	t.Cleanup(func() {
+		apiRouteControllerIdentityHook, apiRouteSupervisorClientHook, apiRouteSupervisorGrantsHook = oldIdentity, oldClient, oldGrants
+	})
 	return h, c
 }
 
