@@ -1,91 +1,145 @@
-#!/usr/bin/env bash
-# split-strict-baseline: regenerate a package's split-strict ratchet baseline
-# (testdata/split_strict_baseline.tsv) from the observed site tables a
-# GC_TEST_SPLIT_STRICT=1 run wrote (internal/beads/splittest/gate.go).
-#
-# Usage:
-#   scripts/split-strict-baseline <baseline.tsv> <observed>...
-#
-# Each <observed> is a site table (GC_TEST_SPLIT_STRICT_REPORT=<file>) or a
-# directory searched for them: a bazel-testlogs tree, where every shard of
-# //cmd/gc:gc_split_strict_test or //internal/api:api_split_strict_test left its
-# table in test.outputs (plain, or inside outputs.zip). For example:
-#
-#   bazel test //internal/api:api_split_strict_test
-#   scripts/split-strict-baseline internal/api/testdata/split_strict_baseline.tsv \
-#     bazel-testlogs/internal/api/api_split_strict_test
-#
-# Shards run disjoint tests, so per-site test counts add up. A site the
-# baseline already lists (same file and function) keeps its verdict and note
-# and takes the observed line and count; a new site is written with verdict
-# "triage" for a human to adjudicate. A listed site the run did not reach is
-# dropped, so feed the script a FULL run. The header comment block is kept.
-# The result is written over <baseline.tsv>; review it with git diff.
-set -euo pipefail
+#!/usr/bin/env python3
+"""split-strict-baseline: regenerate a package's split-strict gate inputs.
 
-if [ "$#" -lt 2 ]; then
-  sed -n '2,22p' "$0" >&2
-  exit 2
-fi
-baseline=$1
-shift
+Usage:
+  scripts/split-strict-baseline <package-dir> <run>...
 
-tables=$(mktemp)
-trap 'rm -f "$tables"' EXIT
-for src in "$@"; do
-  if [ -f "$src" ]; then
-    cat "$src" >>"$tables"
-  elif [ -d "$src" ]; then
-    while IFS= read -r -d '' f; do
-      cat "$f" >>"$tables"
-    done < <(find "$src" -name split-strict-observed.tsv -print0)
-    while IFS= read -r -d '' z; do
-      unzip -p "$z" '*split-strict-observed.tsv' >>"$tables" 2>/dev/null || true
-    done < <(find "$src" -name outputs.zip -print0)
-  else
-    echo "split-strict-baseline: $src is neither a file nor a directory" >&2
-    exit 1
-  fi
-done
+<package-dir> is cmd/gc or internal/api. Each <run> is a gate directory or a
+bazel-testlogs tree of a FULL GC_TEST_SPLIT_STRICT=1 run of that package
+(every shard), for example
 
-if ! grep -qv '^#' "$tables" 2>/dev/null && [ ! -s "$tables" ]; then
-  echo "split-strict-baseline: no observed site tables found in: $*" >&2
-  exit 1
-fi
+  bazel test --remote_download_outputs=all //internal/api:api_split_strict_test
+  scripts/split-strict-baseline internal/api bazel-testlogs/internal/api/api_split_strict_test
 
-out=$(mktemp)
-trap 'rm -f "$tables" "$out"' EXIT
-{
-  if [ -f "$baseline" ]; then
-    sed -n '/^#/p;/^#/!q' "$baseline"
-  fi
-  awk -F '\t' -v OFS='\t' '
-    # Pass 1: the existing baseline (verdicts and notes by file+func).
-    FNR == NR {
-      if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) next
-      file = $1; sub(/:[0-9]+$/, "", file)
-      key = file SUBSEP $2
-      verdict[key] = $4; note[key] = $5
-      next
-    }
-    # Pass 2: the observed tables.
-    $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
-    {
-      file = $1; sub(/:[0-9]+$/, "", file)
-      key = file SUBSEP $2
-      if (!(key in site)) { site[key] = $1; order[++n] = key; detail[key] = $5 " of " $6 " through the " $7 " view; e.g. " $8 }
-      tests[key] += $3
-    }
-    END {
-      for (i = 1; i <= n; i++) {
-        k = order[i]
-        v = (k in verdict) ? verdict[k] : "triage"
-        t = (k in note) ? note[k] : "unadjudicated: " detail[k]
-        split(k, parts, SUBSEP)
-        print site[k], parts[2], tests[k], v, t
-      }
-    }
-  ' <([ -f "$baseline" ] && cat "$baseline" || true) "$tables" | sort -t "$(printf '\t')" -k1,1
-} >"$out"
-cp -f "$out" "$baseline"
-echo "split-strict-baseline: wrote $(grep -vc '^#' "$baseline" || true) site(s) to $baseline" >&2
+It reads every shard's split-strict-observed.tsv (plain, or inside
+test.outputs/outputs.zip) and every test.log, and rewrites:
+
+  <package-dir>/testdata/split_strict_baseline.tsv
+      one row per violation key. Per-key test counts add up across shards
+      (each test runs in one); max_lines is the number of distinct offending
+      lines of the key's function across the whole run. A key the old baseline
+      already lists keeps its verdict and note; a new key gets verdict
+      "triage", which fails the ratchet until someone rules on it. A key the
+      run did not reach is dropped, which is why the run must be full.
+  <package-dir>/testdata/split_strict_known_failures.txt
+      every top-level test that failed (from the test logs' "--- FAIL:" lines).
+
+The header comment blocks are kept. Rows are sorted in byte order (LC_ALL=C).
+Review the result with git diff.
+"""
+
+import collections
+import glob
+import io
+import os
+import re
+import sys
+import zipfile
+
+OBSERVED = "split-strict-observed.tsv"
+
+
+def header(path):
+    lines = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if not line.startswith("#"):
+                    break
+                lines.append(line)
+    return "".join(lines)
+
+
+def observed_tables(run):
+    if os.path.isfile(run):
+        with open(run, encoding="utf-8") as f:
+            yield f.read()
+        return
+    for path in glob.glob(os.path.join(run, "**", OBSERVED), recursive=True):
+        with open(path, encoding="utf-8") as f:
+            yield f.read()
+    for path in glob.glob(os.path.join(run, "**", "outputs.zip"), recursive=True):
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if name.endswith(OBSERVED):
+                    yield z.read(name).decode("utf-8")
+
+
+def failing_tests(run):
+    failed = set()
+    if not os.path.isdir(run):
+        return failed
+    pattern = re.compile(r"^--- FAIL: (Test\S+) \(")
+    for path in glob.glob(os.path.join(run, "**", "test.log"), recursive=True):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = pattern.match(line)
+                if m and "/" not in m.group(1):
+                    failed.add(m.group(1))
+    return failed
+
+
+def main(argv):
+    if len(argv) < 3:
+        sys.stderr.write(__doc__)
+        return 2
+    pkg = argv[1].rstrip("/")
+    runs = argv[2:]
+    baseline_path = os.path.join(pkg, "testdata", "split_strict_baseline.tsv")
+    known_path = os.path.join(pkg, "testdata", "split_strict_known_failures.txt")
+
+    old = {}
+    if os.path.exists(baseline_path):
+        with open(baseline_path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) == 10:
+                    old[tuple(cols[:6])] = (cols[8], cols[9])
+
+    lines = collections.defaultdict(set)
+    tests = collections.Counter()
+    tables = 0
+    for run in runs:
+        for table in observed_tables(run):
+            tables += 1
+            for line in io.StringIO(table):
+                if line.startswith("#") or not line.strip():
+                    continue
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) != 11:
+                    continue
+                key = tuple(cols[:6])
+                lines[key].update(int(n) for n in cols[6].split(",") if n)
+                tests[key] += int(cols[7])
+    if tables == 0:
+        sys.stderr.write("split-strict-baseline: no %s found in %s\n" % (OBSERVED, " ".join(runs)))
+        return 1
+
+    func_lines = collections.defaultdict(set)
+    for key, ls in lines.items():
+        func_lines[(key[0], key[1])].update(ls)
+
+    rows = []
+    for key in lines:
+        verdict, note = old.get(key, ("triage", "unadjudicated"))
+        rows.append("\t".join(list(key) + [str(len(func_lines[(key[0], key[1])])), str(tests[key]), verdict, note]))
+    rows.sort(key=lambda r: r.encode("utf-8"))
+    with open(baseline_path, "w", encoding="utf-8") as f:
+        f.write(header(baseline_path) + "".join(r + "\n" for r in rows))
+
+    failed = set()
+    for run in runs:
+        failed |= failing_tests(run)
+    with open(known_path, "w", encoding="utf-8") as f:
+        f.write(header(known_path) + "".join(t + "\n" for t in sorted(failed, key=lambda s: s.encode("utf-8"))))
+
+    triage = sum(1 for r in rows if r.split("\t")[8] == "triage")
+    sys.stderr.write("split-strict-baseline: %d key(s) (%d to triage) in %s; %d known failure(s) in %s\n"
+                     % (len(rows), triage, baseline_path, len(failed), known_path))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

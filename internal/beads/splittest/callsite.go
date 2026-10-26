@@ -3,6 +3,7 @@ package splittest
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -40,9 +41,13 @@ type stackFacts struct {
 	// test is the top-level test function the call ran under, or "" for a
 	// goroutine whose stack does not reach one.
 	test string
-	// federated reports a beads.FederatedRead / FederatedGet frame: the call
-	// site declared that a miss here is expected.
-	federated bool
+	// marker is the read marker (beads.FederatedRead, beads.RelicRead) the
+	// call runs under, if any.
+	marker beads.ReadMarker
+	// pkg is the nearest frame, other than the site, in the package under
+	// test (SetPackageUnderTest): which of that package's functions led to
+	// the site. Empty when no such frame is on the stack.
+	pkg Site
 }
 
 var (
@@ -107,7 +112,7 @@ func captureStack() stackFacts {
 		}
 	}
 	facts := factsFromFrames(stack)
-	facts.federated = beads.FederatedReadOnStack(pcs)
+	facts.marker = beads.ReadMarkerOnStack(pcs)
 	return facts
 }
 
@@ -126,14 +131,62 @@ func factsFromFrames(stack []frameInfo) stackFacts {
 		if isPlumbingFrame(frame.file, frame.function) {
 			continue
 		}
+		here := Site{File: frame.file, Line: frame.line, Func: normalizeFunc(shortFuncName(frame.function))}
 		switch {
 		case facts.site.File == "":
-			facts.site = Site{File: frame.file, Line: frame.line, Func: shortFuncName(frame.function)}
+			facts.site = here
+			continue
 		case facts.via.File == "" && frame.file != facts.site.File:
-			facts.via = Site{File: frame.file, Line: frame.line, Func: shortFuncName(frame.function)}
+			facts.via = here
+		}
+		if facts.pkg.File == "" && inPackageUnderTest(frame.file) {
+			facts.pkg = here
 		}
 	}
 	return facts
+}
+
+var (
+	packageUnderTestMu sync.RWMutex
+	packageUnderTest   string
+)
+
+// SetPackageUnderTest names the repo-relative directory of the package whose
+// tests are running ("cmd/gc", "internal/api"). A violation then records the
+// nearest frame in that package that led to the site, and the ratchet keys on
+// it: a known site reached from a NEW caller in the package is a new site.
+func SetPackageUnderTest(dir string) {
+	packageUnderTestMu.Lock()
+	defer packageUnderTestMu.Unlock()
+	packageUnderTest = strings.TrimSuffix(filepath.ToSlash(dir), "/")
+}
+
+func inPackageUnderTest(file string) bool {
+	packageUnderTestMu.RLock()
+	dir := packageUnderTest
+	packageUnderTestMu.RUnlock()
+	if dir == "" || !strings.HasPrefix(file, dir+"/") {
+		return false
+	}
+	return !strings.Contains(strings.TrimPrefix(file, dir+"/"), "/")
+}
+
+// closureSuffix matches the compiler's names for closures, deferred and
+// go-statement wrappers ("f.func1", "f.func2.3", "f.gowrap1", "f.deferwrap1"),
+// and generic instantiation markers ("f[...]").
+var closureSuffix = regexp.MustCompile(`(\.(func|gowrap|deferwrap)\d+(\.\d+)*|\[\.\.\.\])`)
+
+// normalizeFunc drops closure and instantiation suffixes from a function name,
+// so a key names the function a reader can find in the source, and does not
+// shift when a closure is added above the site.
+func normalizeFunc(name string) string {
+	for {
+		next := closureSuffix.ReplaceAllString(name, "")
+		if next == name {
+			return name
+		}
+		name = next
+	}
 }
 
 // relativeSourcePath strips the build's repo-root prefix from a frame's file.

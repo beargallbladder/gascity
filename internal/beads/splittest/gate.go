@@ -1,11 +1,17 @@
 package splittest
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
 )
@@ -14,97 +20,422 @@ const (
 	// StrictEnv turns the split-strict test gate on ("1") for a package whose
 	// store seams consult GateEnabled.
 	StrictEnv = "GC_TEST_SPLIT_STRICT"
-	// StrictPanicEnv makes every gate violation panic at the offending call
-	// ("1"), for bisecting one site with a full stack.
+	// StrictPanicEnv makes every gate violation at a production site panic at
+	// the offending call ("1"), for bisecting one site with a full stack.
 	StrictPanicEnv = "GC_TEST_SPLIT_STRICT_PANIC"
-	// StrictReportEnv names a file the gate writes its observed site table to
-	// when the test binary exits. Under Bazel the table also goes to
-	// TEST_UNDECLARED_OUTPUTS_DIR (bazel-testlogs/.../test.outputs).
+	// StrictReportEnv names an extra file the observed site table is copied
+	// to when the run ends.
 	StrictReportEnv = "GC_TEST_SPLIT_STRICT_REPORT"
+	// StrictDirEnv is the directory the gate writes its files to. It
+	// defaults to TEST_UNDECLARED_OUTPUTS_DIR under Bazel, and to a fresh
+	// temporary directory otherwise; the first process to start exports it so
+	// re-executed helper processes write beside it.
+	StrictDirEnv = "GC_TEST_SPLIT_STRICT_DIR"
+	// StrictTestTimeoutEnv bounds one top-level test's running time under the
+	// gate (a Go duration; default 3m; "0" disables). A test past it is a hang:
+	// the gate prints it, dumps every goroutine, writes its report and exits
+	// the binary non-zero, so a hung shard still reports.
+	StrictTestTimeoutEnv = "GC_TEST_SPLIT_STRICT_TEST_TIMEOUT"
 
-	// observedReportName is the site table's file name in the undeclared
-	// outputs directory; scripts/split-strict-baseline merges the shards'.
-	observedReportName = "split-strict-observed.tsv"
+	strictPrimaryEnv      = "GC_TEST_SPLIT_STRICT_PRIMARY_PID"
+	eventsFilePattern     = "split-strict-events.*.tsv"
+	observedReportName    = "split-strict-observed.tsv"
+	relicReportName       = "split-strict-relics.tsv"
+	resultReportName      = "split-strict-result.txt"
+	defaultStrictTestTime = 3 * time.Minute
 )
 
 // gateSink is the process-wide violation sink the gate's views record into.
-var gateSink = newViolationSink()
+var gateSink = newGateSink()
+
+func newGateSink() *violationSink {
+	s := newViolationSink()
+	s.openOnDemand = true
+	return s
+}
 
 // GateEnabled reports whether GC_TEST_SPLIT_STRICT=1 asked for the gate.
 func GateEnabled() bool {
 	return os.Getenv(StrictEnv) == "1"
 }
 
-// GateWorkView returns the gate's work view of store when the gate is on, and
-// store unchanged otherwise. A nil store stays nil.
+// GateWorkView returns the gate's work view over store when the gate is on,
+// and store unchanged otherwise. A nil store stays nil.
 func GateWorkView(store beads.Store) beads.Store {
 	if store == nil || !GateEnabled() {
 		return store
 	}
-	return ProjectionOf(store).WorkView()
+	return ProjectionOf(store).WorkViewOf(store)
 }
 
-// GateClassView returns the gate's class view of store when the gate is on,
-// and store unchanged otherwise. A nil store stays nil.
+// GateClassView returns the gate's class view over store when the gate is
+// on, and store unchanged otherwise. A nil store stays nil.
 func GateClassView(store beads.Store) beads.Store {
 	if store == nil || !GateEnabled() {
 		return store
 	}
-	return ProjectionOf(store).ClassView()
+	return ProjectionOf(store).ClassViewOf(store)
 }
 
-// GateSites returns every call site the gate has charged so far.
+// GateSites returns every key this process's gate sink has charged so far.
 func GateSites() []SiteSummary {
 	return gateSink.summaries()
 }
 
-// GateMain finishes a test binary's run under the gate: it writes the observed
-// site table, compares it with the package's checked-in baseline, and returns
-// the exit code the binary should use. Call it from TestMain with m.Run's code
-// when GateEnabled; it returns code unchanged when the gate is off.
-//
-// The comparison is the ratchet. A site the baseline does not list is NEW, and
-// a new site fails the run whatever the tests did, with a block naming it. A
-// baseline entry the run did not reach is not an error (a shard runs a subset
-// of the tests); scripts/split-strict-baseline regenerates the file from a full
-// run's merged tables.
-func GateMain(code int, baselinePath string, out io.Writer) int {
+// GateFiles names a package's checked-in gate inputs, relative to the
+// package directory the test binary runs in.
+type GateFiles struct {
+	// Baseline is the known violation keys (ParseBaseline).
+	Baseline string
+	// KnownFailures lists the top-level tests known to fail under the gate,
+	// one per line; a test failing that is not listed fails the run.
+	KnownFailures string
+}
+
+// gateRun is the primary process's run state.
+type gateRun struct {
+	dir     string
+	stdout  *os.File
+	pipeW   *os.File
+	done    chan struct{}
+	stop    chan struct{}
+	mu      sync.Mutex
+	running map[string]time.Time
+	ran     map[string]bool
+	failed  map[string]bool
+	hungMu  sync.Mutex
+	hung    string
+}
+
+var (
+	gateRunMu sync.Mutex
+	activeRun *gateRun
+)
+
+// GateStart prepares the gate for a test binary's run: it picks the gate
+// directory, and in the first (primary) process tees the binary's stdout to
+// learn which tests ran and failed, and arms the per-test watchdog. Call it
+// from TestMain before m.Run; it does nothing when the gate is off, and only
+// prepares the directory in a re-executed helper process.
+func GateStart() {
+	if !GateEnabled() {
+		return
+	}
+	dir := gateDir()
+	if os.Getenv(strictPrimaryEnv) != "" {
+		return
+	}
+	_ = os.Setenv(strictPrimaryEnv, strconv.Itoa(os.Getpid()))
+	run := &gateRun{dir: dir, done: make(chan struct{}), stop: make(chan struct{}), running: map[string]time.Time{}, ran: map[string]bool{}, failed: map[string]bool{}}
+	r, w, err := os.Pipe()
+	if err == nil {
+		run.stdout = os.Stdout
+		run.pipeW = w
+		os.Stdout = w
+		go run.tee(r)
+	} else {
+		close(run.done)
+	}
+	if limit := strictTestTimeout(); limit > 0 {
+		go run.watch(limit)
+	}
+	gateRunMu.Lock()
+	activeRun = run
+	gateRunMu.Unlock()
+}
+
+// gateDir returns (creating and exporting it on first use) the gate's
+// directory.
+func gateDir() string {
+	if dir := strings.TrimSpace(os.Getenv(StrictDirEnv)); dir != "" {
+		return dir
+	}
+	dir := strings.TrimSpace(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"))
+	if dir == "" {
+		tmp, err := os.MkdirTemp("", "split-strict-")
+		if err != nil {
+			return ""
+		}
+		dir = tmp
+	}
+	_ = os.Setenv(StrictDirEnv, dir)
+	return dir
+}
+
+func strictTestTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(StrictTestTimeoutEnv))
+	if raw == "" {
+		return defaultStrictTestTime
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return defaultStrictTestTime
+	}
+	return d
+}
+
+// tee copies the binary's stdout through, noting test starts, pauses and
+// results (the testing package's -test.v lines).
+func (g *gateRun) tee(r io.Reader) {
+	defer close(g.done)
+	reader := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			_, _ = io.WriteString(g.stdout, line)
+			g.observe(strings.TrimRight(line, "\n"))
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// observe tracks top-level tests from one output line.
+func (g *gateRun) observe(line string) {
+	field := func(prefix string) (string, bool) {
+		if !strings.HasPrefix(line, prefix) {
+			return "", false
+		}
+		name := strings.Fields(strings.TrimPrefix(line, prefix))
+		if len(name) == 0 || strings.Contains(name[0], "/") {
+			return "", false
+		}
+		return name[0], true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if name, ok := field("=== RUN"); ok {
+		g.running[name] = time.Now()
+		g.ran[name] = true
+		return
+	}
+	if name, ok := field("=== CONT"); ok {
+		g.running[name] = time.Now()
+		return
+	}
+	if name, ok := field("=== PAUSE"); ok {
+		delete(g.running, name)
+		return
+	}
+	for _, prefix := range []string{"--- PASS:", "--- SKIP:", "--- FAIL:"} {
+		if name, ok := field(prefix); ok {
+			delete(g.running, name)
+			g.ran[name] = true
+			if prefix == "--- FAIL:" {
+				g.failed[name] = true
+			}
+			return
+		}
+	}
+}
+
+// watch ends the run when one top-level test runs past limit.
+func (g *gateRun) watch(limit time.Duration) {
+	ticker := time.NewTicker(time.Second)
+	for {
+		select {
+		case <-g.stop:
+			ticker.Stop()
+			return
+		case now := <-ticker.C:
+			g.mu.Lock()
+			var hung string
+			var since time.Time
+			for name, start := range g.running {
+				if now.Sub(start) > limit && (hung == "" || start.Before(since)) {
+					hung, since = name, start
+				}
+			}
+			g.mu.Unlock()
+			if hung == "" {
+				continue
+			}
+			g.hungMu.Lock()
+			g.hung = hung
+			g.hungMu.Unlock()
+			ticker.Stop()
+			buf := make([]byte, 8<<20)
+			n := runtime.Stack(buf, true)
+			fmt.Fprintf(os.Stderr, "SPLIT-STRICT HUNG TEST: %s ran longer than %s under the gate; goroutines:\n%s\n", hung, limit, buf[:n]) //nolint:errcheck // best-effort test log
+			code := finishGate(1, g, gateFilesForHang, os.Stderr)
+			os.Exit(code)
+		}
+	}
+}
+
+// gateFilesForHang is the package's GateFiles, recorded by GateMain's caller
+// through SetGateFiles so a hang can still run the ratchet.
+var gateFilesForHang GateFiles
+
+// SetGateFiles records the package's gate inputs for the hang path. Call it
+// before GateStart.
+func SetGateFiles(files GateFiles) { gateFilesForHang = files }
+
+// GateMain finishes a test binary's run under the gate and returns the exit
+// code the binary should use; it returns code unchanged when the gate is off
+// or in a re-executed helper process. See finishGate for what it reports.
+func GateMain(code int, files GateFiles, out io.Writer) int {
 	if !GateEnabled() {
 		return code
 	}
-	observed := GateSites()
-	table := FormatSiteTable(observed)
-	for _, path := range observedReportPaths() {
-		if err := os.WriteFile(path, []byte(table), 0o644); err != nil {
-			fmt.Fprintf(out, "split-strict: writing the observed site table %s: %v\n", path, err) //nolint:errcheck // best-effort test log
-		}
+	gateRunMu.Lock()
+	run := activeRun
+	gateRunMu.Unlock()
+	if run == nil {
+		return code
 	}
-	baseline, err := readBaselineFile(baselinePath)
-	if err != nil {
-		fmt.Fprintf(out, "split-strict: %v\n", err) //nolint:errcheck // best-effort test log
-		return 1
-	}
-	result := CompareToBaseline(observed, baseline)
-	if n := gateSink.testOnlyCount(); n > 0 {
-		fmt.Fprintf(out, "split-strict: %d violation(s) came from test code reading through a view directly (fixture artifacts, not sites).\n", n) //nolint:errcheck // best-effort test log
-	}
-	fmt.Fprint(out, result.Report(baselinePath)) //nolint:errcheck // best-effort test log
-	if len(result.New) > 0 {
-		return 1
-	}
-	return code
+	return finishGate(code, run, files, out)
 }
 
-// observedReportPaths lists where the observed site table goes.
-func observedReportPaths() []string {
-	var paths []string
+// finishGate restores stdout, aggregates every process's sightings, writes the
+// observed and relic tables and the result file, and prints two separate
+// verdicts:
+//
+//	SPLIT-STRICT RATCHET: PASS|FAIL  — every violation key is a known,
+//	    adjudicated baseline row (no new key, no triage row, no function past
+//	    its line cap);
+//	SPLIT-STRICT TESTS: PASS|FAIL    — every failing test is a known one.
+//
+// The binary's exit code is non-zero when either fails, when a test hung, or
+// when the run failed without a failing test the gate could see (a TestMain
+// check), so a run whose only failures are the known ones passes.
+func finishGate(code int, run *gateRun, files GateFiles, out io.Writer) int {
+	close(run.stop)
+	if run.pipeW != nil {
+		os.Stdout = run.stdout
+		_ = run.pipeW.Close()
+		select {
+		case <-run.done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	run.hungMu.Lock()
+	hung := run.hung
+	run.hungMu.Unlock()
+
+	var lines []string
+	say := func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	failed := false
+
+	all, err := readSightingFiles(run.dir)
+	if err != nil {
+		say("split-strict: reading the gate's event files in %s: %v", run.dir, err)
+		failed = true
+	}
+	all = append(all, gateSink.sightings()...)
+	all = dedupeSightings(all)
+	observed := summarize(all, kindViolation)
+	relics := summarize(all, kindRelic)
+	writeGateFile(run.dir, observedReportName, FormatSiteTable(observed), out)
+	writeGateFile(run.dir, relicReportName, FormatSiteTable(relics), out)
 	if path := strings.TrimSpace(os.Getenv(StrictReportEnv)); path != "" {
-		paths = append(paths, path)
+		writeGateFile(filepath.Dir(path), filepath.Base(path), FormatSiteTable(observed), out)
 	}
-	if dir := strings.TrimSpace(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")); dir != "" {
-		paths = append(paths, filepath.Join(dir, observedReportName))
+
+	ratchet := "PASS"
+	report := ""
+	baseline, err := readBaselineFile(files.Baseline)
+	var result RatchetResult
+	if err != nil {
+		say("split-strict: %v", err)
+		ratchet = "FAIL"
+	} else {
+		result = CompareToBaseline(observed, baseline)
+		report = result.Report(files.Baseline)
+		if result.Failed() {
+			ratchet = "FAIL"
+		}
 	}
-	return paths
+	if n := gateSink.testOnlyCount(); n > 0 {
+		say("split-strict: %d violation(s) came from test code reading through a view directly (fixture artifacts, not keys).", n)
+	}
+	if len(relics) > 0 {
+		say("split-strict: %d relic key(s) read under beads.RelicRead (declared debt; see %s).", len(relics), relicReportName)
+	}
+
+	tests := "PASS"
+	run.mu.Lock()
+	failing := sortedKeys(run.failed)
+	ran := run.ran
+	run.mu.Unlock()
+	known, err := readKnownFailures(files.KnownFailures)
+	if err != nil {
+		say("split-strict: %v", err)
+		tests = "FAIL"
+	}
+	var newFailing, fixed []string
+	for _, name := range failing {
+		if !known[name] {
+			newFailing = append(newFailing, name)
+		}
+	}
+	for name := range known {
+		if ran[name] && !run.failed[name] {
+			fixed = append(fixed, name)
+		}
+	}
+	sort.Strings(fixed)
+	if len(newFailing) > 0 || hung != "" {
+		tests = "FAIL"
+	}
+
+	fmt.Fprint(out, strings.Join(lines, "\n")) //nolint:errcheck // best-effort test log
+	if len(lines) > 0 {
+		fmt.Fprintln(out) //nolint:errcheck // best-effort test log
+	}
+	fmt.Fprint(out, report)                                                                                        //nolint:errcheck // best-effort test log
+	fmt.Fprintf(out, "SPLIT-STRICT RATCHET: %s (%d key(s) observed, %d new, %d triage, %d past their line cap)\n", //nolint:errcheck // best-effort test log
+		ratchet, len(observed), len(result.New), len(result.Triage), len(result.LineCap))
+	fmt.Fprintf(out, "SPLIT-STRICT TESTS: %s (%d failing, %d not in %s%s)\n", tests, len(failing), len(newFailing), files.KnownFailures, hungNote(hung)) //nolint:errcheck // best-effort test log
+	for _, name := range newFailing {
+		fmt.Fprintf(out, "  NEW FAILING %s\n", name) //nolint:errcheck // best-effort test log
+	}
+	for _, name := range fixed {
+		fmt.Fprintf(out, "  NOW PASSING %s (remove it from %s)\n", name, files.KnownFailures) //nolint:errcheck // best-effort test log
+	}
+	writeGateFile(run.dir, resultReportName, fmt.Sprintf("ratchet=%s\ntests=%s\nhung=%s\nnew_failing=%s\n", ratchet, tests, hung, strings.Join(newFailing, ",")), out)
+
+	if failed || ratchet == "FAIL" || tests == "FAIL" {
+		return 1
+	}
+	if code != 0 && len(failing) == 0 {
+		return code
+	}
+	return 0
+}
+
+func hungNote(hung string) string {
+	if hung == "" {
+		return ""
+	}
+	return "; HUNG: " + hung
+}
+
+func dedupeSightings(all []sighting) []sighting {
+	seen := map[sighting]bool{}
+	out := all[:0:0]
+	for _, sg := range all {
+		key := sg
+		key.via = ""
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, sg)
+	}
+	return out
+}
+
+func writeGateFile(dir, name, content string, out io.Writer) {
+	if dir == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		fmt.Fprintf(out, "split-strict: writing %s: %v\n", name, err) //nolint:errcheck // best-effort test log
+	}
 }
 
 func readBaselineFile(path string) ([]BaselineEntry, error) {
@@ -118,4 +449,46 @@ func readBaselineFile(path string) ([]BaselineEntry, error) {
 		return nil, fmt.Errorf("parsing the split-strict baseline %s: %w", path, err)
 	}
 	return entries, nil
+}
+
+// readKnownFailures reads a known-failures list: one top-level test name per
+// line, '#' comments.
+func readKnownFailures(path string) (map[string]bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading the split-strict known failures: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	return ParseKnownFailures(f)
+}
+
+// ParseKnownFailures reads a known-failures list.
+func ParseKnownFailures(r io.Reader) (map[string]bool, error) {
+	out := map[string]bool{}
+	scanner := bufio.NewScanner(r)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "Test") || strings.ContainsAny(line, " \t/") {
+			return nil, fmt.Errorf("known failures line %d: %q is not a top-level test name", lineNo, line)
+		}
+		if out[line] {
+			return nil, fmt.Errorf("known failures line %d: %s repeats", lineNo, line)
+		}
+		out[line] = true
+	}
+	return out, scanner.Err()
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

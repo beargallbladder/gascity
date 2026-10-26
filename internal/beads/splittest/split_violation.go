@@ -1,9 +1,12 @@
 package splittest
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -26,6 +29,8 @@ type SplitViolation struct {
 	Site Site
 	// Via is the production frame that called Site, for triage.
 	Via Site
+	// Pkg is the nearest frame in the package under test that led to Site.
+	Pkg Site
 	// Test is the top-level test the call ran under ("" off the test's
 	// goroutine).
 	Test string
@@ -40,49 +45,87 @@ func (v SplitViolation) String() string {
 	return fmt.Sprintf("%s %s: %s of %s row %s through the %s store [test %s]", v.Site, v.Site.Func, v.Op, v.Class, v.ID, v.View, test)
 }
 
-// SiteSummary aggregates every violation charged to one call site.
+// SiteKey is what the ratchet matches a violation on: where it happened (file
+// and function, not line, so an edit above it does not move it), what it did
+// (operation, view, row class), and which function of the package under test
+// led there.
+type SiteKey struct {
+	File, Func, Op, View, Class, Caller string
+}
+
+func (k SiteKey) String() string {
+	return fmt.Sprintf("%s %s %s/%s/%s via %s", k.File, k.Func, k.Op, k.View, k.Class, k.Caller)
+}
+
+func keyOf(v SplitViolation) SiteKey {
+	caller := v.Pkg.Func
+	if caller == "" {
+		caller = "-"
+	}
+	return SiteKey{File: v.Site.File, Func: v.Site.Func, Op: v.Op, View: v.View, Class: v.Class, Caller: caller}
+}
+
+// SiteSummary aggregates every violation charged to one SiteKey.
 type SiteSummary struct {
-	Site Site
-	// Tests is the number of distinct tests that hit the site. It is the
-	// count the ratchet baseline records: deterministic for a given test set,
-	// and additive across shards (each test runs in exactly one).
+	Key SiteKey
+	// Lines are the distinct source lines in Key.File the key was seen at.
+	Lines []int
+	// Tests is the number of distinct tests that reached the key: the count
+	// the baseline records (deterministic for a test set, additive across
+	// shards and processes, each test running in exactly one).
 	Tests int
-	// Events is the raw number of violations, which depends on polling and
-	// retries and is reported for information only.
+	// Events counts distinct (line, test) sightings, for information.
 	Events int
-	// Ops, Classes and Views list what was seen at the site, sorted.
-	Ops, Classes, Views []string
-	// SampleTest names one test that hit the site.
-	SampleTest string
-	// SampleVia names one caller of the site, for triage.
-	SampleVia string
+	// SampleTest and SampleVia name one test and one caller, for triage.
+	SampleTest, SampleVia string
 }
 
-// violationSink aggregates violations by call site. The split-strict gate has
-// one process-wide sink because its views are handed out by production seams
-// that have no *testing.T; attribution to a test comes from the stack.
+// Site returns the key's first line as a Site.
+func (s SiteSummary) Site() Site {
+	line := 0
+	if len(s.Lines) > 0 {
+		line = s.Lines[0]
+	}
+	return Site{File: s.Key.File, Line: line, Func: s.Key.Func}
+}
+
+// eventKind separates a violation from a relic read.
+type eventKind string
+
+const (
+	kindViolation eventKind = "violation"
+	kindRelic     eventKind = "relic"
+)
+
+// sighting is one distinct (kind, key, line, test) the sink has seen.
+type sighting struct {
+	kind eventKind
+	key  SiteKey
+	line int
+	test string
+	via  string
+}
+
+// violationSink collects sightings. The gate's process-wide sink also appends
+// each new sighting to an events file the moment it is seen (see gate.go), so
+// a hung or crashed test binary still leaves its sites behind, and re-executed
+// helper processes add theirs to the same directory.
 type violationSink struct {
-	mu    sync.Mutex
-	sites map[string]*siteAgg
-	// testOnly counts violations with no production frame on the stack: a
-	// test reading through a view directly. They are fixture artifacts by
-	// construction and are not sites.
+	mu       sync.Mutex
+	seen     map[sighting]bool
+	order    []sighting
 	testOnly int
-}
-
-type siteAgg struct {
-	site    Site
-	tests   map[string]bool
-	events  int
-	ops     map[string]bool
-	classes map[string]bool
-	views   map[string]bool
-	sample  string
-	via     string
+	// file, when set, receives one line per new sighting.
+	file *os.File
+	// openOnDemand opens file in the gate directory (StrictDirEnv) on the
+	// first sighting: the gate's own sink, in the primary process and in
+	// every re-executed helper process alike.
+	openOnDemand bool
+	fileTried    bool
 }
 
 func newViolationSink() *violationSink {
-	return &violationSink{sites: map[string]*siteAgg{}}
+	return &violationSink{seen: map[sighting]bool{}}
 }
 
 // record adds one violation, panicking first at a production site when
@@ -92,63 +135,91 @@ func (s *violationSink) record(v SplitViolation) {
 	if v.Site.File != "" && os.Getenv(StrictPanicEnv) == "1" {
 		panic("split-strict violation: " + v.String())
 	}
+	s.add(kindViolation, v)
+}
+
+// recordRelic counts a read under beads.RelicRead: declared debt, not a
+// failure.
+func (s *violationSink) recordRelic(v SplitViolation) {
+	s.add(kindRelic, v)
+}
+
+func (s *violationSink) add(kind eventKind, v SplitViolation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if v.Site.File == "" {
-		s.testOnly++
+		if kind == kindViolation {
+			s.testOnly++
+		}
 		return
-	}
-	key := v.Site.File + "\x00" + v.Site.Func + "\x00" + fmt.Sprint(v.Site.Line)
-	agg, ok := s.sites[key]
-	if !ok {
-		agg = &siteAgg{site: v.Site, tests: map[string]bool{}, ops: map[string]bool{}, classes: map[string]bool{}, views: map[string]bool{}}
-		s.sites[key] = agg
 	}
 	test := v.Test
 	if test == "" {
 		test = "?"
 	}
-	agg.tests[test] = true
-	if agg.sample == "" || (agg.sample == "?" && test != "?") {
-		agg.sample = test
+	via := ""
+	if v.Via.File != "" {
+		via = v.Via.String() + " " + v.Via.Func
 	}
-	if agg.via == "" && v.Via.File != "" {
-		agg.via = v.Via.String() + " " + v.Via.Func
+	sg := sighting{kind: kind, key: keyOf(v), line: v.Site.Line, test: test}
+	if s.seen[sg] {
+		return
 	}
-	agg.events++
-	agg.ops[v.Op] = true
-	agg.classes[v.Class] = true
-	agg.views[v.View] = true
+	s.seen[sg] = true
+	sg.via = via
+	s.order = append(s.order, sg)
+	if s.openOnDemand && !s.fileTried {
+		s.fileTried = true
+		if dir := os.Getenv(StrictDirEnv); dir != "" {
+			name := filepath.Join(dir, strings.Replace(eventsFilePattern, "*", strconv.Itoa(os.Getpid()), 1))
+			if f, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				s.file = f
+				for _, earlier := range s.order[:len(s.order)-1] {
+					fmt.Fprintln(f, formatSighting(earlier)) //nolint:errcheck // best-effort test report
+				}
+			}
+		}
+	}
+	if s.file != nil {
+		fmt.Fprintln(s.file, formatSighting(sg)) //nolint:errcheck // best-effort test report
+	}
 }
 
-// summaries returns one summary per site, sorted by file, line and function.
-func (s *violationSink) summaries() []SiteSummary {
+// formatSighting renders one events-file line.
+func formatSighting(sg sighting) string {
+	k := sg.key
+	return strings.Join([]string{
+		string(sg.kind), k.File, k.Func, k.Op, k.View, k.Class, k.Caller,
+		strconv.Itoa(sg.line), sg.test, sg.via,
+	}, "\t")
+}
+
+// parseSighting reads one events-file line.
+func parseSighting(line string) (sighting, bool) {
+	f := strings.Split(line, "\t")
+	if len(f) != 10 {
+		return sighting{}, false
+	}
+	n, err := strconv.Atoi(f[7])
+	if err != nil {
+		return sighting{}, false
+	}
+	return sighting{
+		kind: eventKind(f[0]), key: SiteKey{File: f[1], Func: f[2], Op: f[3], View: f[4], Class: f[5], Caller: f[6]},
+		line: n, test: f[8], via: f[9],
+	}, true
+}
+
+// sightings returns what this sink has seen, in order.
+func (s *violationSink) sightings() []sighting {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]SiteSummary, 0, len(s.sites))
-	for _, agg := range s.sites {
-		out = append(out, SiteSummary{
-			Site:       agg.site,
-			Tests:      len(agg.tests),
-			Events:     agg.events,
-			Ops:        sortedKeys(agg.ops),
-			Classes:    sortedKeys(agg.classes),
-			Views:      sortedKeys(agg.views),
-			SampleTest: agg.sample,
-			SampleVia:  agg.via,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].Site, out[j].Site
-		if a.File != b.File {
-			return a.File < b.File
-		}
-		if a.Line != b.Line {
-			return a.Line < b.Line
-		}
-		return a.Func < b.Func
-	})
-	return out
+	return append([]sighting(nil), s.order...)
+}
+
+// summaries aggregates this sink's violations (not relics).
+func (s *violationSink) summaries() []SiteSummary {
+	return summarize(s.sightings(), kindViolation)
 }
 
 // testOnlyCount returns the number of violations no production frame owned.
@@ -162,17 +233,89 @@ func (s *violationSink) testOnlyCount() int {
 func (s *violationSink) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sites = map[string]*siteAgg{}
+	s.seen = map[sighting]bool{}
+	s.order = nil
 	s.testOnly = 0
 }
 
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// summarize folds sightings of one kind into per-key summaries, sorted.
+func summarize(all []sighting, kind eventKind) []SiteSummary {
+	type agg struct {
+		lines  map[int]bool
+		tests  map[string]bool
+		events map[[2]string]bool
+		sample string
+		via    string
 	}
-	sort.Strings(out)
+	byKey := map[SiteKey]*agg{}
+	for _, sg := range all {
+		if sg.kind != kind {
+			continue
+		}
+		a, ok := byKey[sg.key]
+		if !ok {
+			a = &agg{lines: map[int]bool{}, tests: map[string]bool{}, events: map[[2]string]bool{}}
+			byKey[sg.key] = a
+		}
+		a.lines[sg.line] = true
+		a.tests[sg.test] = true
+		a.events[[2]string{strconv.Itoa(sg.line), sg.test}] = true
+		if a.sample == "" || (a.sample == "?" && sg.test != "?") {
+			a.sample = sg.test
+		}
+		if a.via == "" {
+			a.via = sg.via
+		}
+	}
+	out := make([]SiteSummary, 0, len(byKey))
+	for k, a := range byKey {
+		lines := make([]int, 0, len(a.lines))
+		for l := range a.lines {
+			lines = append(lines, l)
+		}
+		sort.Ints(lines)
+		out = append(out, SiteSummary{Key: k, Lines: lines, Tests: len(a.tests), Events: len(a.events), SampleTest: a.sample, SampleVia: a.via})
+	}
+	sort.Slice(out, func(i, j int) bool { return lessKey(out[i].Key, out[j].Key) })
 	return out
+}
+
+func lessKey(a, b SiteKey) bool {
+	for _, pair := range [][2]string{{a.File, b.File}, {a.Func, b.Func}, {a.Op, b.Op}, {a.View, b.View}, {a.Class, b.Class}, {a.Caller, b.Caller}} {
+		if pair[0] != pair[1] {
+			return pair[0] < pair[1]
+		}
+	}
+	return false
+}
+
+// readSightingFiles reads every events file in dir (this process's and any
+// re-executed helper's).
+func readSightingFiles(dir string) ([]sighting, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, eventsFilePattern))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	var out []sighting
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			if sg, ok := parseSighting(scanner.Text()); ok {
+				out = append(out, sg)
+			}
+		}
+		_ = f.Close()
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // violationLog collects one strict leaf's split violations for its test's

@@ -1283,9 +1283,11 @@ func findBeadScopeAcrossStores(cityPath, beadID string, warningWriter io.Writer)
 	if err != nil {
 		return nil, "", fmt.Errorf("opening city store: %w", err)
 	}
+	// Relic leg (S4 debt): a scope store holds this class only as rows
+	// written before the split; beads.RelicRead counts it as debt.
 	// A scope probe (city, then rigs, then the graph binding below): a miss
 	// moves to the next scope.
-	if _, err := beads.FederatedGet(cityStore, beadID); err == nil {
+	if _, err := beads.RelicGet(cityStore, beadID); err == nil {
 		return cityStore, cityPath, nil
 	} else if !errors.Is(err, beads.ErrNotFound) {
 		return nil, "", fmt.Errorf("getting bead %q from %s: %w", beadID, cityPath, err)
@@ -1302,7 +1304,9 @@ func findBeadScopeAcrossStores(cityPath, beadID string, warningWriter io.Writer)
 		if err != nil {
 			return nil, "", fmt.Errorf("opening rig store %q: %w", rig.Name, err)
 		}
-		if _, err := beads.FederatedGet(store, beadID); err != nil {
+		// Relic leg (S4 debt): a rig store holds graph control beads only as
+		// rows written before the split or by rig-scope writers S4 moves.
+		if _, err := beads.RelicGet(store, beadID); err != nil {
 			if errors.Is(err, beads.ErrNotFound) {
 				continue
 			}
@@ -1904,10 +1908,12 @@ func cmdWorkflowDelete(workflowID string, force, deleteBeads bool, stdout, stder
 	}
 	for _, info := range stores {
 		label := workflowDeleteStoreLabelForView(cfg, cityPath, info)
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// One view of the federated sweep (scope stores and the binding):
 		// each holds only its own rows of the workflow.
 		var found []beads.Bead
-		err := beads.FederatedRead(func() error {
+		err := beads.RelicRead(func() error {
 			var findErr error
 			found, findErr = findWorkflowBeads(info.store, workflowID)
 			return findErr
@@ -3042,10 +3048,12 @@ func (c *sourceWorkflowMatchCollector) collect(currentSourceID, currentSourceSto
 		return nil
 	}
 	for i, info := range c.stores {
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// One view of the source-workflow walk (scope stores and the
 		// binding): each lists only the roots and children it holds.
 		var children []beads.Bead
-		err := beads.FederatedRead(func() error {
+		err := beads.RelicRead(func() error {
 			var scanErr error
 			children, scanErr = c.scanStore(i, info, currentSourceID, currentSourceStoreRef)
 			return scanErr
@@ -3245,9 +3253,11 @@ func assessZeroMatchSourceWorkflowScan(scans []sourceWorkflowStoreScan, sourceBe
 
 	blockingSet := make(map[string]struct{})
 	for _, view := range successfulViews {
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// One view of the zero-match re-scan; each holds only its own roots.
 		var roots []beads.Bead
-		err := beads.FederatedRead(func() error {
+		err := beads.RelicRead(func() error {
 			var listErr error
 			roots, listErr = beads.HandlesFor(view.store).Live.List(beads.ListQuery{
 				Metadata: map[string]string{

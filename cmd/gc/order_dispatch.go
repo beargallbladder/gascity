@@ -3211,15 +3211,7 @@ func sweepStaleOrderTrackingAcrossStoresLimitMode(stores []beads.Store, wispStor
 				break
 			}
 		}
-		// One leg of the sweep federation (the scope stores kept for
-		// pre-cutover tracking history, plus the orders binding on a split
-		// city): each sweeps only the tracking rows it holds.
-		var partial orderTrackingSweepResult
-		err := beads.FederatedRead(func() error {
-			var sweepErr error
-			partial, sweepErr = sweepStaleOrderTrackingWithOptionsLimitMode(store, now, staleAfter, onlyOrders, initiator, perStoreWisps, remainingLimit, dryRun)
-			return sweepErr
-		})
+		partial, err := sweepStaleOrderTrackingWithOptionsLimitMode(store, now, staleAfter, onlyOrders, initiator, perStoreWisps, remainingLimit, dryRun)
 		result.trackingClosed += partial.trackingClosed
 		result.wispClosed += partial.wispClosed
 		if err != nil {
@@ -3290,7 +3282,15 @@ func sweepStaleOrderTrackingWithOptionsLimitMode(store beads.Store, now time.Tim
 	// close (below) stays raw because it stamps sweep audit metadata that the
 	// domain object deliberately omits, and the wisp-subtree recovery is graph
 	// residual.
-	runs, err := orders.NewStore(beads.OrdersStore{Store: store}).StaleOpenRuns(cutoff)
+	// The sweep federates the scope stores, kept for tracking rows written
+	// before the orders class moved to its binding, with the binding itself:
+	// a scope leg reads relics.
+	var runs []orders.OrderRun
+	err := beads.RelicRead(func() error {
+		var listErr error
+		runs, listErr = orders.NewStore(beads.OrdersStore{Store: store}).StaleOpenRuns(cutoff)
+		return listErr
+	})
 	if err != nil {
 		return orderTrackingSweepResult{}, fmt.Errorf("listing order-tracking beads: %w", err)
 	}
@@ -3351,13 +3351,7 @@ func sweepClosedOrderTrackingRetentionAcrossStores(stores []beads.Store, now tim
 		if store == nil {
 			continue
 		}
-		// One leg of the sweep federation; see sweepStaleOrderTrackingAcrossStores.
-		var n int
-		err := beads.FederatedRead(func() error {
-			var sweepErr error
-			n, sweepErr = sweepClosedOrderTrackingRetention(store, now, policy, onlyOrders)
-			return sweepErr
-		})
+		n, err := sweepClosedOrderTrackingRetention(store, now, policy, onlyOrders)
 		result.deleted += n
 		if err != nil {
 			errs = append(errs, fmt.Errorf("pruning closed order-tracking %s: %w", orderTrackingSweepStoreLabel(store, i), err))
@@ -3410,7 +3404,14 @@ func sweepClosedOrderTrackingRetention(store beads.Store, now time.Time, policy 
 	if policy.retainLast < minClosedOrderTrackingRetained {
 		policy.retainLast = minClosedOrderTrackingRetained
 	}
-	runs, err := orders.NewStore(beads.OrdersStore{Store: store}).ClosedRunsForRetention()
+	// A scope leg of the retention sweep reads pre-cutover tracking relics;
+	// see sweepStaleOrderTrackingWithOptionsLimitMode.
+	var runs []orders.OrderRun
+	err := beads.RelicRead(func() error {
+		var listErr error
+		runs, listErr = orders.NewStore(beads.OrdersStore{Store: store}).ClosedRunsForRetention()
+		return listErr
+	})
 	if err != nil {
 		return 0, fmt.Errorf("listing closed order-tracking beads: %w", err)
 	}
@@ -3482,7 +3483,14 @@ func sweepClosedOrderTrackingRetentionBounded(store beads.Store, now time.Time, 
 	if policy.retainLast < minClosedOrderTrackingRetained {
 		policy.retainLast = minClosedOrderTrackingRetained
 	}
-	runs, err := orders.NewStore(beads.OrdersStore{Store: store}).ClosedRunsForRetention()
+	// A scope leg of the retention sweep reads pre-cutover tracking relics;
+	// see sweepStaleOrderTrackingWithOptionsLimitMode.
+	var runs []orders.OrderRun
+	err := beads.RelicRead(func() error {
+		var listErr error
+		runs, listErr = orders.NewStore(beads.OrdersStore{Store: store}).ClosedRunsForRetention()
+		return listErr
+	})
 	if err != nil {
 		return 0, fmt.Errorf("listing closed order-tracking beads: %w", err)
 	}
@@ -3553,9 +3561,10 @@ func countClosedOrderTrackingRetentionEligible(stores []beads.Store, now time.Ti
 		if store == nil {
 			continue
 		}
-		// One leg of the sweep federation; see sweepStaleOrderTrackingAcrossStores.
+		// A scope leg reads pre-cutover tracking relics; see
+		// sweepStaleOrderTrackingWithOptionsLimitMode.
 		var runs []orders.OrderRun
-		err := beads.FederatedRead(func() error {
+		err := beads.RelicRead(func() error {
 			var listErr error
 			runs, listErr = orders.NewStore(beads.OrdersStore{Store: store}).ClosedRunsForRetention()
 			return listErr

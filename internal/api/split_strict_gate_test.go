@@ -19,22 +19,47 @@ import (
 // on a split city, and the read is charged to its production call site. See
 // internal/beads/splittest/projection.go.
 //
-// TestMain runs the ratchet over the sites the run reached: a site the baseline
-// below does not list fails the run. Regenerate the baseline from a full run
+// TestMain reports the ratchet over the keys the run reached, and the failing
+// tests against the known failures, as two separate verdicts
+// (internal/beads/splittest/gate.go). Regenerate the baseline from a full run
 // with scripts/split-strict-baseline.
 
-// splitStrictBaseline is this package's checked-in list of known violation
-// sites, relative to the package directory the test binary runs in.
-const splitStrictBaseline = "testdata/split_strict_baseline.tsv"
+// splitStrictFiles are this package's checked-in gate inputs, relative to the
+// package directory the test binary runs in.
+var splitStrictFiles = splittest.GateFiles{
+	Baseline:      "testdata/split_strict_baseline.tsv",
+	KnownFailures: "testdata/split_strict_known_failures.txt",
+}
 
-func TestSplitStrictBaselineParses(t *testing.T) {
-	f, err := os.Open(splitStrictBaseline)
+func init() {
+	if splittest.GateEnabled() {
+		splittest.SetPackageUnderTest("internal/api")
+		splittest.SetGateFiles(splitStrictFiles)
+	}
+}
+
+func TestSplitStrictGateInputsParse(t *testing.T) {
+	f, err := os.Open(splitStrictFiles.Baseline)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	if _, err := splittest.ParseBaseline(f); err != nil {
-		t.Fatalf("%s: %v", splitStrictBaseline, err)
+	entries, err := splittest.ParseBaseline(f)
+	if err != nil {
+		t.Fatalf("%s: %v", splitStrictFiles.Baseline, err)
+	}
+	for _, e := range entries {
+		if e.Verdict == splittest.VerdictTriage {
+			t.Errorf("%s: %s is unadjudicated (triage); give it a verdict", splitStrictFiles.Baseline, e.Key)
+		}
+	}
+	k, err := os.Open(splitStrictFiles.KnownFailures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close() //nolint:errcheck // read-only
+	if _, err := splittest.ParseKnownFailures(k); err != nil {
+		t.Fatalf("%s: %v", splitStrictFiles.KnownFailures, err)
 	}
 }
 

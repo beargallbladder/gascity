@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"weak"
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
@@ -30,40 +31,66 @@ import (
 // see on a split city, and every row a view hid from a caller that asked for it
 // is a violation charged to the caller's production call site:
 //
-//   - a by-id read (Get, DepList) of a wrong-class row;
+//   - a by-id read (Get, DepList, GetExactBatch) of a wrong-class row;
 //   - a list read whose query SELECTED the hidden row: by id, parent, type,
 //     label, metadata or assignee. A broad scan (ListOpen, an unfiltered
 //     Ready, a status-only List) also hides rows but is not flagged: it was
-//     not looking for them, it merely filters what it finds;
-//   - a write (Update, Close, SetMetadata, DepAdd, ...) that touches a
-//     wrong-class row, which then fails with ErrNotFound as it would on a split
-//     city;
+//     not looking for them, it merely filters what it finds. A list with a
+//     Limit is filtered BEFORE the limit, as a split city's store would be;
+//   - a write (Update, Close, SetMetadata, DepAdd, a conditional, CAS or
+//     guarded-batch write, ...) that touches a wrong-class row, which then
+//     fails with ErrNotFound as it would on a split city;
 //   - a Create of a bead whose class belongs to the other side. The row lands,
 //     but only the view that created it can see it afterwards, exactly as a
 //     misrouted write on a split city is invisible to the class's readers.
 //
-// A read inside beads.FederatedRead is a declared federation leg or residence
-// probe: it is filtered but not flagged.
+// A READ inside beads.FederatedRead is a declared federation leg or residence
+// probe: it is filtered but not flagged. A read inside beads.RelicRead is a
+// leg the split plan has ruled against but still needs (pre-split rows in a
+// scope store): filtered, not a failure, and counted per call site as debt.
+// Neither marker covers a write.
 //
-// Three refinements keep the gate quiet about what is not a routing defect.
-// Infrastructure beads a MemStore leaf mints get the class binding's "gcg-"
-// prefix (MemStore.SetMintPrefixFunc), so by-id routers can route by reserved
-// prefix the way they do on a born-split city. Broad scans are not flagged (see
+// # Root and front
+//
+// A store reaches a view through whatever production wrapped around it: the
+// cmd/gc bead policy store, the controller's CachingStore, the typed class
+// wrappers. A projection is keyed by the ROOT under all of them (found by
+// following views, Backing() and declared conditional-writes resolution
+// targets), so the city cache and the policy store over the same MemStore
+// share one projection, one set of misplaced-row pins and one mint hook. Each
+// view delegates to the FRONT it was asked for, so the code under test keeps
+// its policy, cache and capability paths. A view found nested inside a front
+// (a CachingStore over a work view) is skipped: the outer view delegates to
+// the inner view's front, so views never stack.
+//
+// # Refinements
+//
+// Infrastructure beads a MemStore (or FileStore) root mints get the class
+// binding's "gcg-" prefix (MemStore.SetMintPrefixFunc), so by-id routers can
+// route by reserved prefix the way they do on a born-split city; a strict kit
+// leaf (StrictStore) keeps its own prefixes. Broad scans are not flagged (see
 // above). Rig stores are work views like the city store: graph beads always
 // live in the city binding, so a rig-store graph write is a violation of its
 // own, and the sites that do it today sit in the baseline as known violations
 // rather than on an allow-list.
 type Projection struct {
-	leaf beads.Store
+	root beads.Store
 	sink *violationSink
 
 	mu sync.Mutex
 	// misplaced pins the side of a row created through the wrong view: a
 	// misrouted write is visible only where it was written.
 	misplaced map[string]projectionSide
+	// views memoizes one view per (front, side), so view identity is stable.
+	views map[viewKey]beads.Store
+	// defaultFront is the front WorkView and ClassView hand out views over:
+	// the store the projection was first asked about.
+	defaultFront beads.Store
+}
 
-	work  beads.Store
-	class beads.Store
+type viewKey struct {
+	front any
+	side  projectionSide
 }
 
 type projectionSide int
@@ -82,57 +109,170 @@ func (s projectionSide) String() string {
 
 var (
 	projectionsMu sync.Mutex
-	projections   = map[any]*Projection{}
+	// projections maps a root to its projection. Both halves are weak where
+	// the root's type allows (the in-memory roots tests use), so a finished
+	// test's stores are collectable: a live view holds its projection, and
+	// nothing else needs to.
+	projections   = map[any]weak.Pointer[Projection]{}
+	projectionsGC = 64
 )
 
-// ProjectionOf returns the memoized projection over leaf, building it on first
-// use. A view passed as leaf is unwrapped to its physical store, so asking for
-// the class view of a work view yields the class view of the same store, and
-// view identity is stable for the life of the process. A *beads.MemStore leaf
-// gets the gate's mint hook: infrastructure beads it mints from then on carry
-// the class binding's prefix.
-func ProjectionOf(leaf beads.Store) *Projection {
-	return projectionOf(leaf, gateSink)
+// ProjectionOf returns the memoized projection over store's root, building it
+// on first use. See Projection for root and front.
+func ProjectionOf(store beads.Store) *Projection {
+	return projectionOf(store, gateSink)
 }
 
-func projectionOf(leaf beads.Store, sink *violationSink) *Projection {
-	if v, ok := leaf.(projectionView); ok {
-		leaf = v.projection().leaf
+func projectionOf(store beads.Store, sink *violationSink) *Projection {
+	if store == nil {
+		return nil
 	}
-	key, keyable := projectionKey(leaf)
+	root, inner := projectionRoot(store)
+	if inner != nil {
+		return inner
+	}
+	key, keyable := rootKey(root)
+	projectionsMu.Lock()
+	defer projectionsMu.Unlock()
 	if keyable {
-		projectionsMu.Lock()
-		defer projectionsMu.Unlock()
-		if p, ok := projections[key]; ok {
+		if p := projections[key].Value(); p != nil {
 			return p
 		}
 	}
-	p := &Projection{leaf: leaf, sink: sink, misplaced: map[string]projectionSide{}}
-	p.work = newProjectionView(p, sideWork)
-	p.class = newProjectionView(p, sideClass)
-	if minter, ok := leaf.(mintPrefixSetter); ok {
+	p := &Projection{
+		root:         root,
+		sink:         sink,
+		misplaced:    map[string]projectionSide{},
+		views:        map[viewKey]beads.Store{},
+		defaultFront: frontOf(store),
+	}
+	if minter, ok := root.(mintPrefixSetter); ok {
 		minter.SetMintPrefixFunc(classMintPrefix)
 	}
 	if keyable {
-		projections[key] = p
+		projections[key] = weak.Make(p)
+		if len(projections) > projectionsGC {
+			for k, w := range projections {
+				if w.Value() == nil {
+					delete(projections, k)
+				}
+			}
+			projectionsGC = 2*len(projections) + 64
+		}
 	}
 	return p
+}
+
+// rootKey returns a map key for root: a weak pointer for the in-memory roots
+// tests use, so the key does not keep the store alive, and the value itself
+// for any other comparable root.
+func rootKey(root beads.Store) (any, bool) {
+	switch r := root.(type) {
+	case *beads.MemStore:
+		return weak.Make(r), true
+	case *beads.FileStore:
+		return weak.Make(r), true
+	case *beads.CachingStore:
+		return weak.Make(r), true
+	case *StrictStore:
+		return weak.Make(r), true
+	case *strictStorageStore:
+		return weak.Make(r), true
+	}
+	if root == nil || !reflect.TypeOf(root).Comparable() {
+		return nil, false
+	}
+	return root, true
+}
+
+// maxUnwrapDepth bounds the root walk so a self-referential wrapper cannot
+// loop it.
+const maxUnwrapDepth = 16
+
+// projectionRoot follows store's wrappers to the physical root, returning the
+// projection of a view met on the way instead when there is one.
+func projectionRoot(store beads.Store) (beads.Store, *Projection) {
+	current := store
+	for range maxUnwrapDepth {
+		if v, ok := current.(projectionView); ok {
+			return nil, v.projection()
+		}
+		next, ok := unwrapOnce(current)
+		if !ok {
+			return current, nil
+		}
+		current = next
+	}
+	return current, nil
+}
+
+// unwrapOnce returns the store one wrapper layer down. A strict kit leaf is a
+// boundary: it models a whole store of its own, so a projection over it keeps
+// it as the root (and leaves its prefixes alone).
+func unwrapOnce(store beads.Store) (beads.Store, bool) {
+	switch s := store.(type) {
+	case projectionView:
+		return s.viewFront(), true
+	case *StrictStore, *strictStorageStore:
+		return nil, false
+	}
+	if backed, ok := store.(interface{ Backing() beads.Store }); ok {
+		if next := backed.Backing(); next != nil && next != store {
+			return next, true
+		}
+	}
+	if targeter, ok := store.(beads.ConditionalWritesResolveTargeter); ok {
+		if next := targeter.ConditionalWritesResolveTarget(); next != nil && next != store {
+			return next, true
+		}
+	}
+	return nil, false
+}
+
+// frontOf strips views from store: a view's own front, or, when a view sits
+// nested inside store's wrappers, that view's front, so views never stack.
+func frontOf(store beads.Store) beads.Store {
+	current := store
+	for range maxUnwrapDepth {
+		if v, ok := current.(projectionView); ok {
+			return v.viewFront()
+		}
+		next, ok := unwrapOnce(current)
+		if !ok {
+			return store
+		}
+		current = next
+	}
+	return store
+}
+
+// viewFor returns the memoized view of one side over front.
+func (p *Projection) viewFor(front beads.Store, side projectionSide) beads.Store {
+	front = frontOf(front)
+	comparable := front != nil && reflect.TypeOf(front).Comparable()
+	if comparable {
+		p.mu.Lock()
+		if v, ok := p.views[viewKey{front: front, side: side}]; ok {
+			p.mu.Unlock()
+			return v
+		}
+		p.mu.Unlock()
+	}
+	v := newProjectionView(p, front, side)
+	if comparable {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if existing, ok := p.views[viewKey{front: front, side: side}]; ok {
+			return existing
+		}
+		p.views[viewKey{front: front, side: side}] = v
+	}
+	return v
 }
 
 // mintPrefixSetter is the MemStore mint hook, also promoted through FileStore.
 type mintPrefixSetter interface {
 	SetMintPrefixFunc(func(beads.Bead) string)
-}
-
-// projectionKey returns leaf as a map key when its dynamic value is comparable.
-func projectionKey(leaf beads.Store) (any, bool) {
-	if leaf == nil {
-		return nil, false
-	}
-	if !reflect.TypeOf(leaf).Comparable() {
-		return nil, false
-	}
-	return leaf, true
 }
 
 // classMintPrefix is the gate's mint hook: infrastructure beads mint under the
@@ -145,14 +285,23 @@ func classMintPrefix(b beads.Bead) string {
 	return ""
 }
 
-// WorkView returns the view a work accessor hands out.
-func (p *Projection) WorkView() beads.Store { return p.work }
+// WorkView returns the work view over the store the projection was first
+// asked about.
+func (p *Projection) WorkView() beads.Store { return p.viewFor(p.defaultFront, sideWork) }
 
-// ClassView returns the view a coordination-class accessor hands out.
-func (p *Projection) ClassView() beads.Store { return p.class }
+// ClassView returns the class view over the store the projection was first
+// asked about.
+func (p *Projection) ClassView() beads.Store { return p.viewFor(p.defaultFront, sideClass) }
 
-// Leaf returns the physical store the views share.
-func (p *Projection) Leaf() beads.Store { return p.leaf }
+// WorkViewOf returns the work view over front, a store whose root is this
+// projection's.
+func (p *Projection) WorkViewOf(front beads.Store) beads.Store { return p.viewFor(front, sideWork) }
+
+// ClassViewOf returns the class view over front.
+func (p *Projection) ClassViewOf(front beads.Store) beads.Store { return p.viewFor(front, sideClass) }
+
+// Root returns the physical store under every wrapper the views share.
+func (p *Projection) Root() beads.Store { return p.root }
 
 // sideOf reports which side of the split owns b.
 func (p *Projection) sideOf(b beads.Bead) projectionSide {
@@ -162,6 +311,10 @@ func (p *Projection) sideOf(b beads.Bead) projectionSide {
 	if ok {
 		return pinned
 	}
+	return classSide(b)
+}
+
+func classSide(b beads.Bead) projectionSide {
 	if coordclass.Classify(b).IsInfrastructure() {
 		return sideClass
 	}
@@ -174,14 +327,15 @@ func (p *Projection) pin(id string, side projectionSide) {
 	p.misplaced[id] = side
 }
 
-// projectionView is implemented by both view variants.
+// projectionView is implemented by every view variant.
 type projectionView interface {
 	projection() *Projection
+	viewFront() beads.Store
 }
 
-// view is one side of a projection. It embeds the physical store for the
-// methods it does not need to police (Ping, local strings) and overrides every
-// read and write that names or returns a row.
+// view is one side of a projection over one front. It embeds the front for
+// the methods it does not need to police (Ping, local strings) and overrides
+// every read and write that names or returns a row.
 type view struct {
 	beads.Store
 	p    *Projection
@@ -189,50 +343,62 @@ type view struct {
 }
 
 // storageView is the StorageCreateStore-preserving variant, built only over a
-// leaf that has CreateWithStorage, so the policy layer's storage fallback keeps
-// firing for leaves without it.
+// front that has CreateWithStorage, so the policy layer's storage fallback
+// keeps firing for fronts without it.
 type storageView struct {
 	*view
 	storage beads.StorageCreateStore
 }
 
-func newProjectionView(p *Projection, side projectionSide) beads.Store {
-	v := &view{Store: p.leaf, p: p, side: side}
-	if storage, ok := p.leaf.(beads.StorageCreateStore); ok {
+func newProjectionView(p *Projection, front beads.Store, side projectionSide) beads.Store {
+	v := &view{Store: front, p: p, side: side}
+	if storage, ok := front.(beads.StorageCreateStore); ok {
 		return &storageView{view: v, storage: storage}
 	}
 	return v
 }
 
 var (
-	_ beads.Store                            = (*view)(nil)
-	_ beads.StorageCreateStore               = (*storageView)(nil)
-	_ beads.ContextReadyReader               = (*view)(nil)
-	_ beads.Counter                          = (*view)(nil)
-	_ beads.GraphApplyHandleProvider         = (*view)(nil)
-	_ beads.ConditionalWriterHandleProvider  = (*view)(nil)
-	_ beads.ConditionalWritesResolveTargeter = (*view)(nil)
-	_ beads.GuardedBatcherHandleProvider     = (*view)(nil)
-	_ beads.MetadataCASWriterHandleProvider  = (*view)(nil)
-	_ beads.AtomicTxStore                    = (*view)(nil)
-	_ beads.ParentProjectionWaiter           = (*view)(nil)
-	_ beads.DepMetadataReader                = (*view)(nil)
-	_ beads.BatchDeleter                     = (*view)(nil)
-	_ beads.ConditionalAssignmentReleaser    = (*view)(nil)
+	_ beads.Store                                 = (*view)(nil)
+	_ beads.StorageCreateStore                    = (*storageView)(nil)
+	_ beads.ContextReadyReader                    = (*view)(nil)
+	_ beads.Counter                               = (*view)(nil)
+	_ beads.GraphApplyHandleProvider              = (*view)(nil)
+	_ beads.ConditionalWriterHandleProvider       = (*view)(nil)
+	_ beads.ConditionalWritesResolveTargeter      = (*view)(nil)
+	_ beads.GuardedBatcherHandleProvider          = (*view)(nil)
+	_ beads.MetadataCASWriterHandleProvider       = (*view)(nil)
+	_ beads.AtomicConditionalCloserHandleProvider = (*view)(nil)
+	_ beads.AtomicTxStore                         = (*view)(nil)
+	_ beads.ParentProjectionWaiter                = (*view)(nil)
+	_ beads.DepMetadataReader                     = (*view)(nil)
+	_ beads.DepMetadataWriter                     = (*view)(nil)
+	_ beads.BatchDeleter                          = (*view)(nil)
+	_ beads.ConditionalAssignmentReleaser         = (*view)(nil)
+	_ beads.ConditionalAssigneeTransferer         = (*view)(nil)
+	_ beads.ExactBatchGetter                      = (*view)(nil)
+	_ beads.ChildrenBatchLister                   = (*view)(nil)
+	_ beads.DependencyBatchLister                 = (*view)(nil)
+	_ cachedLister                                = (*view)(nil)
 )
 
+// cachedLister is internal/api's cache-first list (cache_read_model.go).
+type cachedLister interface {
+	CachedList(beads.ListQuery) ([]beads.Bead, bool)
+}
+
 func (v *view) projection() *Projection { return v.p }
+func (v *view) viewFront() beads.Store  { return v.Store }
 
 func (v *view) visible(b beads.Bead) bool { return v.p.sideOf(b) == v.side }
 
-// flag charges one hidden row to the caller's production call site, unless the
-// caller declared the read a federation leg.
-func (v *view) flag(op string, b beads.Bead) {
+// flag charges one hidden row to the caller's production call site. A READ
+// under beads.FederatedRead is not charged; a read under beads.RelicRead is
+// counted as relic debt instead. A write is charged whatever marker it runs
+// under: the markers vouch for a miss, never for a misplaced write.
+func (v *view) flag(op string, b beads.Bead, read bool) {
 	facts := captureStack()
-	if facts.federated {
-		return
-	}
-	v.p.sink.record(SplitViolation{
+	violation := SplitViolation{
 		View:  v.side.String(),
 		Op:    op,
 		Class: coordclass.Classify(b).String(),
@@ -240,7 +406,18 @@ func (v *view) flag(op string, b beads.Bead) {
 		Site:  facts.site,
 		Via:   facts.via,
 		Test:  facts.test,
-	})
+		Pkg:   facts.pkg,
+	}
+	if read {
+		switch facts.marker {
+		case beads.FederatedReadMarker:
+			return
+		case beads.RelicReadMarker:
+			v.p.sink.recordRelic(violation)
+			return
+		}
+	}
+	v.p.sink.record(violation)
 }
 
 // filter drops the rows this view cannot see, flagging them when the query
@@ -256,7 +433,7 @@ func (v *view) filter(op string, selective bool, rows []beads.Bead, err error) (
 			continue
 		}
 		if selective {
-			v.flag(op, b)
+			v.flag(op, b, true)
 		}
 	}
 	return out, nil
@@ -268,87 +445,136 @@ func notHere(id string) error {
 }
 
 // guardID answers whether a by-id write may proceed: nil when the row is this
-// view's (or does not exist, so the leaf reports its own error), ErrNotFound
+// view's (or does not exist, so the front reports its own error), ErrNotFound
 // after flagging when it belongs to the other side.
 func (v *view) guardID(op, id string) error {
-	b, err := v.p.leaf.Get(id)
+	b, err := v.Store.Get(id)
 	if err != nil {
 		return nil
 	}
 	if v.visible(b) {
 		return nil
 	}
-	v.flag(op, b)
+	v.flag(op, b, false)
 	return notHere(id)
 }
 
 // Get hides a wrong-class row.
 func (v *view) Get(id string) (beads.Bead, error) {
-	b, err := v.p.leaf.Get(id)
+	b, err := v.Store.Get(id)
 	if err != nil {
 		return b, err
 	}
 	if !v.visible(b) {
-		v.flag("get", b)
+		v.flag("get", b, true)
 		return beads.Bead{}, notHere(id)
 	}
 	return b, nil
 }
 
-// List hides wrong-class rows, flagging them when the query selected them.
+// List hides wrong-class rows, flagging them when the query selected them. A
+// limit applies after the filter.
 func (v *view) List(q beads.ListQuery) ([]beads.Bead, error) {
-	rows, err := v.p.leaf.List(q)
-	return v.filter("list", listQuerySelective(q), rows, err)
+	limit := q.Limit
+	q.Limit = 0
+	rows, err := v.Store.List(q)
+	rows, err = v.filter("list", listQuerySelective(q), rows, err)
+	return limitRows(rows, limit), err
+}
+
+// CachedList is internal/api's cache-first list, filtered like List; a front
+// without one answers "not cached" so the caller lists.
+func (v *view) CachedList(q beads.ListQuery) ([]beads.Bead, bool) {
+	cached, ok := v.Store.(cachedLister)
+	if !ok {
+		return nil, false
+	}
+	limit := q.Limit
+	q.Limit = 0
+	rows, hit := cached.CachedList(q)
+	if !hit {
+		return nil, false
+	}
+	rows, _ = v.filter("list", listQuerySelective(q), rows, nil)
+	return limitRows(rows, limit), true
 }
 
 // ListOpen is a broad scan: it hides wrong-class rows without flagging.
 func (v *view) ListOpen(status ...string) ([]beads.Bead, error) {
-	rows, err := v.p.leaf.ListOpen(status...)
+	rows, err := v.Store.ListOpen(status...)
 	return v.filter("list-open", false, rows, err)
 }
 
-// Ready hides wrong-class rows, flagging them when the query selected them.
+// Ready hides wrong-class rows, flagging them when the query selected them. A
+// limit applies after the filter.
 func (v *view) Ready(q ...beads.ReadyQuery) ([]beads.Bead, error) {
-	rows, err := v.p.leaf.Ready(q...)
-	return v.filter("ready", readyQuerySelective(q), rows, err)
+	unlimited, limit := unlimitedReady(q)
+	rows, err := v.Store.Ready(unlimited...)
+	rows, err = v.filter("ready", readyQuerySelective(q), rows, err)
+	return limitRows(rows, limit), err
 }
 
-// ReadyContext is Ready with the leaf's deadline-aware read when it has one.
+// ReadyContext is Ready with the front's deadline-aware read when it has one.
 func (v *view) ReadyContext(ctx context.Context, q ...beads.ReadyQuery) ([]beads.Bead, error) {
+	unlimited, limit := unlimitedReady(q)
 	var rows []beads.Bead
 	var err error
-	if reader, ok := v.p.leaf.(beads.ContextReadyReader); ok {
-		rows, err = reader.ReadyContext(ctx, q...)
+	if reader, ok := v.Store.(beads.ContextReadyReader); ok {
+		rows, err = reader.ReadyContext(ctx, unlimited...)
 	} else {
-		rows, err = v.p.leaf.Ready(q...)
+		rows, err = v.Store.Ready(unlimited...)
 	}
-	return v.filter("ready", readyQuerySelective(q), rows, err)
+	rows, err = v.filter("ready", readyQuerySelective(q), rows, err)
+	return limitRows(rows, limit), err
+}
+
+// unlimitedReady strips the limit from a ready query so the view can filter
+// before limiting.
+func unlimitedReady(q []beads.ReadyQuery) ([]beads.ReadyQuery, int) {
+	if len(q) == 0 || q[0].Limit == 0 {
+		return q, 0
+	}
+	out := append([]beads.ReadyQuery(nil), q...)
+	limit := out[0].Limit
+	out[0].Limit = 0
+	return out, limit
 }
 
 // Children hides wrong-class children; asking for a parent's children selects
 // them, so every hidden child is flagged.
 func (v *view) Children(parentID string, opts ...beads.QueryOpt) ([]beads.Bead, error) {
-	rows, err := v.p.leaf.Children(parentID, opts...)
+	rows, err := v.Store.Children(parentID, opts...)
+	return v.filter("children", true, rows, err)
+}
+
+// ChildrenOfAny is Children over several parents, through the front's batched
+// read when it has one.
+func (v *view) ChildrenOfAny(parentIDs []string, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	batch, ok := v.Store.(beads.ChildrenBatchLister)
+	if !ok {
+		return beads.ChildrenOfAnyPerParent(v, parentIDs, opts...)
+	}
+	rows, err := batch.ChildrenOfAny(parentIDs, opts...)
 	return v.filter("children", true, rows, err)
 }
 
 // ListByLabel hides and flags wrong-class rows.
 func (v *view) ListByLabel(label string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
-	rows, err := v.p.leaf.ListByLabel(label, 0, opts...)
+	rows, err := v.Store.ListByLabel(label, 0, opts...)
 	rows, err = v.filter("list-by-label", true, rows, err)
 	return limitRows(rows, limit), err
 }
 
 // ListByAssignee hides and flags wrong-class rows.
 func (v *view) ListByAssignee(assignee, status string, limit int) ([]beads.Bead, error) {
-	rows, err := v.p.leaf.ListByAssignee(assignee, status, 0)
+	rows, err := v.Store.ListByAssignee(assignee, status, 0)
 	rows, err = v.filter("list-by-assignee", true, rows, err)
 	return limitRows(rows, limit), err
 }
 
 // ListByMetadata hides and flags wrong-class rows.
 func (v *view) ListByMetadata(filters map[string]string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
-	rows, err := v.p.leaf.ListByMetadata(filters, 0, opts...)
+	rows, err := v.Store.ListByMetadata(filters, 0, opts...)
 	rows, err = v.filter("list-by-metadata", true, rows, err)
 	return limitRows(rows, limit), err
 }
@@ -360,6 +586,27 @@ func limitRows(rows []beads.Bead, limit int) []beads.Bead {
 	return rows
 }
 
+// GetExactBatch reads several ids, through the front's batch when it has one;
+// a wrong-class row is reported unresolved, as a split city's store would.
+func (v *view) GetExactBatch(ids []string) (map[string]beads.Bead, []string, error) {
+	getter, ok := v.Store.(beads.ExactBatchGetter)
+	if !ok {
+		return nil, nil, beads.ErrExactBatchGetUnsupported
+	}
+	found, unresolved, err := getter.GetExactBatch(ids)
+	if err != nil {
+		return found, unresolved, err
+	}
+	for id, b := range found {
+		if !v.visible(b) {
+			v.flag("get", b, true)
+			delete(found, id)
+			unresolved = append(unresolved, id)
+		}
+	}
+	return found, unresolved, nil
+}
+
 // Count is unsupported on a view: a count cannot be filtered by class, so
 // callers fall back to List, which can.
 func (v *view) Count(context.Context, beads.ListQuery, ...string) (int, error) {
@@ -369,7 +616,7 @@ func (v *view) Count(context.Context, beads.ListQuery, ...string) (int, error) {
 // Create lands the row, flagging a bead of the other side's class and pinning
 // it to this view, the only one that will see it.
 func (v *view) Create(b beads.Bead) (beads.Bead, error) {
-	created, err := v.p.leaf.Create(b)
+	created, err := v.Store.Create(b)
 	if err != nil {
 		return created, err
 	}
@@ -377,7 +624,7 @@ func (v *view) Create(b beads.Bead) (beads.Bead, error) {
 	return created, nil
 }
 
-// CreateWithStorage is Create through the leaf's storage-tier create.
+// CreateWithStorage is Create through the front's storage-tier create.
 func (v *storageView) CreateWithStorage(b beads.Bead, storage beads.StorageClass) (beads.Bead, error) {
 	created, err := v.storage.CreateWithStorage(b, storage)
 	if err != nil {
@@ -388,18 +635,18 @@ func (v *storageView) CreateWithStorage(b beads.Bead, storage beads.StorageClass
 }
 
 // afterCreate flags and pins a row created through the wrong view. The class
-// is the REQUESTED bead's (falling back to the returned row's): a store may hand
-// back a row without the labels the caller asked for, and the caller's request
-// is what decides where the row belongs.
+// is the REQUESTED bead's (or the returned row's): a store may hand back a row
+// without the labels the caller asked for, and the request decides where the
+// row belongs.
 func (v *view) afterCreate(requested, created beads.Bead) {
 	owner := sideWork
-	if coordclass.Classify(requested).IsInfrastructure() || coordclass.Classify(created).IsInfrastructure() {
+	if classSide(requested) == sideClass || classSide(created) == sideClass {
 		owner = sideClass
 	}
 	if owner == v.side {
 		return
 	}
-	v.flag("create", created)
+	v.flag("create", created, false)
 	v.p.pin(created.ID, v.side)
 }
 
@@ -408,7 +655,7 @@ func (v *view) Update(id string, opts beads.UpdateOpts) error {
 	if err := v.guardID("update", id); err != nil {
 		return err
 	}
-	return v.p.leaf.Update(id, opts)
+	return v.Store.Update(id, opts)
 }
 
 // Close refuses a wrong-class row.
@@ -416,7 +663,7 @@ func (v *view) Close(id string) error {
 	if err := v.guardID("close", id); err != nil {
 		return err
 	}
-	return v.p.leaf.Close(id)
+	return v.Store.Close(id)
 }
 
 // Reopen refuses a wrong-class row.
@@ -424,7 +671,7 @@ func (v *view) Reopen(id string) error {
 	if err := v.guardID("reopen", id); err != nil {
 		return err
 	}
-	return v.p.leaf.Reopen(id)
+	return v.Store.Reopen(id)
 }
 
 // CloseAll closes this view's rows and flags the rest, which a split city's
@@ -439,7 +686,7 @@ func (v *view) CloseAll(ids []string, metadata map[string]string) (int, error) {
 	if len(mine) == 0 {
 		return 0, nil
 	}
-	return v.p.leaf.CloseAll(mine, metadata)
+	return v.Store.CloseAll(mine, metadata)
 }
 
 // SetMetadata refuses a wrong-class row.
@@ -447,7 +694,7 @@ func (v *view) SetMetadata(id, key, value string) error {
 	if err := v.guardID("set-metadata", id); err != nil {
 		return err
 	}
-	return v.p.leaf.SetMetadata(id, key, value)
+	return v.Store.SetMetadata(id, key, value)
 }
 
 // SetMetadataBatch refuses a wrong-class row.
@@ -455,7 +702,7 @@ func (v *view) SetMetadataBatch(id string, kvs map[string]string) error {
 	if err := v.guardID("set-metadata", id); err != nil {
 		return err
 	}
-	return v.p.leaf.SetMetadataBatch(id, kvs)
+	return v.Store.SetMetadataBatch(id, kvs)
 }
 
 // Delete refuses a wrong-class row.
@@ -463,7 +710,7 @@ func (v *view) Delete(id string) error {
 	if err := v.guardID("delete", id); err != nil {
 		return err
 	}
-	return v.p.leaf.Delete(id)
+	return v.Store.Delete(id)
 }
 
 // DeleteBatch deletes this view's rows, refusing the batch when any row is the
@@ -474,29 +721,47 @@ func (v *view) DeleteBatch(ids []string) error {
 			return err
 		}
 	}
-	deleter, ok := v.p.leaf.(beads.BatchDeleter)
+	deleter, ok := v.Store.(beads.BatchDeleter)
 	if !ok {
-		return fmt.Errorf("split-strict view: leaf store %T does not support orphan-preserving batch delete", v.p.leaf)
+		return fmt.Errorf("split-strict view over %T: %w", v.Store, beads.ErrBatchDeleteUnsupported)
 	}
 	return deleter.DeleteBatch(ids)
 }
 
-// DepAdd refuses an edge from a wrong-class row, and an edge to one: no split
-// city's store can hold a dependency on a row it does not have. A parent-child
-// edge that restates the bead's own ParentID passes, as in StrictStore.
-func (v *view) DepAdd(issueID, dependsOnID, depType string) error {
+// guardEdge refuses an edge from or to a wrong-class row: no split city's
+// store can hold a dependency on a row it does not have. A parent-child edge
+// that restates the bead's own ParentID passes, as in StrictStore.
+func (v *view) guardEdge(op, issueID, dependsOnID, depType string) error {
 	if depType == "parent-child" {
-		if b, err := v.p.leaf.Get(issueID); err == nil && b.ParentID == dependsOnID {
-			return v.p.leaf.DepAdd(issueID, dependsOnID, depType)
+		if b, err := v.Store.Get(issueID); err == nil && b.ParentID == dependsOnID {
+			return nil
 		}
 	}
-	if err := v.guardID("dep-add", issueID); err != nil {
+	if err := v.guardID(op, issueID); err != nil {
 		return err
 	}
-	if err := v.guardID("dep-add", dependsOnID); err != nil {
+	return v.guardID(op, dependsOnID)
+}
+
+// DepAdd refuses an edge touching a wrong-class row.
+func (v *view) DepAdd(issueID, dependsOnID, depType string) error {
+	if err := v.guardEdge("dep-add", issueID, dependsOnID, depType); err != nil {
 		return err
 	}
-	return v.p.leaf.DepAdd(issueID, dependsOnID, depType)
+	return v.Store.DepAdd(issueID, dependsOnID, depType)
+}
+
+// DepAddWithMetadata is DepAdd carrying an edge payload, through the front's
+// payload write. A front without one refuses rather than dropping the payload.
+func (v *view) DepAddWithMetadata(issueID, dependsOnID, depType, metadata string) error {
+	if err := v.guardEdge("dep-add", issueID, dependsOnID, depType); err != nil {
+		return err
+	}
+	writer, ok := v.Store.(beads.DepMetadataWriter)
+	if !ok {
+		return fmt.Errorf("writing dependency metadata %s -> %s: split-strict view over %T cannot carry an edge payload", issueID, dependsOnID, v.Store)
+	}
+	return writer.DepAddWithMetadata(issueID, dependsOnID, depType, metadata)
 }
 
 // DepRemove refuses a wrong-class source row.
@@ -504,29 +769,43 @@ func (v *view) DepRemove(issueID, dependsOnID string) error {
 	if err := v.guardID("dep-remove", issueID); err != nil {
 		return err
 	}
-	return v.p.leaf.DepRemove(issueID, dependsOnID)
+	return v.Store.DepRemove(issueID, dependsOnID)
 }
 
 // DepList reports no edges for a wrong-class row, which a split city's store
 // would not hold.
 func (v *view) DepList(id, direction string) ([]beads.Dep, error) {
-	if b, err := v.p.leaf.Get(id); err == nil && !v.visible(b) {
-		v.flag("dep-list", b)
+	if b, err := v.Store.Get(id); err == nil && !v.visible(b) {
+		v.flag("dep-list", b, true)
 		return nil, nil
 	}
-	return v.p.leaf.DepList(id, direction)
+	return v.Store.DepList(id, direction)
 }
 
-// DepListBatch is DepList per id.
+// DepListBatch is DepList per id: a wrong-class anchor gets no entry, as a
+// missing anchor does.
 func (v *view) DepListBatch(ids []string) (map[string][]beads.Dep, error) {
 	out := make(map[string][]beads.Dep, len(ids))
+	var mine []string
 	for _, id := range ids {
-		if b, err := v.p.leaf.Get(id); err == nil && !v.visible(b) {
-			v.flag("dep-list", b)
-			out[id] = nil
+		if b, err := v.Store.Get(id); err == nil && !v.visible(b) {
+			v.flag("dep-list", b, true)
 			continue
 		}
-		deps, err := v.p.leaf.DepList(id, "down")
+		mine = append(mine, id)
+	}
+	if batch, ok := v.Store.(beads.DependencyBatchLister); ok {
+		got, err := batch.DepListBatch(mine)
+		if err != nil {
+			return nil, err
+		}
+		for id, deps := range got {
+			out[id] = deps
+		}
+		return out, nil
+	}
+	for _, id := range mine {
+		deps, err := v.Store.DepList(id, "down")
 		if err != nil {
 			return nil, fmt.Errorf("listing deps for %q: %w", id, err)
 		}
@@ -535,11 +814,11 @@ func (v *view) DepListBatch(ids []string) (map[string][]beads.Dep, error) {
 	return out, nil
 }
 
-// DepMetadata forwards the leaf's edge-payload read.
+// DepMetadata forwards the front's edge-payload read.
 func (v *view) DepMetadata(issueID, dependsOnID string) (string, bool, error) {
-	reader, ok := v.p.leaf.(beads.DepMetadataReader)
+	reader, ok := v.Store.(beads.DepMetadataReader)
 	if !ok {
-		return "", false, fmt.Errorf("reading dependency metadata %s -> %s: leaf %T exposes no edge-payload read", issueID, dependsOnID, v.p.leaf)
+		return "", false, fmt.Errorf("reading dependency metadata %s -> %s: front %T exposes no edge-payload read", issueID, dependsOnID, v.Store)
 	}
 	return reader.DepMetadata(issueID, dependsOnID)
 }
@@ -547,7 +826,7 @@ func (v *view) DepMetadata(issueID, dependsOnID string) (string, bool, error) {
 // Tx polices creates and by-id writes inside the callback like their
 // store-level twins.
 func (v *view) Tx(commitMsg string, fn func(beads.Tx) error) error {
-	return v.p.leaf.Tx(commitMsg, func(tx beads.Tx) error {
+	return v.Store.Tx(commitMsg, func(tx beads.Tx) error {
 		return fn(&viewTx{tx: tx, v: v})
 	})
 }
@@ -592,17 +871,29 @@ func (v *view) ReleaseIfCurrent(id, expectedAssignee string) (bool, error) {
 	if err := v.guardID("release", id); err != nil {
 		return false, err
 	}
-	releaser, ok := v.p.leaf.(beads.ConditionalAssignmentReleaser)
+	releaser, ok := v.Store.(beads.ConditionalAssignmentReleaser)
 	if !ok {
 		return false, beads.ErrConditionalReleaseUnsupported
 	}
 	return releaser.ReleaseIfCurrent(id, expectedAssignee)
 }
 
-// GraphApplyHandle forwards the leaf's graph apply, flagging a plan whose
+// TransferIfCurrent refuses a wrong-class row, then forwards.
+func (v *view) TransferIfCurrent(id, fromAssignee, toAssignee string) (bool, error) {
+	if err := v.guardID("transfer", id); err != nil {
+		return false, err
+	}
+	mover, ok := v.Store.(beads.ConditionalAssigneeTransferer)
+	if !ok {
+		return false, beads.ErrConditionalTransferUnsupported
+	}
+	return mover.TransferIfCurrent(id, fromAssignee, toAssignee)
+}
+
+// GraphApplyHandle forwards the front's graph apply, flagging a plan whose
 // class belongs to the other side and pinning the rows it creates to this view.
 func (v *view) GraphApplyHandle() (beads.GraphApplyStore, bool) {
-	applier, ok := beads.GraphApplyFor(v.p.leaf)
+	applier, ok := beads.GraphApplyFor(v.Store)
 	if !ok {
 		return nil, false
 	}
@@ -612,6 +903,16 @@ func (v *view) GraphApplyHandle() (beads.GraphApplyStore, bool) {
 type viewGraphApplier struct {
 	v       *view
 	applier beads.GraphApplyStore
+}
+
+var _ beads.EphemeralGraphApplyStore = viewGraphApplier{}
+
+// SupportsEphemeralGraphApply forwards the applier's ephemeral-plan answer.
+func (a viewGraphApplier) SupportsEphemeralGraphApply() bool {
+	if eph, ok := a.applier.(beads.EphemeralGraphApplyStore); ok {
+		return eph.SupportsEphemeralGraphApply()
+	}
+	return false
 }
 
 func (a viewGraphApplier) ApplyGraphPlan(ctx context.Context, plan *beads.GraphApplyPlan) (*beads.GraphApplyResult, error) {
@@ -628,12 +929,12 @@ func (a viewGraphApplier) ApplyGraphPlan(ctx context.Context, plan *beads.GraphA
 	}
 	flagged := false
 	for _, id := range result.IDs {
-		b, getErr := a.v.p.leaf.Get(id)
+		b, getErr := a.v.Store.Get(id)
 		if getErr != nil {
 			continue
 		}
 		if !flagged {
-			a.v.flag("graph-apply", b)
+			a.v.flag("graph-apply", b, false)
 			flagged = true
 		}
 		a.v.p.pin(id, a.v.side)
@@ -641,40 +942,305 @@ func (a viewGraphApplier) ApplyGraphPlan(ctx context.Context, plan *beads.GraphA
 	return result, nil
 }
 
-// ConditionalWriterHandle forwards the leaf's conditional writes. They are not
-// policed by class: they act on rows a caller already read through this view.
+// ConditionalWriterHandle returns the front's conditional writer behind the
+// view's checks.
 func (v *view) ConditionalWriterHandle() (beads.ConditionalWriter, bool) {
-	return beads.ConditionalWriterFor(v.p.leaf)
+	writer, ok := beads.ConditionalWriterFor(v.Store)
+	if !ok {
+		return nil, false
+	}
+	return checkedConditionalWriter{v: v, writer: writer}, true
 }
 
-// ConditionalWritesResolveTarget declares the leaf as the conditional-writes
-// resolution target, as the typed class wrappers do.
-func (v *view) ConditionalWritesResolveTarget() beads.Store { return v.p.leaf }
-
-// GuardedBatcherHandle forwards the leaf's guarded batches.
-func (v *view) GuardedBatcherHandle() (beads.GuardedBatcher, bool) {
-	return beads.GuardedBatcherFor(v.p.leaf)
-}
-
-// MetadataCASWriterHandle forwards the leaf's metadata compare-and-set.
+// MetadataCASWriterHandle returns the front's metadata CAS behind the view's
+// checks.
 func (v *view) MetadataCASWriterHandle() (beads.MetadataCASWriter, bool) {
-	return beads.MetadataCASWriterFor(v.p.leaf)
+	writer, ok := beads.MetadataCASWriterFor(v.Store)
+	if !ok {
+		return nil, false
+	}
+	return checkedCAS{v: v, writer: writer}, true
 }
 
-// AtomicTx reports the leaf's transactional guarantee.
-func (v *view) AtomicTx() bool { return beads.StoreSupportsAtomicTx(v.p.leaf) }
+// AtomicConditionalCloserHandle returns the front's atomic terminal write
+// behind the view's checks.
+func (v *view) AtomicConditionalCloserHandle() (beads.AtomicConditionalCloser, bool) {
+	closer, ok := beads.AtomicConditionalCloserFor(v.Store)
+	if !ok {
+		return nil, false
+	}
+	return checkedCloser{v: v, closer: closer}, true
+}
 
-// WaitForParentProjection forwards the leaf's projection wait.
+// GuardedBatcherHandle returns the front's guarded batches behind the view's
+// checks.
+func (v *view) GuardedBatcherHandle() (beads.GuardedBatcher, bool) {
+	batcher, ok := beads.GuardedBatcherFor(v.Store)
+	if !ok {
+		return nil, false
+	}
+	return checkedBatcher{v: v, batcher: batcher}, true
+}
+
+// ConditionalWritesResolveTarget is the view's own checked target, never the
+// raw front: everything that follows a resolve target (the metadata CAS, the
+// atomic closer, the guarded update) lands on the view's checks. The target
+// sources its conditional-writes MODE from the front, so mode and capability
+// resolve exactly as they would without the view.
+func (v *view) ConditionalWritesResolveTarget() beads.Store {
+	target := &condTarget{view: v}
+	if updater, ok := beads.AssignmentGuardedUpdaterFor(v.Store); ok {
+		return &condTargetGuarded{condTarget: target, updater: updater}
+	}
+	return target
+}
+
+// condTarget is a view as a conditional-writes resolution target.
+type condTarget struct {
+	*view
+}
+
+var (
+	_ beads.ConditionalWriter            = (*condTarget)(nil)
+	_ beads.ConditionalWritesModeSourcer = (*condTarget)(nil)
+	_ beads.AssignmentGuardedUpdater     = (*condTargetGuarded)(nil)
+)
+
+// ConditionalWritesResolveTarget ends the resolve walk here.
+func (t *condTarget) ConditionalWritesResolveTarget() beads.Store { return nil }
+
+// ConditionalWritesModeSource sends mode and capability resolution to the
+// front.
+func (t *condTarget) ConditionalWritesModeSource() beads.Store { return t.Store }
+
+func (t *condTarget) writer() (beads.ConditionalWriter, error) {
+	writer, ok := beads.ConditionalWriterForTarget(t.Store)
+	if !ok {
+		return nil, beads.ErrConditionalWriteUnsupported
+	}
+	return writer, nil
+}
+
+// UpdateIfMatch refuses a wrong-class row, then forwards.
+func (t *condTarget) UpdateIfMatch(id string, expectedRevision int64, opts beads.UpdateOpts) error {
+	return checkedConditionalWriter{v: t.view, writer: lazyWriter{t}}.UpdateIfMatch(id, expectedRevision, opts)
+}
+
+// CloseIfMatch refuses a wrong-class row, then forwards.
+func (t *condTarget) CloseIfMatch(id string, expectedRevision int64) error {
+	return checkedConditionalWriter{v: t.view, writer: lazyWriter{t}}.CloseIfMatch(id, expectedRevision)
+}
+
+// DeleteIfMatch refuses a wrong-class row, then forwards.
+func (t *condTarget) DeleteIfMatch(id string, expectedRevision int64) error {
+	return checkedConditionalWriter{v: t.view, writer: lazyWriter{t}}.DeleteIfMatch(id, expectedRevision)
+}
+
+// CompareAndSetMetadataKey refuses a wrong-class row, then forwards.
+func (t *condTarget) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
+	return checkedConditionalWriter{v: t.view, writer: lazyWriter{t}}.CompareAndSetMetadataKey(id, key, expected, next)
+}
+
+// condTargetGuarded adds the front's assignment-guarded update.
+type condTargetGuarded struct {
+	*condTarget
+	updater beads.AssignmentGuardedUpdater
+}
+
+// UpdateIfAssignment refuses a wrong-class row, then forwards.
+func (t *condTargetGuarded) UpdateIfAssignment(id, expectedStatus, expectedAssignee string, opts beads.UpdateOpts) (bool, error) {
+	if err := t.guardID("update", id); err != nil {
+		return false, err
+	}
+	return t.updater.UpdateIfAssignment(id, expectedStatus, expectedAssignee, opts)
+}
+
+// lazyWriter resolves the front's writer at call time, answering
+// ErrConditionalWriteUnsupported when there is none (as the resolve-target
+// contract allows a writer to).
+type lazyWriter struct{ t *condTarget }
+
+func (l lazyWriter) UpdateIfMatch(id string, rev int64, opts beads.UpdateOpts) error {
+	w, err := l.t.writer()
+	if err != nil {
+		return err
+	}
+	return w.UpdateIfMatch(id, rev, opts)
+}
+
+func (l lazyWriter) CloseIfMatch(id string, rev int64) error {
+	w, err := l.t.writer()
+	if err != nil {
+		return err
+	}
+	return w.CloseIfMatch(id, rev)
+}
+
+func (l lazyWriter) DeleteIfMatch(id string, rev int64) error {
+	w, err := l.t.writer()
+	if err != nil {
+		return err
+	}
+	return w.DeleteIfMatch(id, rev)
+}
+
+func (l lazyWriter) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
+	w, err := l.t.writer()
+	if err != nil {
+		return false, err
+	}
+	return w.CompareAndSetMetadataKey(id, key, expected, next)
+}
+
+// checkedConditionalWriter refuses conditional writes to wrong-class rows.
+type checkedConditionalWriter struct {
+	v      *view
+	writer beads.ConditionalWriter
+}
+
+func (c checkedConditionalWriter) UpdateIfMatch(id string, rev int64, opts beads.UpdateOpts) error {
+	if err := c.v.guardID("update", id); err != nil {
+		return err
+	}
+	return c.writer.UpdateIfMatch(id, rev, opts)
+}
+
+func (c checkedConditionalWriter) CloseIfMatch(id string, rev int64) error {
+	if err := c.v.guardID("close", id); err != nil {
+		return err
+	}
+	return c.writer.CloseIfMatch(id, rev)
+}
+
+func (c checkedConditionalWriter) DeleteIfMatch(id string, rev int64) error {
+	if err := c.v.guardID("delete", id); err != nil {
+		return err
+	}
+	return c.writer.DeleteIfMatch(id, rev)
+}
+
+func (c checkedConditionalWriter) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
+	if err := c.v.guardID("set-metadata", id); err != nil {
+		return false, err
+	}
+	return c.writer.CompareAndSetMetadataKey(id, key, expected, next)
+}
+
+// checkedCAS refuses metadata CAS writes to wrong-class rows.
+type checkedCAS struct {
+	v      *view
+	writer beads.MetadataCASWriter
+}
+
+func (c checkedCAS) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
+	if err := c.v.guardID("set-metadata", id); err != nil {
+		return false, err
+	}
+	return c.writer.CompareAndSetMetadataKey(id, key, expected, next)
+}
+
+// checkedCloser refuses atomic terminal writes to wrong-class rows.
+type checkedCloser struct {
+	v      *view
+	closer beads.AtomicConditionalCloser
+}
+
+func (c checkedCloser) CloseWithMetadataIfMatch(id string, rev int64, metadata map[string]string) (beads.Bead, error) {
+	if err := c.v.guardID("close", id); err != nil {
+		return beads.Bead{}, err
+	}
+	return c.closer.CloseWithMetadataIfMatch(id, rev, metadata)
+}
+
+// checkedBatcher refuses a guarded batch that updates a wrong-class row, and
+// flags and pins the rows it creates of the other side's class.
+type checkedBatcher struct {
+	v       *view
+	batcher beads.GuardedBatcher
+}
+
+func (c checkedBatcher) ApplyGuarded(ctx context.Context, b beads.GuardedBatch) (beads.GuardedResult, error) {
+	for _, item := range b.Items {
+		if item.Update != nil {
+			if err := c.v.guardID("update", item.Update.ID); err != nil {
+				return beads.GuardedResult{}, err
+			}
+		}
+	}
+	result, err := c.batcher.ApplyGuarded(ctx, b)
+	if err != nil {
+		return result, err
+	}
+	for _, item := range b.Items {
+		if item.Create != nil {
+			c.v.afterCreate(*item.Create, *item.Create)
+		}
+	}
+	return result, nil
+}
+
+// AtomicTx reports the front's transactional guarantee.
+func (v *view) AtomicTx() bool { return beads.StoreSupportsAtomicTx(v.Store) }
+
+// WaitForParentProjection forwards the front's projection wait.
 func (v *view) WaitForParentProjection(ctx context.Context, id, oldParentID, newParentID string) error {
-	if waiter, ok := v.p.leaf.(beads.ParentProjectionWaiter); ok {
+	if waiter, ok := v.Store.(beads.ParentProjectionWaiter); ok {
 		return waiter.WaitForParentProjection(ctx, id, oldParentID, newParentID)
 	}
 	return nil
 }
 
-// CloseStore releases the leaf's backing handle when it has one.
+// IsLive forwards the front's cache liveness (a CachingStore's), false for a
+// front without one: production asserts it to wait for a primed cache.
+func (v *view) IsLive() bool {
+	if live, ok := v.Store.(interface{ IsLive() bool }); ok {
+		return live.IsLive()
+	}
+	return false
+}
+
+// IsClosed forwards the front's closed state, false for a front without one.
+func (v *view) IsClosed() bool {
+	if closed, ok := v.Store.(interface{ IsClosed() bool }); ok {
+		return closed.IsClosed()
+	}
+	return false
+}
+
+// Stats forwards the front's cache statistics, zero for a front without one.
+func (v *view) Stats() beads.CacheStats {
+	if stats, ok := v.Store.(interface{ Stats() beads.CacheStats }); ok {
+		return stats.Stats()
+	}
+	return beads.CacheStats{}
+}
+
+// StoreHealthPath forwards the front's health path, "" for a front without
+// one.
+func (v *view) StoreHealthPath() string {
+	if health, ok := v.Store.(interface{ StoreHealthPath() string }); ok {
+		return health.StoreHealthPath()
+	}
+	return ""
+}
+
+// IDPrefix is the prefix storeref routes by: the class binding's ("gcg") for
+// the class view, as on a split city, and the front's own (or none) for the
+// work view.
+func (v *view) IDPrefix() string {
+	if v.side == sideClass {
+		prefix, _ := config.ReservedClassPrefix(config.BeadClassGraph)
+		return prefix
+	}
+	if p, ok := v.Store.(interface{ IDPrefix() string }); ok {
+		return p.IDPrefix()
+	}
+	return ""
+}
+
+// CloseStore releases the front's backing handle when it has one.
 func (v *view) CloseStore() error {
-	if closer, ok := v.p.leaf.(interface{ CloseStore() error }); ok {
+	if closer, ok := v.Store.(interface{ CloseStore() error }); ok {
 		return closer.CloseStore()
 	}
 	return nil

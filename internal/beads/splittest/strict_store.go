@@ -142,10 +142,13 @@ import (
 // policed this way, because a migrated binding legitimately holds relic ids
 // under work prefixes. The read is recorded as a SplitViolation (both backends
 // answer it with a quiet not-found) and fails the test at cleanup unless the
-// fixture claims it with TakeSplitViolations. Class residence of CREATED rows
-// is the projection gate's job (projection.go), not the leaf's: kit fixtures
-// seed plain rows into class leaves as stand-ins. A read inside beads.FederatedRead is a declared
-// federation leg or residence probe and is not recorded. Optional leaf
+// fixture claims it with TakeSplitViolations. A Create (store, Tx or
+// storage-tier) whose bead's coordclass the leaf does not hold is recorded the
+// same way when PRODUCTION code made it: it landed a row where no reader of its
+// class looks. Test code seeding plain rows into a class leaf as stand-ins
+// makes no production frame and is not recorded. A read inside
+// beads.FederatedRead or beads.RelicRead is a declared leg and is not
+// recorded; a write is recorded whatever marker it runs under. Optional leaf
 // capabilities that production code discovers by type-assertion are forwarded
 // (see the method set and the "deliberately dropped" notes on Strict).
 type StrictStore struct {
@@ -316,18 +319,19 @@ func (s *StrictStore) holdsWork() bool {
 }
 
 // recordSplit records one split violation charged to the caller's production
-// call site. A read the caller marked federated is not one, and neither is a
-// read with no production frame on the stack: that is the test itself probing
-// the wrong store, usually to assert a row is NOT there.
-func (s *StrictStore) recordSplit(op, id, class string) {
+// call site. A READ the caller marked (beads.FederatedRead, beads.RelicRead)
+// is not one — a marker vouches for a miss, never for a write — and neither
+// is a call with no production frame on the stack: that is the test itself
+// probing the wrong store, usually to assert a row is NOT there.
+func (s *StrictStore) recordSplit(op, id, class string, read bool) {
 	facts := captureStack()
-	if facts.federated || facts.site.File == "" {
+	if facts.site.File == "" || (read && facts.marker != beads.NoReadMarker) {
 		return
 	}
 	if os.Getenv(StrictPanicEnv) == "1" {
 		panic(fmt.Sprintf("split violation on the strict %s store: %s of %s row %s at %s", s.prefix, op, class, id, facts.site))
 	}
-	s.split.record(SplitViolation{View: s.prefix, Op: op, Class: class, ID: id, Site: facts.site, Test: facts.test})
+	s.split.record(SplitViolation{View: s.prefix, Op: op, Class: class, ID: id, Site: facts.site, Via: facts.via, Pkg: facts.pkg, Test: facts.test})
 }
 
 // probeWrongStore records a by-id call that hands a work leaf an id from a
@@ -341,7 +345,19 @@ func (s *StrictStore) probeWrongStore(op, id string) {
 	if !ok {
 		return
 	}
-	s.recordSplit(op, id, class)
+	s.recordSplit(op, id, class, op == "get" || op == "dep-list")
+}
+
+// checkCreatedClass records a production create of a bead whose class this
+// leaf does not hold.
+func (s *StrictStore) checkCreatedClass(requested, created beads.Bead) {
+	if s.classes == nil {
+		return
+	}
+	class := coordclass.Classify(requested)
+	if !s.classes[class] {
+		s.recordSplit("create", created.ID, class.String(), false)
+	}
 }
 
 // reservedClassOfID names the class whose reserved namespace id sits in.
@@ -393,6 +409,10 @@ func (s *StrictStore) SetMetadataBatch(id string, kvs map[string]string) error {
 	s.probeWrongStore("set-metadata", id)
 	return s.Store.SetMetadataBatch(id, kvs)
 }
+
+// strictLeaf returns the strict wrapper itself, through the storage-capable
+// variant too.
+func (s *StrictStore) strictLeaf() *StrictStore { return s }
 
 // takeSplitViolations implements splitRecorder.
 func (s *StrictStore) takeSplitViolations() []SplitViolation {
@@ -507,6 +527,7 @@ func (s *StrictStore) Create(b beads.Bead) (beads.Bead, error) {
 	if err := s.checkCreatedID(b.ID, created); err != nil {
 		return beads.Bead{}, err
 	}
+	s.checkCreatedClass(b, created)
 	return created, nil
 }
 
@@ -912,6 +933,7 @@ func (s *strictStorageStore) CreateWithStorage(b beads.Bead, storage beads.Stora
 	if err := s.checkCreatedID(b.ID, created); err != nil {
 		return beads.Bead{}, err
 	}
+	s.checkCreatedClass(b, created)
 	return created, nil
 }
 
@@ -936,6 +958,7 @@ func (t *strictTx) Create(b beads.Bead) (beads.Bead, error) {
 	if err := t.store.checkCreatedID(b.ID, created); err != nil {
 		return beads.Bead{}, err
 	}
+	t.store.checkCreatedClass(b, created)
 	return created, nil
 }
 

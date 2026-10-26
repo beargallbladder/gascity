@@ -718,15 +718,17 @@ func (s *Server) humaHandleWorkflowDelete(_ context.Context, input *WorkflowDele
 			rootIDs = append(rootIDs, root.ID)
 			addBead(root)
 		}
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// One leg of the workflowStores federation (graph, city, rigs): a
 		// miss on either root probe is covered by the leg that owns the root.
-		if root, err := beads.FederatedGet(info.store, workflowID); err == nil {
+		if root, err := beads.RelicGet(info.store, workflowID); err == nil {
 			addRoot(root)
 		} else if !errors.Is(err, beads.ErrNotFound) {
 			pa.record("store "+info.scopeRef+" get root", err)
 		}
 		var roots []beads.Bead
-		if err := beads.FederatedRead(func() error {
+		if err := beads.RelicRead(func() error {
 			var listErr error
 			roots, listErr = info.store.List(beads.ListQuery{
 				Metadata: map[string]string{

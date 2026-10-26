@@ -9,6 +9,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/convoy"
 	"github.com/gastownhall/gascity/internal/coordclass"
+	"github.com/gastownhall/gascity/internal/mail/beadmail"
 	"github.com/gastownhall/gascity/internal/storeref"
 )
 
@@ -116,5 +117,48 @@ func TestStrictWorkLeafIgnoresTheTestsOwnProbe(t *testing.T) {
 	}
 	if got := TakeSplitViolations(work); len(got) != 0 {
 		t.Fatalf("a test-code probe (no production frame) was recorded: %+v", got)
+	}
+}
+
+func TestStrictLeavesRecordAProductionWrongClassCreate(t *testing.T) {
+	work, graph := NewSplitStores(t)
+	// beadmail is production code: a message sent into the graph leaf lands a
+	// messaging-class row in a store that holds only graph rows.
+	if _, err := beadmail.New(graph).Send("a", "b", "s", "body"); err != nil {
+		t.Fatal(err)
+	}
+	got := TakeSplitViolations(graph)
+	if len(got) != 1 || got[0].Op != "create" || got[0].Class != "messaging" {
+		t.Fatalf("graph leaf violations = %+v, want one messaging create", got)
+	}
+	// Test code seeding a stand-in row records nothing.
+	if _, err := work.Create(sessionBead("seed")); err != nil {
+		t.Fatal(err)
+	}
+	if got := TakeSplitViolations(work); len(got) != 0 {
+		t.Fatalf("a test-code seed was recorded: %+v", got)
+	}
+}
+
+func TestNewSingleStoreHoldsEveryClass(t *testing.T) {
+	single := NewSingleStore(t, "hq")
+	if _, err := beadmail.New(single).Send("a", "b", "s", "body"); err != nil {
+		t.Fatal(err)
+	}
+	if got := TakeSplitViolations(single); len(got) != 0 {
+		t.Fatalf("a single-store city's store recorded a class: %+v", got)
+	}
+}
+
+func TestNewBindingStoreHoldsEveryInfrastructureClass(t *testing.T) {
+	binding := NewBindingStore(t)
+	if _, err := beadmail.New(binding).Send("a", "b", "s", "body"); err != nil {
+		t.Fatal(err)
+	}
+	if got := TakeSplitViolations(binding); len(got) != 0 {
+		t.Fatalf("a mail message in the whole binding was recorded: %+v", got)
+	}
+	if got := leafClasses(SQLiteSemantics, binding.(*StrictStore).namespaces); len(got) != 5 || got[coordclass.ClassWork] {
+		t.Fatalf("binding classes = %v, want the five infrastructure classes", got)
 	}
 }

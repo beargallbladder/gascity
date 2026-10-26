@@ -1,0 +1,3 @@
+# Top-level internal/api tests known to fail under GC_TEST_SPLIT_STRICT=1, one per line.
+# A failing test not listed here fails //internal/api:api_split_strict_test; a listed
+# test that passes is reported so it can be removed.

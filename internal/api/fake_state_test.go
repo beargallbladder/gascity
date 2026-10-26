@@ -88,6 +88,13 @@ func newFakeState(t testing.TB) *fakeState {
 	// Mail is messaging-class: under GC_TEST_SPLIT_STRICT=1 it reads the city
 	// store through the gate's class view (identity otherwise).
 	mp := beadmail.New(splittest.GateClassView(store))
+	// Under GC_TEST_SPLIT_STRICT=1 the city store exists, as it does on
+	// every real city: without one the class accessors had no store and the
+	// fixture's rows could only be read through rig views.
+	var cityStore beads.Store
+	if splittest.GateEnabled() {
+		cityStore = store
+	}
 	return &fakeState{
 		cfg: &config.City{
 			Workspace: config.Workspace{Name: "test-city"},
@@ -104,13 +111,14 @@ func newFakeState(t testing.TB) *fakeState {
 				"test-agent": {DisplayName: "Test Agent"},
 			},
 		},
-		sp:           runtime.NewFake(),
-		stores:       map[string]beads.Store{"myrig": store},
-		cityMailProv: mp,
-		eventProv:    events.NewFake(),
-		cityName:     "test-city",
-		cityPath:     beadstest.GuardedTempDir(t),
-		startedAt:    time.Now(),
+		sp:            runtime.NewFake(),
+		stores:        map[string]beads.Store{"myrig": store},
+		cityBeadStore: cityStore,
+		cityMailProv:  mp,
+		eventProv:     events.NewFake(),
+		cityName:      "test-city",
+		cityPath:      beadstest.GuardedTempDir(t),
+		startedAt:     time.Now(),
 	}
 }
 

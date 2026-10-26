@@ -1784,12 +1784,14 @@ func openOneShotStoreAtForCityWithConfig(storePath, cityPath string, cfg *config
 }
 
 // openWorkStoreResultAtForCityScoped opens a scope store through the shared
-// open body. A scope store is a WORK store (the city or a rig ledger); under
-// the split-strict test gate it is handed out as the gate's work view
-// (split_strict_seam.go), and unchanged otherwise.
+// open body. A one-shot scope store is a WORK store (the city or a rig
+// ledger); under the split-strict test gate it is handed out as the gate's
+// work view (split_strict_seam.go), and unchanged otherwise. A long-lived open
+// is the controller's: it wraps the store in its cache and hands out views at
+// its own accessors, so it gets the raw store here.
 func openWorkStoreResultAtForCityScoped(storePath, cityPath string, cfg *config.City, modeOverride gate.Mode, haveMode, authoritative, longLived, oneShotConfig bool, nativeOverride *beads.NativeTransportMode) (beads.StoreOpenResult, error) {
 	result, err := openStoreResultAtForCityScoped(storePath, cityPath, cfg, modeOverride, haveMode, authoritative, longLived, oneShotConfig, nativeOverride)
-	if err == nil {
+	if err == nil && !longLived {
 		result.Store = splitStrictWorkView(result.Store)
 	}
 	return result, err

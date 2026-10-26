@@ -52,6 +52,7 @@ go_test(
         "//internal/config",
         "//internal/convoy",
         "//internal/coordclass",
+        "//internal/mail/beadmail",
         "//internal/storeref",
         "//internal/testenv",
     ],

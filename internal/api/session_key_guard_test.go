@@ -22,6 +22,7 @@ func init() {
 // site the checked-in baseline does not list fails the run
 // (split_strict_gate_test.go).
 func TestMain(m *testing.M) {
+	splittest.GateStart()
 	code := session.FailOnNoCityRefusals(func() int { return session.FailOnKeyViolations(m.Run(), os.Stderr) }, os.Stderr)
-	os.Exit(splittest.GateMain(code, splitStrictBaseline, os.Stderr))
+	os.Exit(splittest.GateMain(code, splitStrictFiles, os.Stderr))
 }

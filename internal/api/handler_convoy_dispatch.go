@@ -110,9 +110,11 @@ func (s *Server) buildWorkflowSnapshot(workflowID, fallbackScopeKind, fallbackSc
 			storesScanned = append(storesScanned, info.ref)
 			seenStoreRefs[info.ref] = true
 		}
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// One leg of the workflowStores federation (graph, city, rigs): a
 		// miss here is covered by the leg that owns the root.
-		root, err := beads.FederatedGet(info.store, workflowID)
+		root, err := beads.RelicGet(info.store, workflowID)
 		if err != nil {
 			if firstGetErr == nil && !errors.Is(err, beads.ErrNotFound) {
 				firstGetErr = err
@@ -141,8 +143,10 @@ func (s *Server) buildWorkflowSnapshot(workflowID, fallbackScopeKind, fallbackSc
 				continue
 			}
 			var roots []beads.Bead
+			// Relic leg (S4 debt): a scope store holds this class only as rows
+			// written before the split; beads.RelicRead counts it as debt.
 			// One leg of the workflowStores federation; see the Get above.
-			err := beads.FederatedRead(func() error {
+			err := beads.RelicRead(func() error {
 				var listErr error
 				roots, listErr = info.store.List(beads.ListQuery{
 					Metadata: map[string]string{

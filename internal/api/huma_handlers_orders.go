@@ -561,10 +561,12 @@ func orderHistoryBeadsAcrossStoreInfosCachedFirst(infos []workflowStoreInfo, sco
 			rows []beads.Bead
 			err  error
 		)
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// One leg of the order-history federation (rig and city scopes for
 		// pre-cutover history, the orders binding): each leg holds only its
 		// own rows.
-		err = beads.FederatedRead(func() error {
+		err = beads.RelicRead(func() error {
 			var listErr error
 			if cached, ok := info.store.(cachedListStore); ok {
 				var cacheOK bool
@@ -620,10 +622,12 @@ func orderHistoryBeadsAcrossStoreInfos(infos []workflowStoreInfo, scopedName str
 		if info.store == nil {
 			continue
 		}
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// One leg of the order-history federation; each leg holds only its
 		// own rows.
 		var rows []beads.Bead
-		err := beads.FederatedRead(func() error {
+		err := beads.RelicRead(func() error {
 			var listErr error
 			rows, listErr = info.store.List(beads.ListQuery{
 				Label:         label,
@@ -676,8 +680,10 @@ func orderHistoryBeadAcrossStoreInfos(infos []workflowStoreInfo, beadID string) 
 		if info.store == nil {
 			continue
 		}
+		// Relic leg (S4 debt): a scope store holds this class only as rows
+		// written before the split; beads.RelicRead counts it as debt.
 		// A residence probe over the order-history legs.
-		bead, err := beads.FederatedGet(info.store, beadID)
+		bead, err := beads.RelicGet(info.store, beadID)
 		if err == nil {
 			return orderHistoryStoreBead{storeRef: info.ref, bead: bead}, nil
 		}

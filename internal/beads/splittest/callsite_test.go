@@ -13,6 +13,8 @@ func TestFactsFromFramesPicksTheInnermostProductionFrame(t *testing.T) {
 		{file: "internal/api/handler_test.go", line: 40, function: "github.com/gastownhall/gascity/internal/api.TestHandle.func1"},
 		{file: "testing/testing.go", line: 1, function: "testing.tRunner"},
 	}
+	SetPackageUnderTest("internal/api")
+	t.Cleanup(func() { SetPackageUnderTest("") })
 	facts := factsFromFrames(stack)
 	want := Site{File: "internal/api/residency_by_id.go", Line: 82, Func: "api.(*Server).resolveBeadOwner"}
 	if facts.site != want {
@@ -20,6 +22,9 @@ func TestFactsFromFramesPicksTheInnermostProductionFrame(t *testing.T) {
 	}
 	if wantVia := (Site{File: "internal/api/handler.go", Line: 9, Func: "api.(*Server).handle"}); facts.via != wantVia {
 		t.Fatalf("via = %+v, want %+v", facts.via, wantVia)
+	}
+	if facts.pkg != (Site{File: "internal/api/handler.go", Line: 9, Func: "api.(*Server).handle"}) {
+		t.Fatalf("pkg = %+v, want the nearest internal/api frame past the site", facts.pkg)
 	}
 	if facts.test != "TestHandle" {
 		t.Fatalf("test = %q, want TestHandle", facts.test)
@@ -58,6 +63,20 @@ func TestTopLevelTestName(t *testing.T) {
 	} {
 		if got := topLevelTestName(in); got != want {
 			t.Errorf("topLevelTestName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNormalizeFunc(t *testing.T) {
+	for in, want := range map[string]string{
+		"gc.newConvergeListCmd.func1.1":        "gc.newConvergeListCmd",
+		"api.cityGet[...].func1":               "api.cityGet",
+		"gc.(*runtime).loop.gowrap2":           "gc.(*runtime).loop",
+		"api.(*Server).resolveBeadOwner":       "api.(*Server).resolveBeadOwner",
+		"gc.classRoutedHookClaimOps.func1.2.3": "gc.classRoutedHookClaimOps",
+	} {
+		if got := normalizeFunc(in); got != want {
+			t.Errorf("normalizeFunc(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

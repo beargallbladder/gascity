@@ -1,68 +1,204 @@
 package splittest
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// reviewedFederatedMarkers is the reviewed set of production call sites that
-// wrap a store read in beads.FederatedRead or beads.FederatedGet, by file, with
-// the number of marked reads in each. A marked read is invisible to the
-// split-strict gate, so every entry is a reviewed claim that the read is a
-// federation leg or residence probe whose miss another leg covers. Adding,
-// moving or removing one changes this list in the same change, where a reviewer
-// sees it.
-var reviewedFederatedMarkers = map[string]int{
-	// The shared by-id leg walk: every leg of a ModeFirstOwner plan is a
-	// planned residence probe, and a miss moves the walk to the next leg.
-	"internal/storeref/resolve.go": 1,
-	// The hook-claim class route's work-first escalation (#8137): each seam
-	// runs the work-scope call first and escalates to the binding only on
-	// the not-found (or the empty continuation list) that proves the bead is
-	// not there.
-	"cmd/gc/claim_class_route.go": 5,
-	// Molecule autoclose's tracking-convoy lookup probes the work store and
-	// the graph store (a convoy minted pre-split can sit on the graph side).
-	"cmd/gc/wisp_autoclose.go": 1,
-	// gc convoy/workflow control across scopes: the scope probe for a control
-	// bead (city, rigs, then the binding), and the per-view legs of workflow
-	// delete and the source-workflow walk, which federate the scope stores and
-	// the binding.
-	"cmd/gc/cmd_convoy_dispatch.go": 5,
-	// gc order sweep-tracking: the stale sweep, the retention count and the
-	// retention prune run per leg over the scope stores (pre-cutover tracking
-	// history) and the orders binding.
-	"cmd/gc/order_dispatch.go": 3,
-	// internal/api's workflowStores federation (graph binding, city, rigs):
-	// workflow root and snapshot probes ask every leg, and only the owner
-	// answers. The root_store_ref hint path names one store and stays
-	// unmarked.
-	"internal/api/convoy_event_stream.go":     2,
-	"internal/api/handler_convoy_dispatch.go": 2,
-	"internal/api/huma_handlers_convoys.go":   2,
-	"internal/api/huma_handlers_runs.go":      1,
-	"internal/api/orders_feed.go":             3,
-	// The order-history federation (orders binding plus the city and rig
-	// scopes kept for pre-cutover history).
-	"internal/api/huma_handlers_orders.go": 3,
-	// The source-workflow root scan over SourceWorkflowStores (graph binding,
-	// city, rigs).
-	"internal/sling/sling_core.go": 1,
+const beadsImportPath = "github.com/gastownhall/gascity/internal/beads"
+
+// markerKinds maps each internal/beads marker function to the kind of debt
+// it declares.
+var markerKinds = map[string]string{
+	"FederatedRead": "federated",
+	"FederatedGet":  "federated",
+	"RelicRead":     "relic",
+	"RelicGet":      "relic",
 }
 
-// federatedMarkerCall matches a call of the marker from production code.
-var federatedMarkerCall = regexp.MustCompile(`\bbeads\.Federated(Read|Get)\(`)
+// reviewedMarker is one reviewed use of a read marker: a production
+// function that wraps reads in it, how many times, and why.
+type reviewedMarker struct {
+	kind   string // "federated" (a legitimate federation leg) or "relic" (S4 debt)
+	count  int
+	reason string
+}
 
-func TestFederatedReadMarkersAreReviewed(t *testing.T) {
+// reviewedMarkers is the reviewed set of production functions that wrap a
+// store read in a read marker, keyed "file func". A marked read is invisible
+// to the split-strict gate's ratchet, so each entry is a reviewed claim.
+// FEDERATED entries are legitimate: another leg covers the miss. RELIC
+// entries are S4 debt: a scope store holds the class only as pre-split rows
+// (or rows a writer S4 moves still writes there), and the leg goes when they
+// do. Adding, moving or removing a mark changes this table in the same
+// change, where a reviewer sees it.
+var reviewedMarkers = map[string]reviewedMarker{
+	// Legitimate federation legs.
+	"internal/storeref/resolve.go resolveByID": {"federated", 1, "the ModeFirstOwner leg walk: each leg is a planned residence probe"},
+	"cmd/gc/claim_class_route.go classRoutedHookClaimOps": {
+		"federated", 5,
+		"the hook-claim class route's work-first escalation (#8137): a not-found (or an empty continuation list) on the work leg is what sends the call to the binding",
+	},
+	"cmd/gc/wisp_autoclose.go collectInputConvoyWorkflowRoots": {
+		"federated", 1,
+		"tracking convoys are probed on the work store and the graph store; a convoy minted single-store-era can sit on the graph side",
+	},
+
+	// Relic legs: graph rows read from city and rig scope stores (S4).
+	"cmd/gc/cmd_convoy_dispatch.go findBeadScopeAcrossStores":                  {"relic", 2, "control-bead scope probe over the city and rig ledgers before the binding"},
+	"cmd/gc/cmd_convoy_dispatch.go cmdWorkflowDelete":                          {"relic", 1, "workflow delete sweeps the retained scope-store copies beside the binding"},
+	"cmd/gc/cmd_convoy_dispatch.go (*sourceWorkflowMatchCollector).collect":    {"relic", 1, "source-workflow walk over scope stores and the binding"},
+	"cmd/gc/cmd_convoy_dispatch.go assessZeroMatchSourceWorkflowScan":          {"relic", 1, "zero-match re-scan over the same views"},
+	"internal/api/convoy_event_stream.go workflowEventBeadFromSubject":         {"relic", 1, "workflowStores residence probe (graph, city, rigs)"},
+	"internal/api/convoy_event_stream.go workflowEventRoot":                    {"relic", 1, "workflowStores root scan (graph, city, rigs)"},
+	"internal/api/handler_convoy_dispatch.go (*Server).buildWorkflowSnapshot":  {"relic", 2, "workflowStores root probe and metadata sweep"},
+	"internal/api/huma_handlers_convoys.go (*Server).humaHandleWorkflowDelete": {"relic", 2, "workflowStores root probe and metadata sweep"},
+	"internal/api/huma_handlers_runs.go (*Server).cancelRun":                   {"relic", 1, "workflowStores root scan for a run"},
+	"internal/api/orders_feed.go buildWorkflowRunProjections":                  {"relic", 1, "workflowStores closed-root list"},
+	"internal/api/orders_feed.go buildWorkflowRunProjectionsRootOnly":          {"relic", 1, "workflowStores closed-root list (root-only projection)"},
+	"internal/sling/sling_core.go (*sourceWorkflowRootCollector).scanStore":    {"relic", 1, "source-workflow root scan over SourceWorkflowStores"},
+
+	// Relic legs: order-tracking rows read from city and rig scope stores
+	// (pre-cutover tracking history).
+	"internal/api/orders_feed.go buildOrderRunFeedItems":                                {"relic", 1, "order feed ListTracking over graph, binding and scope legs"},
+	"internal/api/huma_handlers_orders.go orderHistoryBeadsAcrossStoreInfosCachedFirst": {"relic", 1, "order history list per leg"},
+	"internal/api/huma_handlers_orders.go orderHistoryBeadsAcrossStoreInfos":            {"relic", 1, "order history list per leg"},
+	"internal/api/huma_handlers_orders.go orderHistoryBeadAcrossStoreInfos":             {"relic", 1, "order history by-id probe per leg"},
+	"cmd/gc/order_dispatch.go sweepStaleOrderTrackingWithOptionsLimitMode":              {"relic", 1, "stale tracking sweep's list probe on a scope leg"},
+	"cmd/gc/order_dispatch.go sweepClosedOrderTrackingRetention":                        {"relic", 1, "retention prune's list probe on a scope leg"},
+	"cmd/gc/order_dispatch.go sweepClosedOrderTrackingRetentionBounded":                 {"relic", 1, "bounded retention prune's list probe on a scope leg"},
+	"cmd/gc/order_dispatch.go countClosedOrderTrackingRetentionEligible":                {"relic", 1, "retention count's list probe on a scope leg"},
+}
+
+// markerUse is one reference to a read marker found in production code.
+type markerUse struct {
+	file, fn, kind string
+}
+
+// scanMarkerUses parses one Go file and returns every reference to an
+// internal/beads read marker — a call or a function value, through any import
+// alias or a dot import — keyed by its enclosing top-level function.
+func scanMarkerUses(fset *token.FileSet, rel string, src []byte) ([]markerUse, error) {
+	file, err := parser.ParseFile(fset, rel, src, 0)
+	if err != nil {
+		return nil, err
+	}
+	local := ""
+	dot := false
+	for _, imp := range file.Imports {
+		path, _ := strconv.Unquote(imp.Path.Value)
+		if path != beadsImportPath {
+			continue
+		}
+		switch {
+		case imp.Name == nil:
+			local = "beads"
+		case imp.Name.Name == ".":
+			dot = true
+		case imp.Name.Name != "_":
+			local = imp.Name.Name
+		}
+	}
+	if local == "" && !dot {
+		return nil, nil
+	}
+	var uses []markerUse
+	record := func(fn, name string) {
+		if kind, ok := markerKinds[name]; ok {
+			uses = append(uses, markerUse{file: rel, fn: fn, kind: kind})
+		}
+	}
+	for _, decl := range file.Decls {
+		fn := "<package>"
+		if fd, ok := decl.(*ast.FuncDecl); ok {
+			fn = funcDeclName(fd)
+		}
+		ast.Inspect(decl, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.SelectorExpr:
+				if id, ok := x.X.(*ast.Ident); ok && local != "" && id.Name == local && id.Obj == nil {
+					record(fn, x.Sel.Name)
+				}
+				return false
+			case *ast.Ident:
+				if dot && x.Obj == nil {
+					record(fn, x.Name)
+				}
+			}
+			return true
+		})
+	}
+	return uses, nil
+}
+
+// funcDeclName renders a declaration as "name" or "(*Recv).name".
+func funcDeclName(fd *ast.FuncDecl) string {
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return fd.Name.Name
+	}
+	recv := fd.Recv.List[0].Type
+	star := ""
+	if s, ok := recv.(*ast.StarExpr); ok {
+		star = "*"
+		recv = s.X
+	}
+	if idx, ok := recv.(*ast.IndexExpr); ok {
+		recv = idx.X
+	}
+	if idx, ok := recv.(*ast.IndexListExpr); ok {
+		recv = idx.X
+	}
+	name := "?"
+	if id, ok := recv.(*ast.Ident); ok {
+		name = id.Name
+	}
+	if star != "" {
+		return "(" + star + name + ")." + fd.Name.Name
+	}
+	return name + "." + fd.Name.Name
+}
+
+func TestScanMarkerUsesResolvesAliasesDotImportsAndFuncValues(t *testing.T) {
+	src := `package p
+import (
+	b "github.com/gastownhall/gascity/internal/beads"
+	. "github.com/gastownhall/gascity/internal/beads"
+)
+func viaAlias() { _ = b.FederatedRead(nil) }
+func viaValue() { f := b.RelicRead; _ = f }
+func viaDot() { _ = FederatedGet(nil, "") }
+type T struct{}
+func (t *T) method() { _ = b.RelicGet(nil, "") }
+func shadowed(beads int) { _ = beads }
+`
+	uses, err := scanMarkerUses(token.NewFileSet(), "p/p.go", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, u := range uses {
+		got[u.fn] = u.kind
+	}
+	want := map[string]string{"viaAlias": "federated", "viaValue": "relic", "viaDot": "federated", "(*T).method": "relic"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("uses = %v, want %v", got, want)
+	}
+}
+
+func TestReadMarkersAreReviewed(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	got := map[string]int{}
+	fset := token.NewFileSet()
+	got := map[string]map[string]int{}
 	scanned := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -83,44 +219,54 @@ func TestFederatedReadMarkersAreReviewed(t *testing.T) {
 		}
 		rel = filepath.ToSlash(rel)
 		if strings.HasPrefix(rel, "internal/beads/") && !strings.Contains(strings.TrimPrefix(rel, "internal/beads/"), "/") {
-			return nil // the marker's own package
+			return nil // the markers' own package
 		}
 		src, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
 		scanned++
-		if n := len(federatedMarkerCall.FindAll(src, -1)); n > 0 {
-			got[rel] = n
+		uses, err := scanMarkerUses(fset, rel, src)
+		if err != nil {
+			return err
+		}
+		for _, u := range uses {
+			key := u.file + " " + u.fn
+			if got[key] == nil {
+				got[key] = map[string]int{}
+			}
+			got[key][u.kind]++
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("scanning for federated-read markers: %v", err)
+		t.Fatalf("scanning for read markers: %v", err)
 	}
 	if scanned == 0 {
 		t.Fatal("the marker guard scanned zero production files; it is not evaluating anything")
 	}
 	var diffs []string
-	for file, n := range got {
-		if want := reviewedFederatedMarkers[file]; want != n {
-			diffs = append(diffs, file+": "+itoa(n)+" marked read(s), the reviewed list says "+itoa(want))
+	for key, kinds := range got {
+		want, ok := reviewedMarkers[key]
+		for kind, n := range kinds {
+			if !ok || want.kind != kind || want.count != n {
+				diffs = append(diffs, fmt.Sprintf("%s: %d %s mark(s); the reviewed table says %d %s", key, n, kind, want.count, want.kind))
+			}
 		}
 	}
-	for file, want := range reviewedFederatedMarkers {
-		if _, ok := got[file]; !ok {
-			diffs = append(diffs, file+": no marked read, the reviewed list says "+itoa(want))
+	for key, want := range reviewedMarkers {
+		if _, ok := got[key]; !ok {
+			diffs = append(diffs, fmt.Sprintf("%s: no mark; the reviewed table says %d %s", key, want.count, want.kind))
+		}
+		if strings.TrimSpace(want.reason) == "" {
+			diffs = append(diffs, key+": reviewed entry has no reason")
 		}
 	}
 	if len(diffs) > 0 {
 		sort.Strings(diffs)
-		t.Errorf("beads.FederatedRead / FederatedGet call sites differ from reviewedFederatedMarkers:\n  %s\n\n"+
-			"A marked read is invisible to the split-strict gate. Mark only a federation leg or residence probe "+
-			"whose miss another leg covers, and record it in reviewedFederatedMarkers with the reason, so the "+
-			"marker set stays small and reviewed.", strings.Join(diffs, "\n  "))
+		t.Errorf("read-marker uses differ from reviewedMarkers:\n  %s\n\n"+
+			"A marked read is invisible to the split-strict gate's ratchet. Use beads.FederatedRead only for a federation leg or residence probe whose miss "+
+			"another leg covers, and beads.RelicRead for a leg that reads a class's rows from a scope store that should no longer hold them (S4 debt); "+
+			"record either in reviewedMarkers with the reason.", strings.Join(diffs, "\n  "))
 	}
-}
-
-func itoa(n int) string {
-	return strconv.Itoa(n)
 }

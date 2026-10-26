@@ -460,6 +460,18 @@ func conformanceConvergenceResidence(t *testing.T, e splitEnv) {
 	// A scope serving its own work ledger must still run it — that is every rig
 	// scope, and the city scope of a single-store city.
 	assertConvergencePours(t, rigScope, rigRoot, convergencePouredFormula, 2, e.rig, "rig "+e.rigName)
+	if e.split {
+		// The rig scope's convergence writer puts graph rows in the rig
+		// ledger. The owner has ruled graph beads always live in the city
+		// binding, so the strict rig leaf records each one; this row pins
+		// today's placement (an S4 known violation), so it claims them.
+		rigLeaf, _, _ := unwrapBeadPolicyStore(e.rig)
+		for _, v := range splittest.TakeSplitViolations(rigLeaf) {
+			if v.Op != "create" || v.Class != "graph" {
+				t.Errorf("unexpected split violation on the rig leaf: %s", v)
+			}
+		}
+	}
 	if !e.split {
 		assertConvergencePours(t, city, cityRoot, convergencePouredFormula, 2, e.work, "city")
 		return

@@ -1148,10 +1148,12 @@ func (c *sourceWorkflowRootCollector) scanStore(index int, info SourceWorkflowSt
 		c.bindingStore = info.Store
 		c.bindingRef = rootStoreRef
 	}
+	// Relic leg (S4 debt): a scope store holds this class only as rows
+	// written before the split; beads.RelicRead counts it as debt.
 	// One leg of the source-workflow federation (graph binding, city, rigs):
 	// each leg lists only the roots it holds.
 	var matches []beads.Bead
-	err := beads.FederatedRead(func() error {
+	err := beads.RelicRead(func() error {
 		var listErr error
 		matches, listErr = sourceworkflow.ListLiveRoots(info.Store, c.sourceBeadID, c.sourceStoreRef, rootStoreRef)
 		return listErr

@@ -1,0 +1,3 @@
+# Top-level cmd/gc tests known to fail under GC_TEST_SPLIT_STRICT=1, one per line.
+# A failing test not listed here fails //cmd/gc:gc_split_strict_test; a listed
+# test that passes is reported so it can be removed.
