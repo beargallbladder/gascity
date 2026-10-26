@@ -710,7 +710,12 @@ func cliDirectSessionResolver(store beads.Store, cityName, cityPath string, cfg 
 	if !ok {
 		return "", false, nil
 	}
-	id, err := resolveSessionIDMaterializingNamed(cityPath, cfg, store, spec.Identity)
+	// A named session bead is session class. The caller's store is whatever
+	// scope the sling or drain runs in (a rig work store, for a rig scope), so
+	// on a split city resolve and materialize through the sessions binding
+	// instead: through the scope store the canonical bead is invisible and a
+	// duplicate is minted where nothing reads it (write-audit B6).
+	id, err := resolveSessionIDMaterializingNamed(cityPath, cfg, cliRelocatedSessionStore(store, cfg, cityPath), spec.Identity)
 	if err != nil {
 		return "", false, err
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -181,8 +182,10 @@ func (s *Server) reassignContinuityIneligibleNamedSessionState(ctx context.Conte
 	}
 	now := time.Now().UTC()
 	for _, info := range retired {
-		if err := reassignOpenWorkAssignedToSession(store, info.ID, replacementID); err != nil {
-			return err
+		for _, workStore := range s.retiredSessionWorkStores(store) {
+			if err := reassignOpenWorkAssignedToSession(workStore, info.ID, replacementID); err != nil {
+				return err
+			}
 		}
 		if err := session.NewStore(beads.SessionStore{Store: store}).ReassignWaits(info.ID, replacementID); err != nil {
 			return fmt.Errorf("reassign waits from retired session %s to %s: %w", info.ID, replacementID, err)
@@ -195,6 +198,37 @@ func (s *Server) reassignContinuityIneligibleNamedSessionState(ctx context.Conte
 		}
 	}
 	return nil
+}
+
+// retiredSessionWorkStores lists, once each, every store that can hold work
+// assigned to a session: the city work store, each rig work store in rig-name
+// order, the graph store (whose steps are assigned to sessions), and the
+// sessions store the caller resolved the session through.
+//
+// The sessions store alone is not enough (write-audit B7). On a split city it
+// is the class binding, which holds graph steps but no task: listing work there
+// moved the retired session's graph steps to its successor and left every task
+// in the city and rig work stores assigned to an id no session answers to.
+// Named-session work is not pool-routed, so the orphan lane never rescues it.
+// On a single-store city every one of these is the same store, which is read
+// once, exactly as before. cmd/gc's controller twin
+// (reassignWorkAssignedToRetiredSessionBead) sweeps the same work legs.
+func (s *Server) retiredSessionWorkStores(sessions beads.Store) []beads.Store {
+	var out []beads.Store
+	add := func(store beads.Store) {
+		if store == nil || slices.Contains(out, store) {
+			return
+		}
+		out = append(out, store)
+	}
+	add(s.state.CityBeadStore())
+	stores := s.state.BeadStores()
+	for _, rigName := range sortedRigNames(stores) {
+		add(stores[rigName])
+	}
+	add(s.state.GraphBeadStore().Store)
+	add(sessions)
+	return out
 }
 
 func reassignOpenWorkAssignedToSession(store beads.Store, oldID, newID string) error {
