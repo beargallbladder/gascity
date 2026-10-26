@@ -352,8 +352,15 @@ type storageView struct {
 
 func newProjectionView(p *Projection, front beads.Store, side projectionSide) beads.Store {
 	v := &view{Store: front, p: p, side: side}
-	if storage, ok := front.(beads.StorageCreateStore); ok {
+	storage, hasStorage := front.(beads.StorageCreateStore)
+	cache, isCache := front.(cacheProbes)
+	switch {
+	case hasStorage && isCache:
+		return &storageCacheView{storageView: &storageView{view: v, storage: storage}, cache: cache}
+	case hasStorage:
 		return &storageView{view: v, storage: storage}
+	case isCache:
+		return &cacheView{view: v, cache: cache}
 	}
 	return v
 }
@@ -380,6 +387,8 @@ var (
 	_ beads.ChildrenBatchLister                   = (*view)(nil)
 	_ beads.DependencyBatchLister                 = (*view)(nil)
 	_ cachedLister                                = (*view)(nil)
+	_ cacheProbes                                 = (*cacheView)(nil)
+	_ cacheProbes                                 = (*storageCacheView)(nil)
 )
 
 // cachedLister is internal/api's cache-first list (cache_read_model.go).
@@ -1190,33 +1199,42 @@ func (v *view) WaitForParentProjection(ctx context.Context, id, oldParentID, new
 	return nil
 }
 
-// IsLive forwards the front's cache liveness (a CachingStore's), false for a
-// front without one: production asserts it to wait for a primed cache.
-func (v *view) IsLive() bool {
-	if live, ok := v.Store.(interface{ IsLive() bool }); ok {
-		return live.IsLive()
-	}
-	return false
+// cacheProbes are a CachingStore front's liveness and statistics. Production
+// asserts them (the v2 planner waits for IsLive before its first pass), so a
+// view over a cache must answer them, and a view over anything else must not
+// claim them: a view that answered IsLive()=false for a MemStore would turn
+// every "is the cache live?" check into "not yet".
+type cacheProbes interface {
+	IsLive() bool
+	Stats() beads.CacheStats
 }
 
-// IsClosed forwards the front's closed state, false for a front without one.
-func (v *view) IsClosed() bool {
-	if closed, ok := v.Store.(interface{ IsClosed() bool }); ok {
-		return closed.IsClosed()
-	}
-	return false
+// cacheView is the variant built over a front that is a cache.
+type cacheView struct {
+	*view
+	cache cacheProbes
 }
 
-// Stats forwards the front's cache statistics, zero for a front without one.
-func (v *view) Stats() beads.CacheStats {
-	if stats, ok := v.Store.(interface{ Stats() beads.CacheStats }); ok {
-		return stats.Stats()
-	}
-	return beads.CacheStats{}
+// storageCacheView is the variant over a cache front with CreateWithStorage.
+type storageCacheView struct {
+	*storageView
+	cache cacheProbes
 }
+
+// IsLive forwards the front cache's liveness.
+func (v *cacheView) IsLive() bool { return v.cache.IsLive() }
+
+// Stats forwards the front cache's statistics.
+func (v *cacheView) Stats() beads.CacheStats { return v.cache.Stats() }
+
+// IsLive forwards the front cache's liveness.
+func (v *storageCacheView) IsLive() bool { return v.cache.IsLive() }
+
+// Stats forwards the front cache's statistics.
+func (v *storageCacheView) Stats() beads.CacheStats { return v.cache.Stats() }
 
 // StoreHealthPath forwards the front's health path, "" for a front without
-// one.
+// one (the answer cmd/gc's emitting class store gives too).
 func (v *view) StoreHealthPath() string {
 	if health, ok := v.Store.(interface{ StoreHealthPath() string }); ok {
 		return health.StoreHealthPath()
@@ -1224,16 +1242,27 @@ func (v *view) StoreHealthPath() string {
 	return ""
 }
 
-// IDPrefix is the prefix storeref routes by: the class binding's ("gcg") for
-// the class view, as on a split city, and the front's own (or none) for the
-// work view.
+// IDPrefix reports the prefix the front declares, following declared
+// resolution targets as opjournal's prefix discovery does, and "" when none
+// does: every consumer (storeref.PrefixOwner, the caching store, opjournal)
+// reads "" as "no prefix", so the view routes exactly as its front would.
 func (v *view) IDPrefix() string {
-	if v.side == sideClass {
-		prefix, _ := config.ReservedClassPrefix(config.BeadClassGraph)
-		return prefix
-	}
-	if p, ok := v.Store.(interface{ IDPrefix() string }); ok {
-		return p.IDPrefix()
+	current := v.Store
+	for range maxUnwrapDepth {
+		if p, ok := current.(interface{ IDPrefix() string }); ok {
+			if prefix := p.IDPrefix(); prefix != "" {
+				return prefix
+			}
+		}
+		targeter, ok := current.(beads.ConditionalWritesResolveTargeter)
+		if !ok {
+			return ""
+		}
+		next := targeter.ConditionalWritesResolveTarget()
+		if next == nil || next == current {
+			return ""
+		}
+		current = next
 	}
 	return ""
 }

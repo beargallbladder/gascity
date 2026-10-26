@@ -53,7 +53,17 @@ var reviewedMarkers = map[string]reviewedMarker{
 		"tracking convoys are probed on the work store and the graph store; a convoy minted single-store-era can sit on the graph side",
 	},
 
+	"internal/api/handler_convoys.go isGraphConvoyID": {
+		"federated", 1,
+		"graph-first probe of a convoy id; a plain (work) convoy misses there and the rig legs answer it",
+	},
+	"internal/api/huma_handlers_beads.go (*Server).humaHandleBeadList": {
+		"federated", 1,
+		"/beads fan-out leg: work legs and the class binding each list only their own rows",
+	},
+
 	// Relic legs: graph rows read from city and rig scope stores (S4).
+	"internal/api/huma_handlers_convoys.go (*Server).humaDeleteWorkflow":       {"relic", 1, "workflowStores root probe in workflow teardown"},
 	"cmd/gc/cmd_convoy_dispatch.go findBeadScopeAcrossStores":                  {"relic", 2, "control-bead scope probe over the city and rig ledgers before the binding"},
 	"cmd/gc/cmd_convoy_dispatch.go cmdWorkflowDelete":                          {"relic", 1, "workflow delete sweeps the retained scope-store copies beside the binding"},
 	"cmd/gc/cmd_convoy_dispatch.go (*sourceWorkflowMatchCollector).collect":    {"relic", 1, "source-workflow walk over scope stores and the binding"},
@@ -66,6 +76,11 @@ var reviewedMarkers = map[string]reviewedMarker{
 	"internal/api/orders_feed.go buildWorkflowRunProjections":                  {"relic", 1, "workflowStores closed-root list"},
 	"internal/api/orders_feed.go buildWorkflowRunProjectionsRootOnly":          {"relic", 1, "workflowStores closed-root list (root-only projection)"},
 	"internal/sling/sling_core.go (*sourceWorkflowRootCollector).scanStore":    {"relic", 1, "source-workflow root scan over SourceWorkflowStores"},
+
+	// Relic legs: session beads read from a scope store unioned beside the
+	// sessions store.
+	"cmd/gc/pool_detached_orphan_sweep.go buildDetachedOrphanRouteIndex":               {"relic", 1, "detached-orphan route index over a work leg and the sessions store"},
+	"cmd/gc/doctor_executor_identity_residue_check.go buildExecutorRouteIdentityIndex": {"relic", 1, "executor-identity doctor index unioning scope stores' session beads"},
 
 	// Relic legs: order-tracking rows read from city and rig scope stores
 	// (pre-cutover tracking history).

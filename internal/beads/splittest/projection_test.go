@@ -386,3 +386,22 @@ func TestGateViewsProjectWhenTheGateIsOn(t *testing.T) {
 		t.Fatal("the gate did not hand out the projection's views")
 	}
 }
+
+// TestProjectionClaimsCacheProbesOnlyOverACache: a view over a plain store
+// must not look like a cache (it would read as "never live"), and a view over
+// a cache must answer for it.
+func TestProjectionClaimsCacheProbesOnlyOverACache(t *testing.T) {
+	plain := projectionOf(beads.NewMemStore(), newViolationSink())
+	if _, ok := plain.WorkView().(interface{ IsLive() bool }); ok {
+		t.Fatal("a view over a MemStore claims IsLive")
+	}
+	cache := beads.NewCachingStore(beads.NewMemStore(), nil)
+	cached := projectionOf(cache, newViolationSink()).WorkViewOf(cache)
+	live, ok := cached.(interface{ IsLive() bool })
+	if !ok {
+		t.Fatal("a view over a CachingStore does not answer IsLive")
+	}
+	if live.IsLive() != cache.IsLive() {
+		t.Fatal("the view's IsLive disagrees with its cache's")
+	}
+}

@@ -567,7 +567,9 @@ func (s *Server) humaDeleteWorkflow(workflowID string) (*OKResponse, error) {
 			rootIDs = append(rootIDs, root.ID)
 			addBead(root)
 		}
-		if root, err := info.store.Get(workflowID); err == nil {
+		// Relic leg (S4 debt): a scope store holds graph roots only as rows
+		// written before the split; beads.RelicGet counts it as debt.
+		if root, err := beads.RelicGet(info.store, workflowID); err == nil {
 			addRoot(root)
 		}
 		if roots, err := info.store.List(beads.ListQuery{
