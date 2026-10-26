@@ -181,3 +181,72 @@ func TestWispAutocloseClosesABindingResidentAttachedWisp(t *testing.T) {
 		}
 	})
 }
+
+// ga-ty80s.1: the controller's close dispatch hands the autoclose cores the
+// CITY graph-class store, but a rig-owned bead's attachments and molecule
+// roots live with it in the rig store on a single-store city (the graph store
+// a rig sling resolves is the rig store), and in the binding on a split one.
+// Both cores fall back from the graph store to the closed bead's own store,
+// so either placement is reached.
+func TestAutocloseReachesARigOwnedBeadsGraphParents(t *testing.T) {
+	forEachTopologyWithRig(t, func(t *testing.T, e splitEnv) {
+		// Where a rig-scope pour lands: the binding on a split city, the rig
+		// store itself on a single-store one.
+		pourStore := e.rig
+		if e.split {
+			pourStore = e.graphStore()
+		}
+
+		t.Run("wisp-attachment", func(t *testing.T) {
+			root, err := pourStore.Create(beads.Bead{Title: "attached wisp", Type: "molecule", Metadata: map[string]string{
+				beadmeta.KindMetadataKey: beadmeta.KindWisp,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			src, err := e.rig.Create(beads.Bead{Title: "rig source", Type: "task", Metadata: map[string]string{
+				beadmeta.MoleculeIDMetadataKey: root.ID,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.rig.Close(src.ID); err != nil {
+				t.Fatal(err)
+			}
+			doWispAutocloseWith(e.rig, src.ID, io.Discard, beads.GraphStore{Store: e.graphStore()})
+			got, err := pourStore.Get(root.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != "closed" {
+				t.Fatalf("rig source's attached wisp %s status=%q after the source closed, want closed", root.ID, got.Status)
+			}
+		})
+
+		t.Run("molecule-root", func(t *testing.T) {
+			root, err := pourStore.Create(beads.Bead{Title: "rig molecule", Type: "molecule", Metadata: map[string]string{
+				beadmeta.KindMetadataKey: beadmeta.KindWisp,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			step, err := pourStore.Create(beads.Bead{Title: "step", Type: "step", ParentID: root.ID, Metadata: map[string]string{
+				beadmeta.RootBeadIDMetadataKey: root.ID,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := pourStore.Close(step.ID); err != nil {
+				t.Fatal(err)
+			}
+			doMoleculeAutocloseWith(pourStore, "", events.Discard, step.ID, io.Discard, beads.GraphStore{Store: e.graphStore()})
+			got, err := pourStore.Get(root.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != "closed" {
+				t.Fatalf("rig-placed molecule root %s status=%q after its step closed, want closed", root.ID, got.Status)
+			}
+		})
+	})
+}
