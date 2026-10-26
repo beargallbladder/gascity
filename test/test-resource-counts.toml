@@ -1366,6 +1366,16 @@ resource = "subprocess"
 calls = 1
 
 [[count]]
+path = "examples/bd/dolt/runtime_listener_test.go"
+resource = "net_listen"
+calls = 2
+
+[[count]]
+path = "examples/bd/dolt/runtime_listener_test.go"
+resource = "subprocess"
+calls = 2
+
+[[count]]
 path = "examples/bd/dolt/sql_test.go"
 resource = "net_listen"
 calls = 1
