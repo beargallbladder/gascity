@@ -1014,6 +1014,7 @@ go_test(
         "bd_relocated_classes_test.go",
         "bd_testscript_test.go",
         "bd_wisp_tier_test.go",
+        "bead_event_relic_residence_test.go",
         "bead_format_test.go",
         "bead_policy_store_capability_test.go",
         "bead_policy_store_claim_test.go",

@@ -297,9 +297,13 @@ func (cs *controllerState) runAutocloseSweepPass(now time.Time) autocloseSweepRe
 		}
 		cs.mu.RLock()
 		stores := cs.beadEventStoresLocked(id)
+		probe := cs.beadEventRelicProbeLocked(id)
 		storeRef := cs.autocloseStoreRefLocked(id)
 		suspendedStore := cs.anySuspendedRigStoreLocked(stores)
 		cs.mu.RUnlock()
+		if relic, ok := probe.residentStore(id); ok {
+			stores, storeRef, suspendedStore = []beads.Store{relic}, "", false
+		}
 		if len(stores) == 0 {
 			continue
 		}

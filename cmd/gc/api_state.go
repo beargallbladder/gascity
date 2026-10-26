@@ -1051,11 +1051,18 @@ func (cs *controllerState) applyBeadEventToStores(evt events.Event) {
 	wake := cs.wakeOf()
 	cs.mu.RLock()
 	stores := cs.beadEventStoresLocked(id)
+	probe := cs.beadEventRelicProbeLocked(id)
 	var storeRef string
 	if evt.Type == events.BeadClosed {
 		storeRef = cs.autocloseStoreRefLocked(evt.Subject)
 	}
 	cs.mu.RUnlock()
+	relic, residentProven := probe.residentStore(id)
+	if residentProven {
+		// A relic's events belong to the binding that holds it, and its
+		// close is autoclosed there in the ID-only mode relocated ids use.
+		stores, storeRef = []beads.Store{relic}, ""
+	}
 
 	// A cache event (either actor) carries a CachingStore's own post-absorb
 	// snapshot, dependencies included, rather than a bd hook patch. Saying so
@@ -1066,6 +1073,13 @@ func (cs *controllerState) applyBeadEventToStores(evt events.Event) {
 	snapshot := isCacheActor(evt.Actor)
 	for _, store := range stores {
 		if cached, ok := store.(*beads.CachingStore); ok {
+			// A relic's id is outside every namespace the binding cache
+			// filters events on; its residence was just proved, so the event
+			// is applied past that filter.
+			if residentProven {
+				cached.ApplyResidentEventSnapshot(evt.Type, evt.Payload)
+				continue
+			}
 			// A class binding's out-of-process writers are one-shot CLIs, whose
 			// emitter snapshots the row with its edges. Applied as a bd hook
 			// patch, a snapshot of an edge-less row (no dependencies key, from
@@ -1261,9 +1275,74 @@ func (cs *controllerState) beadCloseAutoclose(beadID string, store beads.Store, 
 	}
 }
 
+// beadEventStores is beadEventStoresLocked plus the residence probe for a
+// migrated id (beadEventRelicProbeLocked): the stores a bead event for id is
+// applied to. It takes cs.mu itself and probes outside it.
+func (cs *controllerState) beadEventStores(id string) []beads.Store {
+	cs.mu.RLock()
+	stores := cs.beadEventStoresLocked(id)
+	probe := cs.beadEventRelicProbeLocked(id)
+	cs.mu.RUnlock()
+	if relic, ok := probe.residentStore(id); ok {
+		return []beads.Store{relic}
+	}
+	return stores
+}
+
+// beadEventRelicProbe is the residence probe a bead event for a work-shaped
+// id takes on a city that relocates its infrastructure classes (R4).
+//
+// `gc storage migrate` carries infrastructure beads into the binding with
+// their ORIGINAL ids, so on a migrated city an HQ- or rig-prefixed id can be
+// resident in the binding — a "relic" — and its prefix names the wrong store.
+// Routed by prefix alone, a relic's events reached only the work cache: the
+// binding cache went stale until its rescan, and a close read the work store,
+// missed, was refuted, and the relic molecule never autoclosed. Reserved ids
+// (gcg-* and the other class namespaces) already route to the binding by
+// prefix; this is the half for the ids a prefix cannot place.
+//
+// The probe is the by-id residency plan's binding half
+// (byIDBindingOwnerForTopology), over the routes the controller opened at
+// boot. A binding the boot census certified relic-free is not read at all, so
+// a born-split city pays nothing; a migrated one pays one binding read per
+// work-shaped event. The zero value probes nothing.
+type beadEventRelicProbe struct {
+	routes *storageRoutes
+}
+
+// beadEventRelicProbeLocked returns the probe a bead event for id needs, or
+// the zero probe when it needs none: a city that relocates nothing, or an id
+// inside a reserved class namespace. cs.mu must be held.
+func (cs *controllerState) beadEventRelicProbeLocked(id string) beadEventRelicProbe {
+	if id == "" || cs.storageRoutes == nil || len(cs.storageRoutes.stores) == 0 || bdIDIsClassReserved(id) {
+		return beadEventRelicProbe{}
+	}
+	return beadEventRelicProbe{routes: cs.storageRoutes}
+}
+
+// residentStore reports the binding store that holds id, when the probe
+// proves one does. A probe that cannot decide (a binding read that failed)
+// keeps the prefix route: the event is not lost, the sweep re-reads a close,
+// and the binding's rescan catches an update.
+func (p beadEventRelicProbe) residentStore(id string) (beads.Store, bool) {
+	if p.routes == nil {
+		return nil, false
+	}
+	bindings, refused := residencyBindingsFromRoutes(p.routes)
+	if refused != nil || len(bindings) == 0 {
+		return nil, false
+	}
+	owner, ok, err := byIDBindingOwnerForTopology(claimRouteTopology(bindings, nil), id)
+	if err != nil || !ok || owner.Store == nil {
+		return nil, false
+	}
+	return owner.Store, true
+}
+
 // beadEventStoresLocked returns the stores a bead event for id is applied to:
 // the store whose configured prefix owns id, or every store when no configured
-// prefix does. id must already be canonical (see beads.BeadEventID).
+// prefix does. id must already be canonical (see beads.BeadEventID). It does
+// not probe residence; beadEventStores is the form that does.
 func (cs *controllerState) beadEventStoresLocked(id string) []beads.Store {
 	if id != "" && cs.cfg != nil {
 		if store, known := cs.beadEventConfiguredStoreLocked(id); known {
