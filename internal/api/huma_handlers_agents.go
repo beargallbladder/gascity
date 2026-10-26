@@ -27,6 +27,60 @@ import (
 // Var, not const, so tests can pin each cache tier.
 var agentListResponseTTLFloor = 3 * time.Second
 
+// agentListSlowBuildThreshold is the build time from which a cached agent
+// list is still served after the event index has moved past it. The
+// dashboard's Agents view refetches the list when a session, bead or agent
+// event arrives and never polls, so a list built before that event would show
+// the pre-event state until the next event. Rebuilding a cheap list on every
+// such refetch costs little, so only a list slower than this to build, the
+// loaded city of #7149, is served across index changes: its readers get a
+// list stored at most a floor ago instead of paying a rebuild per event. A
+// list built at the live index is served whatever its build time. Var, not
+// const, so tests can pin it.
+var agentListSlowBuildThreshold = time.Second
+
+// agentListCacheEntry is a cached agent list.
+type agentListCacheEntry struct {
+	// Index is the event index captured before the build: what a hit reports
+	// as X-GC-Index.
+	Index uint64 `json:"index"`
+	// Started is when the build began; it orders overlapping builds.
+	Started time.Time `json:"started"`
+	// BuildTime is how long the build took.
+	BuildTime time.Duration           `json:"build_time"`
+	Body      ListBody[agentResponse] `json:"body"`
+}
+
+// cachedAgentList returns the list cached under key that a request which saw
+// event index may be served: one stored within its time bucket or the TTL
+// floor, and built at or after index unless its build was slow
+// (agentListSlowBuildThreshold).
+func (s *Server) cachedAgentList(key string, bucket, index uint64) (agentListCacheEntry, bool) {
+	hit, ok := cachedResponseAs[agentListCacheEntry](s, key, bucket)
+	if !ok {
+		// A build that outlasts its start bucket is stored under a bucket no
+		// later request computes; the age floor still serves it.
+		hit, ok = cachedResponseWithinAgeAs[agentListCacheEntry](s, key, agentListResponseTTLFloor)
+	}
+	if !ok || (hit.Index < index && hit.BuildTime < agentListSlowBuildThreshold) {
+		return agentListCacheEntry{}, false
+	}
+	return hit, true
+}
+
+// storeAgentList caches a complete list under (key, bucket) unless the slot
+// holds one whose build started later. On a loaded city builds overlap (an 8s
+// build against faster polls) and can finish out of order, and the age floor
+// serves whatever the slot holds, so a build that started first and finished
+// last would replace the newer list and step its readers back to an older
+// snapshot and X-GC-Index.
+func (s *Server) storeAgentList(key string, bucket uint64, entry agentListCacheEntry) {
+	s.storeResponseUnless(key, bucket, entry, func(cached responseCacheEntry) bool {
+		prev, ok := cached.value.(agentListCacheEntry)
+		return ok && prev.Started.After(entry.Started)
+	})
+}
+
 // humaHandleAgentList is the Huma-typed handler for GET /v0/agents.
 func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput) (*ListOutput[agentResponse], error) {
 	bp := input.toBlockingParams()
@@ -35,7 +89,8 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		waitForChange(ctx, s.state.EventProvider(), bp)
 	}
 	index := s.latestIndex()
-	bucket := responseCacheTimeBucket(time.Now())
+	started := time.Now()
+	bucket := responseCacheTimeBucket(started)
 
 	cfg := s.state.Config()
 	sp := s.state.SessionProvider()
@@ -53,16 +108,15 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 	// index-keyed entry missed on nearly every request and paid the
 	// per-agent rebuild (gascity#7149, the class #3186 fixed for /status).
 	// A hit can therefore predate events recorded since its build, so it
-	// reports the index captured before that build (indexedResponse), never
-	// this request's index: X-GC-Index tells a client where to resume or
-	// block (docs/reference/api.md "Snapshot index").
+	// reports the index captured before that build, never this request's
+	// index: X-GC-Index tells a client where to resume or block
+	// (docs/reference/api.md "Snapshot index"). Only a slow build is served
+	// once the index has moved past it (cachedAgentList).
 	//
-	// Strict-freshness callers (blocking ?index=&wait=) bypass the cache so
-	// the body they receive reflects the event they waited for. The gate
-	// cannot rely on the key: index 0 is a valid blocking index, and
-	// cacheKeyFor skips zero values, so a blocking ?index=0 request would
-	// share its key with plain polls. ?peek=true reads live pane output and
-	// is never cached either.
+	// Blocking requests (?index=&wait=) neither read nor write the cache: the
+	// body must reflect the event the request waited for, and identical
+	// blocking queries share one slot that can hold a body built before that
+	// event. ?peek=true reads live pane output and is never cached either.
 	cacheKey := ""
 	if !wantPeek && !blocking {
 		// Cache key derived from input struct tags — adding a new query
@@ -70,12 +124,7 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		// The list projects the config, whose swaps do not advance the
 		// event index, so the key also carries the config generation.
 		cacheKey = cacheKeyFor("agents", input) + "#cfg=" + strconv.FormatUint(s.configGeneration(cfg), 10)
-		if hit, ok := cachedResponseAs[indexedResponse[ListBody[agentResponse]]](s, cacheKey, bucket); ok {
-			return &ListOutput[agentResponse]{Index: hit.Index, Body: hit.Body}, nil
-		}
-		// A build that outlasts its start bucket is stored under a bucket no
-		// later request computes; the age floor still serves it.
-		if hit, ok := cachedResponseWithinAgeAs[indexedResponse[ListBody[agentResponse]]](s, cacheKey, agentListResponseTTLFloor); ok {
+		if hit, ok := s.cachedAgentList(cacheKey, bucket, index); ok {
 			return &ListOutput[agentResponse]{Index: hit.Index, Body: hit.Body}, nil
 		}
 	}
@@ -280,7 +329,7 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 	// A partial list reflects a transient backend failure; don't serve it
 	// from cache once the backend recovers.
 	if cacheKey != "" && !body.Partial {
-		s.storeResponse(cacheKey, bucket, indexedResponse[ListBody[agentResponse]]{Index: index, Body: body})
+		s.storeAgentList(cacheKey, bucket, agentListCacheEntry{Index: index, Started: started, BuildTime: time.Since(started), Body: body})
 	}
 
 	return &ListOutput[agentResponse]{
