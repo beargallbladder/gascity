@@ -296,15 +296,15 @@ func TestDrainProjectedBlockerIDsRoutesMemberDepsToOwningStore(t *testing.T) {
 		},
 	}
 
-	projection, err := drainProjectedBlockerIDs(ambient, dependent.ID, manifest, ProcessOptions{MemberStores: []beads.Store{memberStore}})
+	projection, err := drainProjectedBlockerIDs(ambient, beads.Bead{ID: "drain"}, dependent.ID, manifest, ProcessOptions{MemberStores: []beads.Store{memberStore}})
 	if err != nil {
 		t.Fatalf("drainProjectedBlockerIDs: %v", err)
 	}
 	if len(projection.BlockerIDs) != 1 || projection.BlockerIDs[0] != "root-blocker" {
 		t.Fatalf("blockerIDs = %v, want [root-blocker] (member deps routed to member store, projected onto the blocker's item root)", projection.BlockerIDs)
 	}
-	if len(projection.Unprojectable) != 0 {
-		t.Fatalf("unprojectable = %v, want none: an in-manifest blocker projects onto an item root, which is co-resident with the item workflow by construction", projection.Unprojectable)
+	if len(projection.Gated) != 0 {
+		t.Fatalf("gated = %v, want none: an in-manifest blocker projects onto an item root, which is co-resident with the item workflow by construction", projection.Gated)
 	}
 }
 
@@ -2285,6 +2285,20 @@ func assertNoBlockingDep(t *testing.T, store beads.Store, issueID, dependsOnID s
 func seedSplitClassDrainWorkflow(t *testing.T, carryConvoyCopy bool) (work *beads.MemStore, graph *beads.MemStore, drain beads.Bead, memberIDs []string) {
 	t.Helper()
 	work = beads.NewMemStore()
+	newGraph := func(carried []beads.Bead) beads.Store {
+		graph = beads.NewMemStoreFrom(1000, carried, nil)
+		return graph
+	}
+	drain, memberIDs = seedSplitClassDrainWorkflowIn(t, work, carryConvoyCopy, newGraph)
+	return work, graph, drain, memberIDs
+}
+
+// seedSplitClassDrainWorkflowIn is seedSplitClassDrainWorkflow over stores the
+// caller chooses: work holds the input convoy and its two members, and
+// newGraph builds the graph store (given the beads to carry into it) that holds
+// the workflow root and the drain control.
+func seedSplitClassDrainWorkflowIn(t *testing.T, work beads.Store, carryConvoyCopy bool, newGraph func(carried []beads.Bead) beads.Store) (drain beads.Bead, memberIDs []string) {
+	t.Helper()
 	parent, err := work.Create(beads.Bead{
 		Title:    "input convoy",
 		Type:     "convoy",
@@ -2308,7 +2322,7 @@ func seedSplitClassDrainWorkflow(t *testing.T, carryConvoyCopy bool) (work *bead
 	if carryConvoyCopy {
 		carried = append(carried, parent)
 	}
-	graph = beads.NewMemStoreFrom(1000, carried, nil)
+	graph := newGraph(carried)
 
 	root, err := graph.Create(beads.Bead{
 		Title: "workflow",
@@ -2336,7 +2350,7 @@ func seedSplitClassDrainWorkflow(t *testing.T, carryConvoyCopy bool) (work *bead
 	if err != nil {
 		t.Fatalf("create drain control: %v", err)
 	}
-	return work, graph, drain, memberIDs
+	return drain, memberIDs
 }
 
 // TestDrainReadsConvoyMembershipAcrossTheClassBoundary pins the head of the
@@ -2625,7 +2639,7 @@ func itemWorkflowBeadIDs(t *testing.T, store beads.Store, rootID string) []strin
 // store's dep table, and both MemStore.readyLocked and sqliteReadySQL read a
 // missing target's status as "" — which is not "closed", so the dependent is
 // excluded from Ready forever and no action in any other store can release it.
-func assertNoUnresolvableBlockingDeps(t *testing.T, store *beads.MemStore) {
+func assertNoUnresolvableBlockingDeps(t *testing.T, store beads.Store) {
 	t.Helper()
 	all, err := store.List(beads.ListQuery{AllowScan: true, IncludeClosed: true})
 	if err != nil {
@@ -2877,104 +2891,208 @@ func TestEnsureDrainUnitConvoyPrefersTheWorkStoreOverAnEdgelessBindingCopy(t *te
 	}
 }
 
-// TestProcessDrainSplitCityDoesNotWriteACrossStoreBlockerEdge pins the blocker
-// projection to the same co-residence rule the convoy edge has.
+// TestProcessDrainSplitCityDoesNotWriteACrossStoreBlockerEdge pins how a drain
+// item waits for a blocker held in another store (read-audit R3).
 //
 // A drained member's out-of-convoy `blocks` dependency is an ordinary backlog
 // shape, and its target is a WORK bead. The item workflow the drain builds for
 // that member is graph-resident, so projecting the raw id writes a dependency row
-// into a store that cannot resolve its own target. That does not degrade to an
-// unenforced edge: the readiness reader treats a missing target's status as not
-// closed, so the item step is excluded from Ready permanently, completeDrain
-// returns ErrControlPending forever, and closing the real blocker in the work
-// store cannot release it — recovery needs manual DepRemove surgery in the
-// binding. There is no error, no quarantine, and no operator signal.
+// into a store that cannot resolve its own target: SQLite and the in-memory
+// stores then read the item as blocked forever (closing the real blocker in the
+// work store cannot release it), and bd/Dolt reads it as never blocked. So no
+// such edge may be written. The drain used to drop it and let the item run at
+// once, ahead of the work its member waits for — on a single-store city the edge
+// exists and the item waits.
 //
-// An already-closed blocker is the same shape and far more common (any historical
-// `blocks` edge in a real backlog), which is why the classification is by
-// residence AND status: a terminal blocker constrains nothing, so omitting its
-// edge loses no meaning and is not worth an operator's attention. An open one
-// does lose meaning, so it is recorded on the item root.
+// Now the item waits behind a cross-store GATE: a gate bead in the item's own
+// store that mirrors the remote blocker, which every reader of readiness honors
+// because the edge to it is an ordinary same-store edge. The controller releases
+// the gate once the blocker closes in its own store, and the item runs then and
+// not before. An already-closed blocker constrains nothing and gets no gate.
+//
+// It runs over the in-memory graph store and over a real SQLite binding (the
+// store a split city really serves its graph class from).
 func TestProcessDrainSplitCityDoesNotWriteACrossStoreBlockerEdge(t *testing.T) {
-	for _, tc := range []struct {
-		name           string
-		closeBlocker   bool
-		wantRecordedOn bool
-	}{
-		{name: "open out-of-convoy blocker is recorded", closeBlocker: false, wantRecordedOn: true},
-		{name: "closed out-of-convoy blocker constrains nothing", closeBlocker: true, wantRecordedOn: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			formulatest.EnableV2ForTest(t)
-			dir := t.TempDir()
-			writeDrainItemFormula(t, dir)
-			work, graph, drain, memberIDs := seedSplitClassDrainWorkflow(t, false)
-
-			blocker, err := work.Create(beads.Bead{Title: "outside the convoy", Type: "task"})
-			if err != nil {
-				t.Fatalf("create blocker: %v", err)
+	graphs := map[string]func(t *testing.T) func(carried []beads.Bead) beads.Store{
+		"memstore": func(*testing.T) func([]beads.Bead) beads.Store {
+			return func(carried []beads.Bead) beads.Store { return beads.NewMemStoreFrom(1000, carried, nil) }
+		},
+		"sqlite": func(t *testing.T) func([]beads.Bead) beads.Store {
+			return func(carried []beads.Bead) beads.Store {
+				store, err := beads.OpenSQLiteStore(t.TempDir(), beads.WithSQLiteStoreIDPrefix("gcg"))
+				if err != nil {
+					t.Fatalf("opening the SQLite graph binding: %v", err)
+				}
+				t.Cleanup(func() { _ = store.(interface{ CloseStore() error }).CloseStore() })
+				for _, b := range carried {
+					if _, err := store.(beads.ForeignIDCreator).CreateWithForeignID(b); err != nil {
+						t.Fatalf("carrying %s into the binding: %v", b.ID, err)
+					}
+				}
+				return store
 			}
-			if tc.closeBlocker {
+		},
+	}
+	for graphName, newGraph := range graphs {
+		for _, tc := range []struct {
+			name         string
+			closeBlocker bool
+		}{
+			{name: "open out-of-convoy blocker holds its item behind a gate", closeBlocker: false},
+			{name: "closed out-of-convoy blocker constrains nothing", closeBlocker: true},
+		} {
+			t.Run(graphName+"/"+tc.name, func(t *testing.T) {
+				formulatest.EnableV2ForTest(t)
+				dir := t.TempDir()
+				writeDrainItemFormula(t, dir)
+				work := beads.NewMemStore()
+				var graph beads.Store
+				build := newGraph(t)
+				drain, memberIDs := seedSplitClassDrainWorkflowIn(t, work, false, func(carried []beads.Bead) beads.Store {
+					graph = build(carried)
+					return graph
+				})
+
+				blocker, err := work.Create(beads.Bead{Title: "outside the convoy", Type: "task"})
+				if err != nil {
+					t.Fatalf("create blocker: %v", err)
+				}
+				if tc.closeBlocker {
+					if err := work.Close(blocker.ID); err != nil {
+						t.Fatalf("Close(%s): %v", blocker.ID, err)
+					}
+				}
+				mustDepAdd(t, work, memberIDs[0], blocker.ID, "blocks")
+
+				result, err := ProcessControl(graph, drain, ProcessOptions{
+					FormulaSearchPaths: []string{dir},
+					MemberStores:       []beads.Store{work},
+				})
+				if err != nil {
+					t.Fatalf("ProcessControl(member with an out-of-convoy blocker): %v", err)
+				}
+				if result.Action != "drain-expanded" {
+					t.Fatalf("result = %+v, want drain-expanded", result)
+				}
+
+				assertNoUnresolvableBlockingDeps(t, graph)
+				manifest := mustDrainManifest(t, mustGetBead(t, graph, drain.ID))
+				runnable := func(row int) bool {
+					t.Helper()
+					ready, err := graph.Ready()
+					if err != nil {
+						t.Fatalf("Ready: %v", err)
+					}
+					readyIDs := make(map[string]bool, len(ready))
+					for _, b := range ready {
+						readyIDs[b.ID] = true
+					}
+					for _, id := range itemWorkflowBeadIDs(t, graph, manifest.Rows[row].ItemRootID) {
+						if readyIDs[id] {
+							return true
+						}
+					}
+					return false
+				}
+				// The sibling row has no blocker at all and runs at once.
+				if !runnable(1) {
+					t.Fatalf("row 1 item workflow %s has nothing ready; it has no blocker", manifest.Rows[1].ItemRootID)
+				}
+				gates := crossStoreGatesIn(t, graph)
+				resolve := func(id string) ([]beads.Bead, error) {
+					b, err := work.Get(id)
+					if errors.Is(err, beads.ErrNotFound) {
+						return nil, nil
+					}
+					if err != nil {
+						return nil, err
+					}
+					return []beads.Bead{b}, nil
+				}
+				if tc.closeBlocker {
+					if len(gates) != 0 {
+						t.Fatalf("gates = %+v, want none: a closed blocker constrains nothing", gates)
+					}
+					if !runnable(0) {
+						t.Fatalf("row 0 item workflow %s has nothing ready although its only blocker is closed", manifest.Rows[0].ItemRootID)
+					}
+					return
+				}
+				if len(gates) != 1 || gates[0].Metadata[beadmeta.CrossStoreBlockerMetadataKey] != blocker.ID {
+					t.Fatalf("gates = %+v, want one gate mirroring %s", gates, blocker.ID)
+				}
+				if runnable(0) {
+					t.Fatalf("row 0 item workflow %s is ready while its member's blocker %s is open in the work store: the drain ran ahead of the work it waits for", manifest.Rows[0].ItemRootID, blocker.ID)
+				}
+				if got := mustGetBead(t, graph, manifest.Rows[0].ItemRootID).Metadata[beadmeta.DrainUnprojectedBlockersMetadataKey]; got != "" {
+					t.Fatalf("item root records %s = %q; the constraint is enforced now, not dropped", beadmeta.DrainUnprojectedBlockersMetadataKey, got)
+				}
+
+				// A release pass while the blocker is open changes nothing.
+				report, err := ReleaseCrossStoreGates(graph, resolve)
+				if err != nil || len(report.Released) != 0 || runnable(0) {
+					t.Fatalf("release with the blocker open = %+v, %v (row 0 runnable=%v); want the gate kept", report, err, runnable(0))
+				}
+				// A second pass over the drain mints no second gate.
+				if _, err := ProcessControl(graph, mustGetBead(t, graph, drain.ID), ProcessOptions{FormulaSearchPaths: []string{dir}, MemberStores: []beads.Store{work}}); err != nil && !errors.Is(err, ErrControlPending) {
+					t.Fatalf("ProcessControl(second pass): %v", err)
+				}
+				if again := crossStoreGatesIn(t, graph); len(again) != 1 {
+					t.Fatalf("gates after a second pass = %+v, want the one gate reused", again)
+				}
+
 				if err := work.Close(blocker.ID); err != nil {
 					t.Fatalf("Close(%s): %v", blocker.ID, err)
 				}
-			}
-			mustDepAdd(t, work, memberIDs[0], blocker.ID, "blocks")
-
-			result, err := ProcessControl(graph, drain, ProcessOptions{
-				FormulaSearchPaths: []string{dir},
-				MemberStores:       []beads.Store{work},
+				report, err = ReleaseCrossStoreGates(graph, resolve)
+				if err != nil || len(report.Released) != 1 {
+					t.Fatalf("release after the blocker closed = %+v, %v; want the gate released", report, err)
+				}
+				if !runnable(0) {
+					t.Fatalf("row 0 item workflow %s has nothing ready after its blocker %s closed and its gate was released", manifest.Rows[0].ItemRootID, blocker.ID)
+				}
 			})
-			if err != nil {
-				t.Fatalf("ProcessControl(member with an out-of-convoy blocker): %v", err)
-			}
-			if result.Action != "drain-expanded" {
-				t.Fatalf("result = %+v, want drain-expanded", result)
-			}
-
-			assertNoUnresolvableBlockingDeps(t, graph)
-
-			manifest := mustDrainManifest(t, mustGetBead(t, graph, drain.ID))
-			ready, err := graph.Ready()
-			if err != nil {
-				t.Fatalf("Ready: %v", err)
-			}
-			readyIDs := make(map[string]bool, len(ready))
-			for _, b := range ready {
-				readyIDs[b.ID] = true
-			}
-			for i, row := range manifest.Rows {
-				runnable := false
-				for _, id := range itemWorkflowBeadIDs(t, graph, row.ItemRootID) {
-					if readyIDs[id] {
-						runnable = true
-						break
-					}
-				}
-				if !runnable {
-					t.Fatalf("row %d item workflow %s has nothing ready; the drained item can never be dispatched and the drain waits on it forever", i, row.ItemRootID)
-				}
-			}
-
-			root := mustGetBead(t, graph, manifest.Rows[0].ItemRootID)
-			recorded := root.Metadata[beadmeta.DrainUnprojectedBlockersMetadataKey]
-			if tc.wantRecordedOn {
-				if recorded != blocker.ID {
-					t.Fatalf("%s on item root %s = %q, want %q; an item workflow that runs without a constraint its source member had must say so on its own bead, not only in a log line",
-						beadmeta.DrainUnprojectedBlockersMetadataKey, root.ID, recorded, blocker.ID)
-				}
-			} else if recorded != "" {
-				t.Fatalf("%s = %q, want empty: a closed blocker constrains nothing, so omitting its edge loses no meaning and recording it would fire on every real backlog",
-					beadmeta.DrainUnprojectedBlockersMetadataKey, recorded)
-			}
-
-			// The sibling row has no blocker at all and must be untouched.
-			sibling := mustGetBead(t, graph, manifest.Rows[1].ItemRootID)
-			if got := sibling.Metadata[beadmeta.DrainUnprojectedBlockersMetadataKey]; got != "" {
-				t.Fatalf("sibling item root %s recorded %q, want nothing", sibling.ID, got)
-			}
-		})
+		}
 	}
+}
+
+// TestReleaseCrossStoreGatesKeepsAGateWhoseBlockerNoStoreHolds pins the
+// unresolvable arm of the owner rule: a blocker no store holds blocks, and the
+// gate says why; a gate whose drain control closed is released.
+func TestReleaseCrossStoreGatesKeepsAGateWhoseBlockerNoStoreHolds(t *testing.T) {
+	graph := beads.NewMemStoreFrom(1000, nil, nil)
+	control, err := graph.Create(beads.Bead{Title: "drain", Type: "task", Metadata: map[string]string{beadmeta.RootBeadIDMetadataKey: "gc-root"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateID, err := ensureCrossStoreGate(graph, control, "gc-404")
+	if err != nil || gateID == "" {
+		t.Fatalf("ensureCrossStoreGate = %q, %v", gateID, err)
+	}
+	none := func(string) ([]beads.Bead, error) { return nil, nil }
+	report, err := ReleaseCrossStoreGates(graph, none)
+	if err != nil || len(report.Released) != 0 || len(report.Unresolved) != 1 {
+		t.Fatalf("release = %+v, %v; want the gate kept and reported unresolved", report, err)
+	}
+	if got := mustGetBead(t, graph, gateID).Metadata[beadmeta.CrossStoreGateStateMetadataKey]; got != "unresolved" {
+		t.Fatalf("gate state = %q, want unresolved", got)
+	}
+	if err := graph.Close(control.ID); err != nil {
+		t.Fatal(err)
+	}
+	report, err = ReleaseCrossStoreGates(graph, none)
+	if err != nil || len(report.Released) != 1 {
+		t.Fatalf("release after the drain control closed = %+v, %v; want the gate released", report, err)
+	}
+}
+
+func crossStoreGatesIn(t *testing.T, store beads.Store) []beads.Bead {
+	t.Helper()
+	gates, err := store.List(beads.ListQuery{Label: CrossStoreGateLabel, IncludeClosed: true, TierMode: beads.TierBoth})
+	if err != nil {
+		t.Fatalf("listing cross-store gates: %v", err)
+	}
+	return gates
 }
 
 // TestDrainProjectedBlockerIDsIsProbeFreeOnASingleStoreCity is the byte-identity
@@ -2998,15 +3116,15 @@ func TestDrainProjectedBlockerIDsIsProbeFreeOnASingleStoreCity(t *testing.T) {
 	store := &countingGetStore{Store: inner}
 
 	manifest := drainManifest{Version: 1, Rows: []drainManifestRow{{Index: 0, MemberID: member.ID, ItemRootID: "root-member"}}}
-	projection, err := drainProjectedBlockerIDs(store, member.ID, manifest, ProcessOptions{})
+	projection, err := drainProjectedBlockerIDs(store, beads.Bead{ID: "drain"}, member.ID, manifest, ProcessOptions{})
 	if err != nil {
 		t.Fatalf("drainProjectedBlockerIDs: %v", err)
 	}
 	if len(projection.BlockerIDs) != 1 || projection.BlockerIDs[0] != blocker.ID {
 		t.Fatalf("blockerIDs = %v, want [%s]", projection.BlockerIDs, blocker.ID)
 	}
-	if len(projection.Unprojectable) != 0 {
-		t.Fatalf("unprojectable = %v, want none on a single-store city", projection.Unprojectable)
+	if len(projection.Gated) != 0 {
+		t.Fatalf("gated = %v, want none on a single-store city", projection.Gated)
 	}
 	if store.gets != 0 {
 		t.Fatalf("the single-store path issued %d co-residence probe read(s); with one store every blocker is co-resident and the read is pure overhead on a per-row, per-pass sweep", store.gets)

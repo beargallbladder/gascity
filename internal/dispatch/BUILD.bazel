@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "control.go",
         "control_retry.go",
+        "cross_store_gate.go",
         "drain.go",
         "drain_residency.go",
         "fanout.go",
