@@ -317,10 +317,12 @@ func (cr *CityRuntime) logRouteRecovery(report routeRecoveryReport) {
 			len(report.flapping), routeRecoveryFlapLimit, strings.Join(report.flapping, " "))
 		fmt.Fprintf(cr.stderr, "%s: route recovery (%s): %s\n", cr.logPrefix, report.lane, flap) //nolint:errcheck // best-effort stderr
 	}
-	if report.offPlaneRouted > 0 {
-		// Loud, because the tick's demand read cannot see these and therefore
-		// spawns nothing for them. The remedy is a migration, not a wider tick.
-		fmt.Fprintf(cr.stderr, "%s: route recovery (%s): %d open routed bead(s) sit on a work leg the runtime plane does not read, so no pool seat is spawned for them; run `gc storage migrate` to move them to the infra binding\n", cr.logPrefix, report.lane, report.offPlaneRouted) //nolint:errcheck // best-effort stderr
+	if report.offPlaneInfra > 0 {
+		// Loud, because no runtime reader looks for an infrastructure-class row
+		// in a work store. Not `gc storage migrate`: a work-class bead never
+		// moves, a single-store city has nothing to move (#7410), and the
+		// migration never reads a rig store, so the remedy is the operator's.
+		fmt.Fprintf(cr.stderr, "%s: route recovery (%s): %d open routed infrastructure-class bead(s) sit in a work store, outside the class binding their class is served from, where no runtime reader looks for them (e.g. %s); they are pre-split residue the storage migration did not move and need an operator decision\n", cr.logPrefix, report.lane, report.offPlaneInfra, strings.Join(report.offPlaneSample, " ")) //nolint:errcheck // best-effort stderr
 	}
 	if report.quarantined > 0 {
 		fmt.Fprintf(cr.stderr, "%s: route recovery (%s): quarantined %d bead(s) for operator review (`gc doctor` route-recovery-quarantine)\n", cr.logPrefix, report.lane, report.quarantined) //nolint:errcheck // best-effort stderr

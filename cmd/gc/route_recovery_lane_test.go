@@ -680,9 +680,11 @@ func TestRouteRecoveryRuntimePlaneReadsTheBindingAndNeverTheLedger(t *testing.T)
 	})
 }
 
-// TestRouteRecoveryDeltaPassRefusesTheLedgerLeg pins the invariant on the lane
-// the tick actually calls, not just on the plane helper.
-func TestRouteRecoveryDeltaPassRefusesTheLedgerLeg(t *testing.T) {
+// TestRouteRecoveryDeltaPassReadsTheLedgerOnlyForCandidatesTheBindingLacks
+// pins the bound on the delta pass's one exception to the runtime plane: a
+// work-leg read happens only for a named candidate the binding does not hold,
+// as one batched re-read of exactly those ids, never a scan.
+func TestRouteRecoveryDeltaPassReadsTheLedgerOnlyForCandidatesTheBindingLacks(t *testing.T) {
 	work := &countingRouteStore{Store: beads.NewMemStoreFrom(0, []beads.Bead{unroutedWorkBead("CW-1")}, nil)}
 	binding := &countingRouteStore{Store: beads.NewMemStoreFrom(0, []beads.Bead{unroutedWorkBead("GB-1")}, nil)}
 	topo := assembleResidencyTopology(&config.City{}, work, nil,
@@ -696,14 +698,22 @@ func TestRouteRecoveryDeltaPassRefusesTheLedgerLeg(t *testing.T) {
 	}
 
 	lane := newRouteRecoveryLane()
-	report := lane.deltaPass(plan, []string{"CW-1", "GB-1"})
+	report := lane.deltaPass(plan, []string{"GB-1"})
 	if work.reads() != 0 {
-		t.Fatalf("the delta pass issued %d work-ledger round trip(s), want 0", work.reads())
+		t.Fatalf("a delta pass whose candidate lives in the binding issued %d work-ledger round trip(s), want 0", work.reads())
 	}
 	// Control: the binding-resident candidate WAS repaired, so the zero above is
-	// the ledger being refused rather than the pass being skipped.
+	// the ledger being left alone rather than the pass being skipped.
 	if report.restored != 1 || binding.reads() == 0 {
 		t.Fatalf("delta restored %d with %d binding read(s), want 1 and non-zero", report.restored, binding.reads())
+	}
+
+	report = lane.deltaPass(plan, []string{"CW-1"})
+	if report.restored != 1 || work.reads() == 0 {
+		t.Fatalf("a delta pass naming the work bead CW-1 restored %d with %d ledger read(s); want it repaired on the tick", report.restored, work.reads())
+	}
+	if work.scanned != 0 {
+		t.Fatalf("the delta pass scanned the ledger's open corpus %d time(s); it may only re-read the named candidates", work.scanned)
 	}
 }
 
@@ -863,14 +873,11 @@ func TestRouteRecoveryBackstopAlwaysReportsItselfAndItsAge(t *testing.T) {
 	}
 }
 
-// TestRouteRecoveryDeltaCountsCandidatesItCouldNotResolve pins the
-// DELIVERED-BUT-OFF-PLANE drop class as a number rather than as silence.
-//
-// The journal names a bead, the event is delivered, and the bead lives on a leg
-// the runtime plane refuses — so the tick cannot repair it and it waits for the
-// convergence lane. That is a different failure from a lost event (there the
-// journal never named it at all), it is invisible from the restored count, and a
-// rising count of it is a routing question worth asking.
+// TestRouteRecoveryDeltaCountsCandidatesItCouldNotResolve pins the drop class
+// as a number rather than as silence: a candidate the journal named that no leg
+// resolves — claimed or closed since its event — is counted as dropped. A
+// ledger-resident candidate is NOT dropped: the delta pass follows it onto the
+// work legs (read-audit R11).
 func TestRouteRecoveryDeltaCountsCandidatesItCouldNotResolve(t *testing.T) {
 	ledger := &countingRouteStore{Store: beads.NewMemStoreFrom(0, []beads.Bead{unroutedWorkBead("CW-1")}, nil)}
 	binding := &countingRouteStore{Store: beads.NewMemStoreFrom(0, []beads.Bead{unroutedWorkBead("GB-1")}, nil)}
@@ -884,9 +891,9 @@ func TestRouteRecoveryDeltaCountsCandidatesItCouldNotResolve(t *testing.T) {
 		t.Fatalf("Plan(RoutedWork): %v", err)
 	}
 
-	report := newRouteRecoveryLane().deltaPass(plan, []string{"CW-1", "GB-1"})
+	report := newRouteRecoveryLane().deltaPass(plan, []string{"CW-1", "GB-1", "XX-gone"})
 	if report.dropped != 1 {
-		t.Fatalf("delta dropped=%d for one on-plane and one off-plane candidate, want 1", report.dropped)
+		t.Fatalf("delta dropped=%d for a binding, a ledger and a vanished candidate, want 1 (the vanished one)", report.dropped)
 	}
 	if report.fields()["dropped"] != 1 {
 		t.Fatalf("delta trace fields = %v, want dropped=1 — the drop class must be visible, not inferred", report.fields())

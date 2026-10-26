@@ -45,17 +45,17 @@ package main
 // The obvious one is an EVENT-LESS loss: nothing ever named the bead, so the
 // delta lane cannot know it exists and only a scan finds it.
 //
-// The second is DELIVERED-BUT-OFF-PLANE, and it is a product of the operator
-// invariant rather than of any failure. The journal names a bead, the event
-// arrives, the lane accepts it as a candidate — and the bead lives on a leg the
-// runtime plane refuses to read (the work ledger, a rig). The tick resolves
-// nothing for it and it waits for the convergence lane exactly as an event-less
-// loss does. Nothing is broken; the two just have different causes and different
-// remedies, and only one of them is a routing question. The delta report counts
-// them as `dropped` so a rising count is visible instead of silent. The counter
-// is a superset by construction: a candidate claimed or closed since its event
-// also fails to resolve, also waits for the backstop, and telling those apart
-// would mean reading the leg this plane exists to refuse.
+// The second used to be DELIVERED-BUT-OFF-PLANE: the journal names a bead whose
+// route was lost, but the bead lives on a work leg (the ledger, a rig) the
+// runtime plane did not read, so it waited for the hourly convergence lane while
+// pool demand and `gc ready` — which federate the ledger since #6019/#7054 —
+// already counted and served it (read-audit R11). The delta pass now follows
+// such a candidate onto the work legs: it reads the binding for every candidate
+// and a work leg only for the candidates the binding does not hold, as one
+// batched read of exactly those ids. A steady tick, and a tick whose candidates
+// all live in the binding, still read no work leg at all. What the delta report
+// counts as `dropped` is now a candidate no leg resolves: one claimed or closed
+// since its event, which needs no repair.
 //
 // # Two things the old scanner could not say
 //
@@ -82,6 +82,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/clock"
+	"github.com/gastownhall/gascity/internal/coordclass"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/storeref"
 )
@@ -116,6 +117,10 @@ const (
 	// SAME bead's route. A route that has to be restored again and again is not
 	// a lost route, it is a lane clearing it; re-stamping forever hides that.
 	routeRecoveryFlapLimit = 3
+
+	// routeRecoveryOffPlaneSample bounds how many off-plane infrastructure ids
+	// one report names.
+	routeRecoveryOffPlaneSample = 5
 
 	// routeRecoveryCandidateCap bounds the pending candidate set. Overflow is
 	// treated exactly like a cursor gap — the delta feed can no longer claim to
@@ -166,26 +171,29 @@ type routeRecoveryReport struct {
 	// zero legs converged nothing, which must not read as "nothing to converge".
 	legs int
 	// offPlaneRouted counts OPEN, UNASSIGNED, pool-routed beads this pass found
-	// on a leg the RUNTIME plane refuses — the work ledger and the rigs.
+	// on a work leg of a city that HAS a class binding — the legs the runtime
+	// plane's collection (collectOpenUnassignedRoutedWork, binding-only) does
+	// not read. A city with no binding has no such leg: its work store is the
+	// runtime plane's store, so it counts nothing (#7410).
 	//
-	// It is the visibility half of the tick's routed-demand narrowing. The
-	// controller's demand read is binding-only (routedWorkStoreCandidates, per
-	// the operator ruling that routed work lives only in the graph store), so a
-	// routed bead sitting on a work leg is demanded by nothing and spawns no
-	// seat. That is a MIGRATION defect rather than a demand bug — the remedy is
-	// `gc storage migrate`, not a wider tick — but a defect nobody can see is
-	// indistinguishable from an empty set, which is exactly the assumption the
-	// narrowing rests on. This lane already reads every leg's open corpus on its
-	// own cadence, so the count costs nothing and makes the assumption checkable.
+	// It is the visibility half of that narrowing, and it is a count, not an
+	// alarm, because most of it is not a defect: a WORK-class bead `gc sling`
+	// routed into the ledger is counted by pool demand and served by `gc ready`
+	// (#6019, #7054). The alarm is offPlaneInfra.
 	offPlaneRouted int
+	// offPlaneInfra counts the offPlaneRouted beads that classify as an
+	// infrastructure class (graph, sessions, ...): rows that belong in the
+	// binding but sit in a work store, which only the migration could have
+	// left there (a rig store is never migrated). No runtime reader looks for
+	// them, so they are reported by id (offPlaneSample).
+	offPlaneInfra  int
+	offPlaneSample []string
 
-	// dropped counts named candidates this plane could not resolve. On the
-	// runtime plane it is the DELIVERED-BUT-OFF-PLANE class (§ lane header): the
-	// journal named a bead, the event arrived, and the bead lives on a leg this
-	// plane refuses — so it waits for the convergence lane. It is a superset, not
-	// a diagnosis: a candidate that was claimed or closed since the event also
-	// fails to resolve, and also waits. Both are bounded by the backstop cadence,
-	// which is why one counter serves.
+	// dropped counts named candidates no leg resolved: the delta pass reads the
+	// binding and then, for what the binding did not hold, the work legs (§ lane
+	// header), so a dropped candidate is one claimed or closed since its event —
+	// it needs no repair — or one on a leg whose read failed, which forces the
+	// backstop.
 	dropped  int
 	duration time.Duration
 	partial  bool
@@ -204,6 +212,9 @@ func (r routeRecoveryReport) fields() map[string]any {
 	}
 	if r.offPlaneRouted > 0 {
 		out["off_plane_routed"] = r.offPlaneRouted
+	}
+	if r.offPlaneInfra > 0 {
+		out["off_plane_infra"] = r.offPlaneInfra
 	}
 	if r.dropped > 0 {
 		// Named, delivered, and not resolvable on this plane — the convergence
@@ -488,6 +499,14 @@ func watchJournalForDeltaLanes(ctx context.Context, prov events.Provider, onGap 
 // separately-scheduled convergence scan is not, which is the only reason it may
 // still consult the ledger at all — and it does so off the tick, on its own
 // cadence, never inline.
+//
+// One bounded exception, on the tick: a candidate the journal NAMED whose row
+// the binding does not hold is a work bead (`gc sling` stamps routes on work
+// beads that live in the ledger, #6019), and pool demand and `gc ready` already
+// federate the ledger to count and serve it. The delta pass repairs its lost
+// route with one batched read of exactly the unresolved ids per work leg
+// (deltaPass). It never scans: a steady tick, and a tick whose candidates all
+// live in the binding, still read no work leg at all.
 type storePlane int
 
 const (
@@ -503,10 +522,16 @@ const (
 type planeLeg struct {
 	label string
 	store beads.Store
-	// binding reports whether this leg is a relocated class binding — the only
-	// legs the RUNTIME plane reads. The convergence lane uses it to say which of
-	// the legs it scanned are ones the tick cannot see.
+	// binding reports whether this leg is a relocated class binding — the
+	// legs the RUNTIME plane's collection reads. The convergence lane uses it to
+	// say which of the legs it scanned are ones that collection cannot see.
 	binding bool
+	// planHasBinding reports whether the plan this leg came from has a class
+	// binding at all. A city that relocates nothing has none, and there the
+	// work store IS the runtime plane's store, so no leg of it is off-plane
+	// (#7410: every single-store city used to be told to run `gc storage
+	// migrate` once an hour).
+	planHasBinding bool
 }
 
 // planeLegLabel spells a plan leg the way the pre-lane log line did:
@@ -567,9 +592,10 @@ func walkPlaneLegs(plan storeref.ResolvedPlan, plane storePlane, visit func(plan
 			return false, nil
 		}
 		return false, visit(planeLeg{
-			label:   planeLegLabel(leg.Ref),
-			store:   leg.Store,
-			binding: storeref.IsClassRef(string(leg.Ref)),
+			label:          planeLegLabel(leg.Ref),
+			store:          leg.Store,
+			binding:        storeref.IsClassRef(string(leg.Ref)),
+			planHasBinding: plan.TouchesBinding(),
 		})
 	})
 	return result.Partial, walkErr
@@ -607,14 +633,17 @@ func (l *routeRecoveryLane) deltaPass(plan storeref.ResolvedPlan, candidates []s
 	}
 	var errs []error
 	resolved := make(map[string]struct{}, len(candidates))
-	partial, walkErr := walkPlaneLegs(plan, runtimePlane, func(leg planeLeg) error {
+	repairOn := func(leg planeLeg, ids []string) error {
 		report.legs++
-		rows, reads, err := liveOpenCandidates(leg.store, candidates)
+		rows, reads, err := liveOpenCandidates(leg.store, ids)
 		report.legReads += reads
 		if err != nil {
-			return fmt.Errorf("re-reading %d route candidate(s): %w", len(candidates), err)
+			return fmt.Errorf("re-reading %d route candidate(s): %w", len(ids), err)
 		}
 		for _, row := range rows {
+			if _, done := resolved[row.ID]; done {
+				continue
+			}
 			resolved[row.ID] = struct{}{}
 			outcome := l.restoreRoute(leg.store, row, false)
 			report.legReads += outcome.writes
@@ -632,12 +661,46 @@ func (l *routeRecoveryLane) deltaPass(plan storeref.ResolvedPlan, candidates []s
 			}
 		}
 		return nil
+	}
+	partial, walkErr := walkPlaneLegs(plan, runtimePlane, func(leg planeLeg) error {
+		return repairOn(leg, candidates)
 	})
+	// A candidate the binding does not hold lives on a work leg: a work bead
+	// `gc sling` routed (#6019), which pool demand and `gc ready` federate and
+	// serve. Its lost route is repaired on this tick too, by one batched read of
+	// exactly those ids per work leg, rather than an hour later by the
+	// convergence scan (read-audit R11). Nothing is read when every candidate
+	// resolved, and a city with no binding already read its only leg above.
+	if leftover := unresolvedCandidates(candidates, resolved); len(leftover) > 0 && plan.TouchesBinding() {
+		workPartial, workErr := walkPlaneLegs(plan, reconcilePlane, func(leg planeLeg) error {
+			if leg.binding {
+				return nil
+			}
+			pending := unresolvedCandidates(leftover, resolved)
+			if len(pending) == 0 {
+				return nil
+			}
+			return repairOn(leg, pending)
+		})
+		partial = partial || workPartial
+		walkErr = errors.Join(walkErr, workErr)
+	}
 	report.dropped = len(candidates) - len(resolved)
 	report.partial = partial
 	report.err = errors.Join(append(errs, walkErr)...)
 	sort.Strings(report.flapping)
 	return report
+}
+
+// unresolvedCandidates returns the candidates not in resolved, in order.
+func unresolvedCandidates(candidates []string, resolved map[string]struct{}) []string {
+	var out []string
+	for _, id := range candidates {
+		if _, ok := resolved[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // backstopPass is the authoritative convergence scan: today's full live open
@@ -661,6 +724,12 @@ func (l *routeRecoveryLane) backstopPassOnPlane(plan storeref.ResolvedPlan, reas
 		report.quarantined += legReport.quarantined
 		report.legReads += legReport.legReads
 		report.offPlaneRouted += legReport.offPlaneRouted
+		report.offPlaneInfra += legReport.offPlaneInfra
+		for _, id := range legReport.offPlaneSample {
+			if len(report.offPlaneSample) < routeRecoveryOffPlaneSample {
+				report.offPlaneSample = append(report.offPlaneSample, id)
+			}
+		}
 		report.flapping = append(report.flapping, legReport.flapping...)
 		return legReport.err
 	})
@@ -707,11 +776,18 @@ func (l *routeRecoveryLane) backstopLeg(leg planeLeg) routeRecoveryReport {
 	}
 	var ids []string
 	for _, b := range items {
-		if !leg.binding && b.Status == "open" && strings.TrimSpace(b.Assignee) == "" &&
+		if leg.planHasBinding && !leg.binding && b.Status == "open" && strings.TrimSpace(b.Assignee) == "" &&
 			strings.TrimSpace(b.Metadata[beadmeta.RoutedToMetadataKey]) != "" {
-			// Already routed, on a leg the tick's demand read refuses: nothing
-			// will ever spawn a seat for it. See routeRecoveryReport.offPlaneRouted.
+			// Already routed, on a work leg the runtime plane's collection does
+			// not read. See routeRecoveryReport.offPlaneRouted. Only a city with
+			// a binding has such a leg.
 			report.offPlaneRouted++
+			if coordclass.Classify(b).IsInfrastructure() {
+				report.offPlaneInfra++
+				if len(report.offPlaneSample) < routeRecoveryOffPlaneSample {
+					report.offPlaneSample = append(report.offPlaneSample, b.ID)
+				}
+			}
 		}
 		// Belt-and-braces with the Status:"open" query so the guarantee holds
 		// regardless of store-level filtering semantics: an assigned bead is

@@ -1884,6 +1884,7 @@ go_test(
         "route_recovery_cas_test.go",
         "route_recovery_fenced_test.go",
         "route_recovery_lane_test.go",
+        "route_recovery_split_test.go",
         "route_recovery_test.go",
         "routed_rows_manifest_test.go",
         "run_cancel_bd_calls_test.go",
