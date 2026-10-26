@@ -148,7 +148,7 @@ func (r cachedStoreReader) Ready(query ...ReadyQuery) ([]Bead, error) {
 	if err := r.store.ensureFullPrime(context.Background()); err != nil {
 		return nil, err
 	}
-	return r.store.cachedReadyOnly(readyQueryFromArgs(query))
+	return r.store.cachedReadyOnly(r.store.readyTier(readyQueryFromArgs(query)))
 }
 
 func (r cachedStoreReader) DepList(id, direction string) ([]Dep, error) {
@@ -173,7 +173,7 @@ func (r liveStoreReader) List(query ListQuery) ([]Bead, error) {
 }
 
 func (r liveStoreReader) Ready(query ...ReadyQuery) ([]Bead, error) {
-	return r.store.backing.Ready(query...)
+	return r.store.backing.Ready(r.store.readyArgsTier(query)...)
 }
 
 func (r liveStoreReader) DepList(id, direction string) ([]Dep, error) {
