@@ -45,17 +45,15 @@ package main
 // The obvious one is an EVENT-LESS loss: nothing ever named the bead, so the
 // delta lane cannot know it exists and only a scan finds it.
 //
-// The second used to be DELIVERED-BUT-OFF-PLANE: the journal names a bead whose
-// route was lost, but the bead lives on a work leg (the ledger, a rig) the
-// runtime plane did not read, so it waited for the hourly convergence lane while
-// pool demand and `gc ready` — which federate the ledger since #6019/#7054 —
-// already counted and served it (read-audit R11). The delta pass now follows
-// such a candidate onto the work legs: it reads the binding for every candidate
-// and a work leg only for the candidates the binding does not hold, as one
-// batched read of exactly those ids. A steady tick, and a tick whose candidates
-// all live in the binding, still read no work leg at all. What the delta report
-// counts as `dropped` is now a candidate no leg resolves: one claimed or closed
-// since its event, which needs no repair.
+// The second is DELIVERED-BUT-OFF-PLANE. The journal names a bead whose route
+// was lost, but the bead lives on a work leg (the ledger, a rig) the runtime
+// plane refuses to read: a work bead `gc sling` routed there (#6019), which
+// pool demand and `gc ready` count and serve. The tick resolves nothing for it.
+// It used to wait for the hourly convergence scan (read-audit R11); now the
+// tick hands it to the off-tick poller (ledgerPending), which repairs it on its
+// next poll with one batched read of exactly those ids per work leg. The tick
+// itself still never reads the ledger. The delta report counts these as
+// `dropped` (unresolved on the tick) and `deferred` (handed off-tick).
 //
 // # Two things the old scanner could not say
 //
@@ -189,12 +187,13 @@ type routeRecoveryReport struct {
 	offPlaneInfra  int
 	offPlaneSample []string
 
-	// dropped counts named candidates no leg resolved: the delta pass reads the
-	// binding and then, for what the binding did not hold, the work legs (§ lane
-	// header), so a dropped candidate is one claimed or closed since its event —
-	// it needs no repair — or one on a leg whose read failed, which forces the
-	// backstop.
-	dropped  int
+	// dropped counts named candidates the runtime plane could not resolve on
+	// the tick: a bead on a work leg (§ lane header), or one claimed or closed
+	// since its event. On a city with a binding the work-leg ones are also
+	// counted in deferred and repaired off-tick.
+	dropped int
+	// deferred counts the dropped candidates handed to the off-tick poller.
+	deferred int
 	duration time.Duration
 	partial  bool
 	err      error
@@ -215,6 +214,9 @@ func (r routeRecoveryReport) fields() map[string]any {
 	}
 	if r.offPlaneInfra > 0 {
 		out["off_plane_infra"] = r.offPlaneInfra
+	}
+	if r.deferred > 0 {
+		out["deferred"] = r.deferred
 	}
 	if r.dropped > 0 {
 		// Named, delivered, and not resolvable on this plane — the convergence
@@ -262,6 +264,11 @@ type routeRecoveryLane struct {
 	// since the cursor whose snapshot carried a recoverable route.
 	pending map[string]struct{}
 
+	// ledgerPending holds the named candidates the tick could not resolve in
+	// the binding — work beads on a work leg — for the off-tick poller to
+	// repair (ledgerCandidatePass).
+	ledgerPending map[string]struct{}
+
 	// forced records that the event feed cannot be trusted for the next pass —
 	// it never started, it restarted, its cursor regressed, or pending
 	// overflowed — with the reason the trace should carry.
@@ -286,6 +293,7 @@ type routeRecoveryLane struct {
 func newRouteRecoveryLane() *routeRecoveryLane {
 	return &routeRecoveryLane{
 		pending:                    map[string]struct{}{},
+		ledgerPending:              map[string]struct{}{},
 		consecutiveRecheckFailures: map[string]int{},
 		restores:                   map[string]int{},
 		interval:                   routeRecoveryBackstopInterval,
@@ -500,13 +508,11 @@ func watchJournalForDeltaLanes(ctx context.Context, prov events.Provider, onGap 
 // still consult the ledger at all — and it does so off the tick, on its own
 // cadence, never inline.
 //
-// One bounded exception, on the tick: a candidate the journal NAMED whose row
-// the binding does not hold is a work bead (`gc sling` stamps routes on work
-// beads that live in the ledger, #6019), and pool demand and `gc ready` already
-// federate the ledger to count and serve it. The delta pass repairs its lost
-// route with one batched read of exactly the unresolved ids per work leg
-// (deltaPass). It never scans: a steady tick, and a tick whose candidates all
-// live in the binding, still read no work leg at all.
+// A candidate the journal NAMED whose row the binding does not hold is a work
+// bead (`gc sling` stamps routes on work beads that live in the ledger, #6019).
+// The tick does not chase it onto the ledger; it defers it to the off-tick
+// poller, which repairs it with one batched read of exactly those ids per work
+// leg (ledgerCandidatePass) — within one poll, not one backstop interval.
 type storePlane int
 
 const (
@@ -665,26 +671,100 @@ func (l *routeRecoveryLane) deltaPass(plan storeref.ResolvedPlan, candidates []s
 	partial, walkErr := walkPlaneLegs(plan, runtimePlane, func(leg planeLeg) error {
 		return repairOn(leg, candidates)
 	})
-	// A candidate the binding does not hold lives on a work leg: a work bead
-	// `gc sling` routed (#6019), which pool demand and `gc ready` federate and
-	// serve. Its lost route is repaired on this tick too, by one batched read of
-	// exactly those ids per work leg, rather than an hour later by the
-	// convergence scan (read-audit R11). Nothing is read when every candidate
-	// resolved, and a city with no binding already read its only leg above.
-	if leftover := unresolvedCandidates(candidates, resolved); len(leftover) > 0 && plan.TouchesBinding() {
-		workPartial, workErr := walkPlaneLegs(plan, reconcilePlane, func(leg planeLeg) error {
-			if leg.binding {
-				return nil
-			}
-			pending := unresolvedCandidates(leftover, resolved)
-			if len(pending) == 0 {
-				return nil
-			}
-			return repairOn(leg, pending)
-		})
-		partial = partial || workPartial
-		walkErr = errors.Join(walkErr, workErr)
+	// A candidate the binding does not hold may be a work bead on a work leg
+	// (#6019). The tick never reads the ledger (the operator invariant above);
+	// it hands the id to the off-tick poller, which repairs it within one poll
+	// instead of one backstop interval (read-audit R11).
+	if plan.TouchesBinding() {
+		if leftover := unresolvedCandidates(candidates, resolved); len(leftover) > 0 {
+			report.deferred = l.deferToLedger(leftover)
+		}
 	}
+	report.dropped = len(candidates) - len(resolved)
+	report.partial = partial
+	report.err = errors.Join(append(errs, walkErr)...)
+	sort.Strings(report.flapping)
+	return report
+}
+
+// deferToLedger queues ids for the off-tick ledger pass and reports how many it
+// queued. Past routeRecoveryCandidateCap the queue is dropped and the backstop
+// forced, exactly as the delta feed's own overflow is.
+func (l *routeRecoveryLane) deferToLedger(ids []string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.ledgerPending)+len(ids) > routeRecoveryCandidateCap {
+		l.ledgerPending = map[string]struct{}{}
+		l.forced = true
+		l.forcedReason = backstopReasonCursorGap
+		return 0
+	}
+	for _, id := range ids {
+		l.ledgerPending[id] = struct{}{}
+	}
+	return len(ids)
+}
+
+// takeLedgerPending drains the off-tick ledger queue.
+func (l *routeRecoveryLane) takeLedgerPending() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.ledgerPending) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(l.ledgerPending))
+	for id := range l.ledgerPending {
+		out = append(out, id)
+	}
+	l.ledgerPending = map[string]struct{}{}
+	sort.Strings(out)
+	return out
+}
+
+// ledgerCandidatePass repairs named candidates on the WORK legs only, off the
+// tick: one batched live re-read of exactly those ids per work leg, never an
+// open-corpus scan. It runs on the convergence poller's goroutine, so the
+// tick's zero-ledger invariant is untouched (read-audit R11).
+func (l *routeRecoveryLane) ledgerCandidatePass(plan storeref.ResolvedPlan, candidates []string) routeRecoveryReport {
+	report := routeRecoveryReport{lane: "ledger-delta", candidates: len(candidates)}
+	if len(candidates) == 0 {
+		return report
+	}
+	var errs []error
+	resolved := make(map[string]struct{}, len(candidates))
+	partial, walkErr := walkPlaneLegs(plan, reconcilePlane, func(leg planeLeg) error {
+		if leg.binding {
+			return nil
+		}
+		pending := unresolvedCandidates(candidates, resolved)
+		if len(pending) == 0 {
+			return nil
+		}
+		report.legs++
+		rows, reads, err := liveOpenCandidates(leg.store, pending)
+		report.legReads += reads
+		if err != nil {
+			return fmt.Errorf("re-reading %d deferred route candidate(s): %w", len(pending), err)
+		}
+		for _, row := range rows {
+			resolved[row.ID] = struct{}{}
+			outcome := l.restoreRoute(leg.store, row, false)
+			report.legReads += outcome.writes
+			switch {
+			case outcome.restored:
+				report.restored++
+			case outcome.flapping:
+				report.flapping = append(report.flapping, row.ID)
+			}
+			if outcome.quarantined {
+				report.quarantined++
+			}
+			if outcome.err != nil {
+				errs = append(errs, outcome.err)
+			}
+		}
+		return nil
+	})
 	report.dropped = len(candidates) - len(resolved)
 	report.partial = partial
 	report.err = errors.Join(append(errs, walkErr)...)

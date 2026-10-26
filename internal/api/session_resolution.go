@@ -213,6 +213,10 @@ func (s *Server) reassignContinuityIneligibleNamedSessionState(ctx context.Conte
 // On a single-store city every one of these is the same store, which is read
 // once, exactly as before. cmd/gc's controller twin
 // (reassignWorkAssignedToRetiredSessionBead) sweeps the same work legs.
+//
+// residency:allow — a write sweep over every store that can hold work assigned
+// to one session id, not a residency answer: each store is listed by assignee,
+// so a store that holds nothing for the id costs one query and changes nothing.
 func (s *Server) retiredSessionWorkStores(sessions beads.Store) []beads.Store {
 	var out []beads.Store
 	add := func(store beads.Store) {
@@ -222,7 +226,7 @@ func (s *Server) retiredSessionWorkStores(sessions beads.Store) []beads.Store {
 		out = append(out, store)
 	}
 	add(s.state.CityBeadStore())
-	stores := s.state.BeadStores()
+	stores := s.state.BeadStores() // residency:allow — the reassign sweep above: every store that can hold the retired session's work
 	for _, rigName := range sortedRigNames(stores) {
 		add(stores[rigName])
 	}

@@ -290,7 +290,31 @@ func (cr *CityRuntime) runRouteRecoveryBackstopLoop(ctx context.Context, lane *r
 		if reason, due := lane.backstopDue(time.Now()); due {
 			cr.safeTick(func() { cr.runRouteRecoveryBackstop(reason) }, "route-recovery-backstop")
 		}
+		cr.safeTick(func() { cr.runRouteRecoveryLedgerDeferred() }, "route-recovery-ledger-deferred")
 	}
+}
+
+// runRouteRecoveryLedgerDeferred repairs, off the tick, the named candidates the
+// tick's delta pass found in no binding (work beads on a work leg, read-audit
+// R11). An empty queue reads nothing and builds no plan.
+func (cr *CityRuntime) runRouteRecoveryLedgerDeferred() routeRecoveryReport {
+	lane := cr.routeRecoveryLaneOf()
+	candidates := lane.takeLedgerPending()
+	if len(candidates) == 0 {
+		return routeRecoveryReport{lane: "ledger-delta"}
+	}
+	plan, err := cr.routeRecoveryPlan()
+	if err != nil {
+		fmt.Fprintf(cr.stderr, "%s: route recovery: resolving work legs: %v\n", cr.logPrefix, err) //nolint:errcheck // best-effort stderr
+		lane.force(backstopReasonCursorGap)
+		return routeRecoveryReport{lane: "ledger-delta", candidates: len(candidates), err: err}
+	}
+	report := lane.ledgerCandidatePass(plan, candidates)
+	if report.partial || report.err != nil {
+		lane.force(backstopReasonLegDegrade)
+	}
+	cr.logRouteRecovery(report)
+	return report
 }
 
 // backstopPollInterval is how often a background convergence lane asks whether

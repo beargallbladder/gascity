@@ -105,34 +105,40 @@ func TestRouteRecoveryBackstopNamesInfrastructureResidueOnASplitCity(t *testing.
 	}
 }
 
-// TestRouteRecoveryDeltaRepairsALostRouteOnAWorkBeadOfASplitCity is read-audit
-// R11: a work bead `gc sling` routed into the ledger loses its route, and the
-// journal names it. Pool demand and `gc ready` federate the ledger, so the
-// repair must not wait for the hourly scan; the delta pass repairs it on the
-// tick, by reading the ledger for exactly that candidate. A tick whose
-// candidates all live in the binding still reads the ledger zero times.
-func TestRouteRecoveryDeltaRepairsALostRouteOnAWorkBeadOfASplitCity(t *testing.T) {
+// TestRouteRecoveryRepairsALostRouteOnAWorkBeadOffTheTick is read-audit R11: a
+// work bead `gc sling` routed into the ledger loses its route, and the journal
+// names it. Pool demand and `gc ready` federate the ledger, so the repair must
+// not wait for the hourly scan, and the tick must still never read the ledger
+// (TestSteadyTickLedgerRoundTripBudgetIsZero). The tick defers the candidate;
+// the off-tick poller repairs it with one batched read of exactly that id.
+func TestRouteRecoveryRepairsALostRouteOnAWorkBeadOffTheTick(t *testing.T) {
 	work := &countingRouteStore{Store: beads.NewMemStoreFrom(0, []beads.Bead{unroutedWorkBead("CW-1")}, nil)}
-	binding := &countingRouteStore{Store: beads.NewMemStoreFrom(0, []beads.Bead{unroutedWorkBead("GB-1"), unroutedWorkBead("GB-2")}, nil)}
+	binding := &countingRouteStore{Store: beads.NewMemStoreFrom(0, []beads.Bead{unroutedWorkBead("GB-1")}, nil)}
 	plan := splitRouteRecoveryPlan(t, work, binding)
+	lane := newRouteRecoveryLane()
 
-	// A tick whose candidate lives in the binding never touches the ledger.
-	report := newRouteRecoveryLane().deltaPass(plan, []string{"GB-1"})
-	if report.restored != 1 || work.reads() != 0 {
-		t.Fatalf("binding-only delta restored=%d with %d ledger read(s), want 1 and 0", report.restored, work.reads())
+	tick := lane.deltaPass(plan, []string{"CW-1", "GB-1", "XX-gone"})
+	if work.reads() != 0 {
+		t.Fatalf("the tick issued %d ledger round trip(s), want 0", work.reads())
+	}
+	if tick.restored != 1 || tick.deferred != 2 {
+		t.Fatalf("tick restored=%d deferred=%d, want 1 (GB-1) and 2 (CW-1, XX-gone)", tick.restored, tick.deferred)
 	}
 
-	report = newRouteRecoveryLane().deltaPass(plan, []string{"CW-1", "GB-2", "XX-gone"})
-	if report.restored != 2 {
-		t.Fatalf("delta restored %d, want 2: the work bead CW-1 and the binding's GB-2", report.restored)
+	off := lane.ledgerCandidatePass(plan, lane.takeLedgerPending())
+	if off.restored != 1 {
+		t.Fatalf("off-tick pass restored %d, want 1", off.restored)
 	}
 	if got := mustRoutedTo(t, work, "CW-1"); got != routeRecoveryTestPool {
-		t.Fatalf("CW-1 gc.routed_to = %q after the delta pass, want %q: a work bead's lost route waited for the hourly scan", got, routeRecoveryTestPool)
+		t.Fatalf("CW-1 gc.routed_to = %q, want %q: a work bead's lost route waited for the hourly scan", got, routeRecoveryTestPool)
 	}
 	if work.scanned != 0 {
-		t.Fatalf("the delta pass scanned the ledger's open corpus %d time(s); it may only re-read the named candidates", work.scanned)
+		t.Fatalf("the off-tick pass scanned the ledger's open corpus %d time(s); it may only re-read the named candidates", work.scanned)
 	}
-	if report.dropped != 1 {
-		t.Fatalf("dropped = %d, want 1: XX-gone resolves on no leg", report.dropped)
+	if off.dropped != 1 {
+		t.Fatalf("off-tick dropped = %d, want 1: XX-gone resolves on no leg", off.dropped)
+	}
+	if again := lane.takeLedgerPending(); len(again) != 0 {
+		t.Fatalf("the ledger queue still holds %v after the pass", again)
 	}
 }

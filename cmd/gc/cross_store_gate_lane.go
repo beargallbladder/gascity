@@ -65,7 +65,7 @@ func (cr *CityRuntime) tickReleaseCrossStoreGates(p *tickPass) bool {
 		return false
 	}
 	phaseStart := time.Now()
-	report, err := dispatch.ReleaseCrossStoreGates(graph, crossStoreBlockerResolver(graph, city, cr.rigBeadStores()))
+	report, err := dispatch.ReleaseCrossStoreGates(graph, crossStoreBlockerResolver(graph, city, cr.rigBeadStores())) // residency:allow — the work legs a gate's blocker may live in; see crossStoreBlockerResolver
 	fields := map[string]any{
 		"open":       report.Open,
 		"released":   len(report.Released),
@@ -86,7 +86,7 @@ func (cr *CityRuntime) tickReleaseCrossStoreGates(p *tickPass) bool {
 // The binding the gates live in is skipped: a blocker it held would have been
 // an ordinary edge, never a gate.
 func crossStoreBlockerResolver(binding, city beads.Store, rigs map[string]beads.Store) dispatch.CrossStoreBlockerResolver {
-	legs := []beads.Store{city}
+	legs := []beads.Store{city} // residency:allow — a gate releases only once its blocker is closed in EVERY work store that holds it, so every copy is read, not the first owner
 	names := make([]string, 0, len(rigs))
 	for name := range rigs {
 		names = append(names, name)

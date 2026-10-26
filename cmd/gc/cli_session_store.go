@@ -50,7 +50,7 @@ func cliSessionFrontDoor(store beads.Store, cfg *config.City, cityPath string) *
 // routes refuse gets the refusing store, which fails the session operation
 // closed rather than letting it land in a work store.
 func cliRelocatedSessionStore(store beads.Store, cfg *config.City, cityPath string) beads.Store {
-	if _, relocated := cliStorageRoutes(cityPath).storeFor(coordclass.ClassSessions); !relocated {
+	if _, relocated := cliStorageRoutes(cityPath).storeFor(coordclass.ClassSessions); !relocated { // residency:allow — asks only whether the sessions class is relocated; the store returned is resolveSessionStore's
 		return store
 	}
 	return cliSessionStore(store, cfg, cityPath)
