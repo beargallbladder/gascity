@@ -33,6 +33,10 @@ func newClassFlipAPIFixture(t *testing.T, split bool) classFlipAPIFixture {
 		binding := beads.NewMemStoreFrom(0, []beads.Bead{{
 			ID: "gcg-1", Title: "step", Type: "task", Status: "open",
 			Metadata: map[string]string{"gc.root_bead_id": "gcg-0"},
+		}, {
+			// A wisp whose only graph marker is a label.
+			ID: "gcg-2", Title: "wisp", Type: "task", Status: "open",
+			Labels: []string{"gc:wisp"},
 		}}, nil)
 		state.graphBeadStore = binding
 		state.sessionsBeadStore = binding
@@ -116,11 +120,14 @@ func TestBeadAPIUpdateRefusesAClassFlipOnASplitCity(t *testing.T) {
 	}
 
 	// The reverse: a binding resident written into a work bead in place.
-	for _, c := range []struct{ name, body string }{
-		{"blank the only graph marker", `{"metadata":{"gc.root_bead_id":""}}`},
+	for _, c := range []struct{ name, id, body string }{
+		{"blank the only graph marker", "gcg-1", `{"metadata":{"gc.root_bead_id":""}}`},
+		// remove_labels is part of the write the guard judges (mutant M23).
+		{"remove the only label marker", "gcg-2", `{"remove_labels":["gc:wisp"]}`},
 	} {
 		t.Run("split/binding/"+c.name, func(t *testing.T) {
 			f := newClassFlipAPIFixture(t, true)
+			f.graphID = c.id
 			rec := beadUpdate(t, f.h, f.state, "PATCH", f.graphID, c.body)
 			if rec.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("PATCH %s on a binding resident = %d, want 422; body=%s", c.body, rec.Code, rec.Body.String())
