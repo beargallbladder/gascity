@@ -2079,6 +2079,7 @@ go_test(
         "soft_reload_test.go",
         "sole_class_binding_test.go",
         "split_binding_read_tier_test.go",
+        "split_low_severity_test.go",
         "split_session_paths_test.go",
         "split_store_cascade_test.go",
         "split_store_closeread_test.go",

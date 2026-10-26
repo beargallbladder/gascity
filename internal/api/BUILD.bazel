@@ -506,6 +506,7 @@ go_test(
         "session_turn_test.go",
         "sse_cancel_test.go",
         "state_class_accessors_test.go",
+        "status_graph_ready_test.go",
         "store_health_rows_measured_test.go",
         "store_health_test.go",
         "structured_leakage_test.go",

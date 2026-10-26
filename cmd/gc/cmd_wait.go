@@ -1066,6 +1066,12 @@ func loadWaitDependencyBead(cityPath string, cityStore beads.Store, depID string
 		return beads.Bead{}, err
 	}
 	cityRoot := filepath.Clean(cityPath)
+	// A scope whose store will not open is not a scope that lacks the
+	// dependency. It is remembered, and if no other scope holds the id the read
+	// fails with it rather than answering ErrNotFound — which the wait consumes
+	// as a deleted dependency, so one rig outage failed the wait for good
+	// (read-audit R15).
+	var openErr error
 	for _, scopeRoot := range convoyStoreCandidates(cfg, cityPath, depID) {
 		scopeRoot = resolveStoreScopeRoot(cityPath, scopeRoot)
 		if scopeRoot == cityRoot && cityStore != nil {
@@ -1078,8 +1084,11 @@ func loadWaitDependencyBead(cityPath string, cityStore beads.Store, depID string
 			}
 			continue
 		}
-		scopeStore, err := openStoreAtForCity(scopeRoot, cityPath)
+		scopeStore, err := waitDependencyScopeStore(scopeRoot, cityPath)
 		if err != nil {
+			if openErr == nil {
+				openErr = fmt.Errorf("opening the bead store at %s to read wait dependency %s: %w", scopeRoot, depID, err)
+			}
 			continue
 		}
 		dep, err := scopeStore.Get(depID)
@@ -1090,8 +1099,15 @@ func loadWaitDependencyBead(cityPath string, cityStore beads.Store, depID string
 			return beads.Bead{}, err
 		}
 	}
+	if openErr != nil {
+		return beads.Bead{}, openErr
+	}
 	return beads.Bead{}, beads.ErrNotFound
 }
+
+// waitDependencyScopeStore opens one scope's store for loadWaitDependencyBead;
+// a variable so a test can make a scope's open fail.
+var waitDependencyScopeStore = openStoreAtForCity
 
 func prepareWaitWakeState(store beads.Store, now time.Time) (map[string]bool, error) {
 	return prepareWaitWakeStateForCity("", store, now)
