@@ -1411,15 +1411,25 @@ Cost is a list-price estimate for decision support, not an authoritative
 charge; invocations with no pricing are flagged "unpriced" and excluded from
 the cost total.
 
+With --by-formula, model usage is grouped by the formula the acting bead's run
+was compiled from instead of by run; usage with no formula appears as "-".
+Compute wall-seconds are not attributed to a formula, so that table has no
+WALL_S column.
+
 ```
-gc costs
+gc costs [flags]
 ```
 
 **Example:**
 
 ```
 gc costs
+gc costs --by-formula
 ```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--by-formula` | bool |  | group model usage by the formula each fact is attributed to instead of by run |
 
 ## gc dashboard
 
@@ -1597,7 +1607,7 @@ error is reported on stderr and the command still exits 0, so bead hooks never
 fail on it. JSON summaries report whether submission to the configured provider
 was attempted; the event bus does not acknowledge durable persistence.
 
-Two requests are refused with exit 1 and nothing is recorded. In --json mode
+Four requests are refused with exit 1 and nothing is recorded. In --json mode
 the failure object carries the code.
 
 - reserved_actor: --actor starts with "cache-", or the default actor is one
@@ -1605,6 +1615,8 @@ the failure object carries the code.
 - bead_payload_refused: --payload on bead.created, bead.updated, bead.closed
   or bead.deleted. Their payload is the bead row; use --bead-payload &lt;id&gt; so
   gc reads it from the store.
+- journal_derived_refused: op.changed or fact.recorded, which the
+  controller derives from operation-journal rows; no command records one.
 - bead_payload_not_found: --bead-payload names a bead the store it resolves
   to does not hold (bead.deleted excepted: the event is recorded with its
   subject alone). Any other failure to read it is reported on stderr and the
@@ -2089,19 +2101,30 @@ gc help [command]
 
 Finds routed work using the agent's work_query config.
 
-Without --inject: prints normalized ready-only output, exits 0 if work exists, 1 if empty.
+Without --inject: prints normalized ready-only output, exits 0 if work exists,
+1 if the queue is empty, and 2 if the work query itself failed (for example bd
+missing from PATH, a store bd could not read, or a store environment that could
+not be built); the failure is named on stderr. A suspended city, rig or agent,
+and an error before the work query is built (no agent named, a city or config
+that cannot be loaded, an unknown agent), also exit 1.
 With --inject: silent legacy Stop-hook compatibility; skips the work query and always exits 0.
-With --claim: runs the standard startup claim protocol for one work item.
+With --claim: runs the standard startup claim protocol for one work item. A
+failed work query is an error (nothing on stdout), never a drain result.
 
 A work query that gets no answer from the bead store (a connection error, a
 timeout, a killed query, a locked database, or bd's circuit breaker failing
 fast) exits 2 and prints GC_HOOK_STORE_UNAVAILABLE on stderr: the answer is
-unknown, not empty. Any other work-query failure exits 1. This applies with and
-without --claim, and neither writes a drain result. The generated default work
-query discards bd's errors in its single-store tiers, so there a store that
-fails fast still reads as no work; only a deadline overrun exits 2. Only the
-agent's own store reports: other stores the hook also searches are
-best-effort, and one that fails reads as having no work.
+unknown, not empty. This applies with and without --claim. Any other
+work-query failure exits 2 without --claim and 1 with --claim. Neither writes a
+drain result. When another store the hook searches serves work, a store that
+failed is named on stderr and the work is served; when no store has work, a
+failed read of any of them is a failed query, not an empty queue, so a rig
+store that cannot be read keeps every city-scoped agent that searches it from
+draining until it answers again. Two kinds of rig are exceptions: a suspended
+rig is not searched at all (gc ready does not read it either), and a rig whose
+managed Dolt server is not running is named on stderr but does not hold the
+answer up. A failed query is also recorded as a session.work_query_failed event,
+one per store that failed, naming it.
 
 The agent is determined from $GC_AGENT or a positional argument.
 
@@ -2519,7 +2542,7 @@ gc mail
 | [gc mail count](#gc-mail-count) | Show total/unread message count |
 | [gc mail delete](#gc-mail-delete) | Delete one or more messages (closes the beads) |
 | [gc mail inbox](#gc-mail-inbox) | List unread messages (defaults to your inbox) |
-| [gc mail mark-read](#gc-mail-mark-read) | Mark a message as read |
+| [gc mail mark-read](#gc-mail-mark-read) | Mark one or more messages as read |
 | [gc mail mark-unread](#gc-mail-mark-unread) | Mark a message as unread |
 | [gc mail peek](#gc-mail-peek) | Show a message without marking it as read |
 | [gc mail read](#gc-mail-read) | Read a message and mark it as read |
@@ -2626,10 +2649,14 @@ gc mail inbox [session] [flags]
 
 ## gc mail mark-read
 
-Mark a message as read without displaying it. The message will no longer appear in inbox results.
+Mark one or more messages as read without displaying them. They will no
+longer appear in inbox results. When multiple IDs are passed (as separate
+arguments, or as one whitespace-separated argument such as an unsplit "$IDS"),
+each is marked in input order; a failure on one is reported and the rest are
+still marked.
 
 ```
-gc mail mark-read <id> [flags]
+gc mail mark-read <id>... [flags]
 ```
 
 | Flag | Type | Default | Description |
@@ -2821,7 +2848,12 @@ gc mcp
 
 ## gc mcp list
 
-Show the precedence-resolved MCP servers that Gas City would project into the provider-native config for one agent or session target.
+Show the precedence-resolved MCP servers that Gas City would project into the
+provider-native config for one agent or session target.
+
+Servers from a shared layer (the city or rig pack, or an import) that the
+target's provider cannot receive are listed separately under "Not projected",
+with the reason: the agent starts without them.
 
 ```
 gc mcp list [flags]
@@ -4061,7 +4093,7 @@ Signal a session to drain — wind down its current work gracefully.
 Sets a GC_DRAIN metadata flag on the session. The agent should check
 for drain status periodically (via "gc runtime drain-check") and finish
 its current task before exiting. Pass a session alias or ID. Use
-"gc runtime undrain" to cancel. Under session_reconciler = "v2" it also
+"gc runtime undrain" to cancel. Under the v2 session reconciler it also
 marks the session row, so the agent's drain-ack stops the session even on a
 min_active_sessions floor.
 
@@ -4082,7 +4114,7 @@ socket so the reconciler stops the session immediately rather than on
 its next patrol tick. Call this after the session has finished its
 current work in response to a drain signal.
 
-Under session_reconciler = "v2" the ack is first written to the session
+Under the v2 session reconciler the ack is first written to the session
 row, bound to its current incarnation. A session acking itself must
 carry a GC_INSTANCE_TOKEN that matches the row; an operator acking a
 session from outside it passes --operator and a target, and the ack binds
@@ -4189,7 +4221,7 @@ Cancel a pending drain signal on a session.
 
 Clears the GC_DRAIN and GC_DRAIN_ACK metadata flags, allowing the
 session to continue normal operation. Pass a session alias or ID. Under
-session_reconciler = "v2" it also clears the session row's drain-ack and
+the v2 session reconciler it also clears the session row's drain-ack and
 its operator drain mark.
 
 ```
@@ -4354,7 +4386,11 @@ gc session attach <session-id-or-alias>
 
 End a conversation. Stops the runtime if active and closes the bead.
 
-Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).
+Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor). A rerun
+with the same --key replays the close only when it names the session by its
+ID: a closed session's alias no longer resolves to it, and once another
+session holds the alias (a configured named session is created again under
+its name), a rerun by the alias closes that session.
 
 ```
 gc session close <session-id-or-alias> [flags]
@@ -4363,6 +4399,7 @@ gc session close <session-id-or-alias> [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit JSONL |
+| `--key` | string |  | idempotency key: while the op journal records this command (its [ops] gate is auto or require), rerunning with the same key reports the first run's outcome instead of acting again (without the first run's wait_nudges_withdrawn in --json); ignored when the gate is off (default: a new key each run) |
 
 ## gc session kill
 
@@ -4383,6 +4420,24 @@ restarts in place on its bead; while its started work is blocked, it holds its
 slot asleep. A task assigned directly to the seat with no route is kept, not
 released, and the seat holds its slot until that task is ready.
 
+With --key, a rerun after the controller restarted the session under the same
+ID reports the first kill, noting the restart, instead of killing the new run.
+A pool seat replaced as above is a new session with a new ID, though it may
+keep the killed seat's alias: a rerun must name the killed session by its ID,
+since by the alias it would kill the replacement.
+
+While the ops.lifecycle gate is require, a kill whose session row cannot be
+read, or names no session generation, is refused (op_journal_unavailable,
+naming unreadable_target and the read error, or no_generation) and nothing is
+killed. At auto, or with GC_OPS_LIFECYCLE=auto set to break glass, it runs the
+best-effort kill unrecorded.
+
+A recorded kill (the gate at auto or require) names the session generation it
+read before taking the session's runtime lease. If a start runs while it waits
+for that lease, the kill stops nothing and exits 1, its op closed
+failed&#123;refused:target_moved&#125;: rerun it without --key to kill the new run. A
+rerun with the same --key replays that failure, noting the restart.
+
 Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).
 
 ```
@@ -4393,6 +4448,7 @@ gc session kill <session-id-or-alias> [flags]
 |------|------|---------|-------------|
 | `--force` | bool |  | destroy a session even when it has live background subagents, or past a hung holder of its runtime lease whose record expired |
 | `--json` | bool |  | emit JSONL |
+| `--key` | string |  | idempotency key: while the op journal records this command (its [ops] gate is auto or require), rerunning with the same key reports the first run's outcome instead of acting again, even after the session restarted under the same ID; ignored when the gate is off (default: a new key each run) |
 
 ## gc session list
 
@@ -4494,6 +4550,19 @@ equivalent to typing the message into the session's terminal.
 Accepts a session ID or session alias. Multi-word messages are
 joined automatically.
 
+When [ops] authoritative lists message, a nudge to a session a conversation
+lane can type into is recorded as a lane op instead. wait-idle delivers it
+as a prompt at an idle boundary only, never into a running turn. immediate
+delivers it as a prompt at an idle boundary or, when the session's runtime
+can steer, into its running turn; a busy session whose runtime cannot steer
+gets it at the next boundary. queue delivers it as a notice at the next
+boundary and never wakes the session. When this process can type into the
+session, wait-idle and immediate deliver at once what their mode allows
+now, with or without a running controller; otherwise the nudge is reported
+queued, and the lane host serving the session delivers it as its mode
+says. The [ops] content gate does not govern such a nudge, and one whose op
+cannot be written is refused.
+
 ```
 gc session nudge <id-or-alias> <message...> [flags]
 ```
@@ -4502,6 +4571,7 @@ gc session nudge <id-or-alias> <message...> [flags]
 |------|------|---------|-------------|
 | `--delivery` | string | `wait-idle` | delivery mode: immediate, wait-idle, or queue |
 | `--json` | bool |  | JSON output |
+| `--key` | string |  | idempotency key: while the op journal records this command (its [ops] content gate is auto or require, or [ops] authoritative lists message), rerunning with the same key reports the first run's outcome instead of acting again, except across a change to whether [ops] authoritative lists message, which refuses the rerun as a different request; ignored otherwise (default: a new key each run) |
 
 ## gc session peek
 
@@ -4586,7 +4656,11 @@ session back instead: it closes the bead as a failed create and releases the
 alias so the controller can create a replacement. A create that is still
 starting, or whose runtime is running, is never rolled back.
 
-Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).
+Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor). A rerun
+with the same --key of a reset that rolled back replays it only when it names
+the session by its ID: the rollback released the alias, and once the
+replacement the controller creates holds it, a rerun by the alias resets that
+session.
 
 ```
 gc session reset <session-id-or-alias> [flags]
@@ -4595,6 +4669,7 @@ gc session reset <session-id-or-alias> [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit JSONL |
+| `--key` | string |  | idempotency key: while the op journal records this command (its [ops] gate is auto or require), rerunning with the same key reports the first run's outcome instead of acting again; ignored when the gate is off (default: a new key each run) |
 
 ## gc session submit
 
@@ -4619,6 +4694,7 @@ gc session submit mayor "stop and do this instead" --intent interrupt_now
 |------|------|---------|-------------|
 | `--intent` | string | `default` | submit intent: default, follow_up, or interrupt_now |
 | `--json` | bool |  | JSON output |
+| `--key` | string |  | idempotency key: while the op journal records this command (its [ops] gate is auto or require), rerunning with the same key reports the first run's outcome instead of acting again; ignored when the gate is off (default: a new key each run) |
 
 ## gc session suspend
 
@@ -4634,6 +4710,7 @@ gc session suspend <session-id-or-alias> [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit JSONL |
+| `--key` | string |  | idempotency key: while the op journal records this command (its [ops] gate is auto or require), rerunning with the same key reports the first run's outcome instead of acting again (without the first run's mode in --json); ignored when the gate is off (default: a new key each run) |
 
 ## gc session unpin
 
@@ -4673,6 +4750,12 @@ After waking, the reconciler will start the session on its next tick
 if it has wake reasons (e.g., a matching config agent). If the session
 has no wake reasons, it remains asleep.
 
+When a configured named session has no session to wake or reopen, the wake
+creates one as it resolves the target, before the wake is recorded. While the
+ops.lifecycle gate is require, a wake whose op the journal then cannot record
+is refused (op_journal_unavailable): the wake did not run, but the session it
+created stays and may start.
+
 Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).
 
 ```
@@ -4689,6 +4772,7 @@ gc session wake mayor
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit JSONL |
+| `--key` | string |  | idempotency key: while the op journal records this command (its [ops] gate is auto or require), rerunning with the same key reports the first run's outcome instead of acting again (without the first run's wait_nudges_withdrawn in --json); ignored when the gate is off (default: a new key each run) |
 
 ## gc shell
 
@@ -4856,7 +4940,7 @@ gc supervisor run
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--allow-supervisor-mismatch` | bool |  | start even when the running supervisor is a different gc installation than this binary |
-| `-n`, `--dry-run` | bool |  | preview what agents would start without starting them |
+| `-n`, `--dry-run` | bool |  | preview the agents that would start and the MCP config, skill links, and .gitignore entries gc would write, without starting or writing them |
 | `--json` | bool |  | emit JSONL summary |
 | `--no-auto-restart` | bool |  | detect supervisor binary drift but do not auto-restart; exits non-zero on drift |
 | `--verbose` | bool |  | disable warning deduplication and print every supervisor warning |
@@ -4959,6 +5043,17 @@ refuses such a city and names this command.
 
 --from-backup re-copies a binding whose database is gone from that backup
 instead of from the work store, which no longer holds the slice.
+
+Last, on the converged binding, each open deliver-now unit the copy carried in
+is re-lowered under the binding's id prefix: its derived interrupt is re-created
+at the id a lowering there gives it, with its state, and the old row is closed
+as a pointer to it, one all-or-nothing write per unit. A unit in flight or that
+may have run, one with more than one open derived interrupt, and one whose id
+there another row already holds are left as they are and named; their lanes run
+each one as a unit by identity. A message not yet lowered, or whose unit is
+over, is not a unit to move, and is not named. A city whose binding holds no
+lowered deliver-now message skips the step and prints nothing for it. A step
+that did not finish exits non-zero, and running this command again finishes it.
 
 The move refuses while a writer can reach the source. This binary can prove the
 absence of a controller and cannot prove the absence of anything else, so that

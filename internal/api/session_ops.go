@@ -70,6 +70,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/clock"
 	"github.com/gastownhall/gascity/internal/events"
+	"github.com/gastownhall/gascity/internal/nudgequeue"
 	"github.com/gastownhall/gascity/internal/opjournal"
 	"github.com/gastownhall/gascity/internal/opjournal/legacyop"
 	"github.com/gastownhall/gascity/internal/rollout"
@@ -79,19 +80,28 @@ import (
 	"github.com/gastownhall/gascity/internal/telemetry"
 )
 
-// messageSentinels maps the message path's legacy errors onto op outcomes
-// (DES-O0API §6.3). The delivery timeouts of /messages and of a recorded
-// /submit are reported as context.DeadlineExceeded.
+// messageSentinels maps the message paths' legacy errors onto op outcomes
+// (DES-O0API §6.3), the API's and the CLI's alike (MessageOpResult). A
+// session whose row or runtime is gone is session_gone. The delivery
+// timeouts of a recorded /messages and of a recorded /submit are reported
+// as context.DeadlineExceeded. An enqueue that could not take the nudge
+// queue's lock in its budget delivered and queued nothing; a retry may
+// succeed, so it is a refusal (ga-fsp5w9).
 var messageSentinels = legacyop.Sentinels{
 	Unsupported:         []error{session.ErrTurnInterruptUnsupported},
 	ConversationClosed:  []error{session.ErrSessionClosed},
-	SessionGone:         []error{session.ErrSessionNotFound},
+	SessionGone:         []error{session.ErrSessionNotFound, runtime.ErrSessionNotFound},
 	ProviderUnavailable: []error{runtime.ErrRuntimeUnavailable},
 	DeliveryTimeout:     []error{context.DeadlineExceeded, context.Canceled},
+	Refusals:            []legacyop.Refusal{{Err: nudgequeue.ErrQueueBusy, Why: RefusedNudgeQueueBusy}},
 }
 
-// messageTimeoutError is /messages' delivery timeout: the legacy event text,
-// classified as context.DeadlineExceeded for the op outcome.
+// RefusedNudgeQueueBusy is the refused:<why> of a message op whose enqueue
+// timed out waiting for the nudge queue's lock.
+const RefusedNudgeQueueBusy = "nudge_queue_busy"
+
+// messageTimeoutError is a recorded /messages' delivery timeout: the legacy
+// event text, classified as context.DeadlineExceeded for the op outcome.
 type messageTimeoutError struct{}
 
 // Error is the legacy timeout text.
@@ -226,7 +236,8 @@ func recordAcked(rec events.Recorder, e events.Event) error {
 // city's event log (from's, when the city has no live Server), after the
 // events kept before it. An event the log refuses is kept, to be recorded
 // when the supervisor builds the city's next Server, before the city's next
-// emit, or before a same-key retry of its request is answered.
+// emit, before a same-key retry of its request is answered, or when its
+// request's outcome is looked up (lookupRequestOutcome).
 func (c *cityOps) emit(from *Server, requestID, operation string, e events.Event) {
 	c.emitMu.Lock()
 	defer c.emitMu.Unlock()
@@ -354,12 +365,16 @@ func (c *cityOps) shutdown() {
 	})
 }
 
-// serverOps is one Server's operation-journal state: the content recorder
-// over its city's shared state and the lazily opened op store.
+// serverOps is one Server's operation-journal state: a recorder per ops
+// gate over its city's shared state (content for /submit and /messages,
+// control for /stop and /respond, lifecycle for /wake, /suspend, /kill,
+// /close and /reset; session_control_ops.go) and the lazily opened op store.
 type serverOps struct {
-	city    *cityOps
-	content *legacyop.Recorder
-	clk     clock.Clock
+	city      *cityOps
+	content   *legacyop.Recorder
+	control   *legacyop.Recorder
+	lifecycle *legacyop.Recorder
+	clk       clock.Clock
 	// openStore opens the op store over a sessions-class store; tests
 	// substitute it.
 	openStore func(beads.SessionStore, clock.Clock) (*opjournal.Store, error)
@@ -371,6 +386,9 @@ type serverOps struct {
 	// delivery goroutine owns the admission; tests inject a handler panic
 	// there.
 	afterAdmit func()
+	// crashPoints is the State's crash-point hook (OpsCrashPointsProvider)
+	// every recorder carries; nil in production.
+	crashPoints legacyop.CrashPointFunc
 
 	mu   sync.Mutex
 	st   *opjournal.Store
@@ -395,17 +413,32 @@ func newServerOps(s *Server, city *cityOps) *serverOps {
 		logf:     log.Printf,
 		recordOp: telemetry.RecordOpRecord,
 	}
-	o.content = &legacyop.Recorder{
-		Mode:     s.bootFlags.OpsContent(),
+	if p, ok := s.state.(OpsCrashPointsProvider); ok {
+		o.crashPoints = p.OpsCrashPoints()
+	}
+	o.content = o.newRecorder(s, rollout.KeyOpsContent, s.bootFlags.OpsContent())
+	o.control = o.newRecorder(s, rollout.KeyOpsControl, s.bootFlags.OpsControl())
+	o.lifecycle = o.newRecorder(s, rollout.KeyOpsLifecycle, s.bootFlags.OpsLifecycle())
+	return o
+}
+
+// newRecorder is the API's recorder for the ops gate gateKey under mode: it
+// records through s's op store and its city's in-flight registry, and reports
+// degrades and health to its city's reporter under gateKey.
+func (o *serverOps) newRecorder(s *Server, gateKey string, mode gate.Mode) *legacyop.Recorder {
+	city := o.city
+	return &legacyop.Recorder{
+		Mode:     mode,
 		Executor: legacyop.ExecutorAPI,
 		Open:     s.openOpStore,
 		Inflight: city.inflight,
 		Clock:    o.clk,
-		Degraded: func(d legacyop.Degrade) { city.degraded.Report(rollout.KeyOpsContent, d) },
-		Healthy:  func(stage string) { o.healthy(stage) },
+		Degraded: func(d legacyop.Degrade) { city.degraded.Report(gateKey, d) },
+		Healthy:  func(stage string) { o.healthyGate(gateKey, stage) },
 		Done:     city.done,
+
+		CrashPoints: o.crashPoints,
 	}
-	return o
 }
 
 // publishOps makes s its city's live Server; a Server with no op state has
@@ -457,7 +490,13 @@ func (s *Server) openOpStore() (*opjournal.Store, error) {
 // healthy tells the degrade reporter that stages of the content gate just
 // worked, so the next failure there raises a fresh event (§5.5).
 func (o *serverOps) healthy(stages ...string) {
-	o.city.degraded.Healthy(rollout.KeyOpsContent, legacyop.SurfaceAPI, stages...)
+	o.healthyGate(rollout.KeyOpsContent, stages...)
+}
+
+// healthyGate tells the degrade reporter that stages of the ops gate gateKey
+// just worked, so the next failure there raises a fresh event (§5.5).
+func (o *serverOps) healthyGate(gateKey string, stages ...string) {
+	o.city.degraded.Healthy(gateKey, legacyop.SurfaceAPI, stages...)
 }
 
 // store returns the cached op store, opening it over over when none is cached
@@ -532,7 +571,7 @@ func (s *Server) admitMessageOp(ctx context.Context, store beads.Store, req *mes
 		Key:          req.key,
 		Payload:      req.text,
 		Kind:         opjournal.KindMessage,
-		Policy:       messageOpPolicy(req.intent),
+		Policy:       MessageOpPolicy(req.intent),
 	}
 	if req.conv == "" {
 		if rec.Mode != gate.Require {
@@ -631,9 +670,11 @@ func requestInFlight() error {
 	return apierr.IdempotencyInFlight.Msg("in_flight: request with this Idempotency-Key is already in progress")
 }
 
-// messageOpPolicy is the message policy of a submit intent (DES-O0API §3.1);
-// /messages is the default intent.
-func messageOpPolicy(intent session.SubmitIntent) opjournal.Policy {
+// MessageOpPolicy is the message policy of a submit intent (DES-O0API §3.1);
+// /messages is the default intent. gc session submit's local path records its
+// op under the same policy, so a request the API recorded and its CLI
+// fallback derive one op digest.
+func MessageOpPolicy(intent session.SubmitIntent) opjournal.Policy {
 	when := opjournal.WhenBoundary
 	switch intent {
 	case session.SubmitIntentFollowUp:
@@ -667,9 +708,9 @@ func opAdmitError(err error, key string) error {
 	case errors.Is(err, opjournal.ErrKeyReuse):
 		return apierr.IdempotencyMismatch.Msg("idempotency_mismatch: Idempotency-Key reused with a different request")
 	case errors.Is(err, legacyop.ErrUnavailable):
-		return apierr.OpJournalUnavailable.Msg("op_journal_unavailable: the operation journal cannot record this request; nothing was delivered: " + err.Error())
+		return apierr.OpJournalUnavailable.Msg("op_journal_unavailable: the operation journal cannot record this request; nothing was done: " + err.Error())
 	case errors.Is(err, opjournal.ErrPayloadTooLarge):
-		return apierr.PayloadTooLarge.Msg(fmt.Sprintf("payload_too_large: the message exceeds the operation journal's %d-byte limit", opjournal.MaxInlinePayload))
+		return apierr.PayloadTooLarge.Msg(fmt.Sprintf("payload_too_large: the request exceeds the operation journal's %d-byte limit", opjournal.MaxInlinePayload))
 	case errors.Is(err, opjournal.ErrInvalidRequest) && key != "" && opjournal.ValidateClientKey(key) != nil:
 		return apierr.InvalidIdempotencyKey.Msg("invalid_idempotency_key: " + err.Error())
 	case errors.Is(err, opjournal.ErrInvalidRequest):
@@ -699,10 +740,12 @@ func messageRequestID(adm *legacyop.Admission) (string, error) {
 	return newRequestID()
 }
 
-// messageOpResult is the op result of a message delivery's legacy result. A
-// delivery whose interrupt the runtime accepted unfenced records that
-// degradation.
-func messageOpResult(queued bool, err error, interrupt *session.TurnInterruptReport) legacyop.Result {
+// MessageOpResult is the op result of a message delivery's legacy result,
+// its error mapped by messageSentinels: a delivery whose interrupt the runtime
+// accepted unfenced records that degradation. The API and the CLI's message
+// paths all close a message op through it, so one op id closes alike on
+// either surface.
+func MessageOpResult(queued bool, err error, interrupt *session.TurnInterruptReport) legacyop.Result {
 	res := messageSentinels.MessageResult(queued, err)
 	if err == nil && interrupt != nil && interrupt.Degradation != "" {
 		res.Outcome.Degradation = interrupt.Degradation

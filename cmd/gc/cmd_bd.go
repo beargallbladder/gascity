@@ -764,6 +764,9 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 		return bdSilentFallbackExitCode
 	}
 
+	// A close the bd subprocess just made reaches the supervisor's run views
+	// only through the city event log, so announce it (bd_close_events.go).
+	announceBdPassthroughCloses(cityPath, guardStore, guardBeads, bdArgs)
 	return 0
 }
 
@@ -817,7 +820,7 @@ func bdMutationWriteIDs(args []string) (ids []string, ok bool, ambiguous bool) {
 
 	// The flag sets are the complete value-consuming and boolean (no-value)
 	// flags for this subcommand, in both long and short form, sourced from
-	// `bd <sub> --help` (bd 1.3.1, 2026-09-29). Unknown flags not in either set
+	// `bd <sub> --help` (bd 1.3.2, 2026-10-24). Unknown flags not in either set
 	// make the scan ambiguous.
 	ids, ambiguous = bdScanPositionalIDs(args[1:], bdSubcmdValueFlags(sub), bdSubcmdBoolFlags(sub), nil)
 	if ambiguous {

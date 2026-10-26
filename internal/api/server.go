@@ -99,6 +99,9 @@ type Server struct {
 	// and is threaded into each factory; otherwise every poll re-parses an
 	// unchanged mirror.
 	activityMemo *worker.DerivedActivityMemo
+	// formulaMemo remembers the formula each acting bead belongs to across the
+	// per-request worker factories (usage attribution).
+	formulaMemo *worker.FormulaNameMemo
 
 	// agentVisibilityWaitTimeout overrides the POST /agents visibility wait
 	// in tests. Zero uses defaultAgentVisibilityWaitTimeout.
@@ -297,6 +300,7 @@ func newServerFor(state State, readOnly bool, city *cityOps) *Server {
 		webhookDedup:   newWebhookDedupCache(defaultWebhookDedupTTL),
 		webhookLimiter: newWebhookRateLimiter(),
 		activityMemo:   worker.NewDerivedActivityMemo(),
+		formulaMemo:    worker.NewFormulaNameMemo(),
 	}
 	// Latch the rollout snapshot once: prefer the State's boot latch (the
 	// production controllerState); fall back to resolving from Config() for

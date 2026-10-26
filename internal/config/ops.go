@@ -45,22 +45,39 @@ type OpsConfig struct {
 	LifecycleMode string `toml:"lifecycle,omitempty" jsonschema:"default=off,enum=off,enum=auto,enum=require"`
 	// Authoritative lists the op kinds the conversation lane executes instead
 	// of their legacy path. The default is empty, and message is not on by
-	// default anywhere yet. This build accepts message only. Experimental: no
-	// request surface writes lane ops yet, so listing a kind changes no
-	// request's delivery in this build. Only a standalone controller
-	// (gc start --foreground) runs the lane host that delivers lane ops; a
-	// supervisor-hosted city runs none, and gc doctor reports a listed kind
-	// there as an error. The lane delivers live only to keystroke-mode
-	// runtimes (tmux); a protocol-mode runtime's (t3bridge) lane ops wait
-	// not_live until their start deadline. A listed kind needs a sessions
-	// store with guarded batches. A change takes effect at the next
-	// controller start.
-	Authoritative []string `toml:"authoritative,omitempty" jsonschema:"enum=message"`
+	// default anywhere yet. This build accepts message and respond.
+	// Experimental: listing message switches on the producers that write lane
+	// ops, whose messages the lane host then delivers: the API's POST
+	// /v0/city/{cityName}/session/{id}/ops (a T3 Code environment or an
+	// operator proposing a message) and, for sessions a lane host can type
+	// into (a keystroke-mode runtime, or one a box host serves), the
+	// controller's planner notices (drain reminders, the nudge backstop) and
+	// gc session nudge. gc session nudge delivers inline what its delivery
+	// mode allows now, where it can type into the session: wait-idle only at
+	// an idle boundary; immediate there too, or into a running turn when the
+	// runtime can steer it, else at the next boundary. It leaves the rest to
+	// the controller's lane host, and the content gate no longer governs it.
+	// The API's submit and messages, gc session submit, mail --notify, sling
+	// --nudge and wait nudges keep their legacy delivery in this build. No
+	// request surface writes respond ops yet, so listing respond changes no
+	// request's delivery in this build.
+	// The city's controller, standalone or supervisor-hosted, runs the lane
+	// host that delivers lane ops, and gc doctor reports a listed kind as an
+	// error when no lane host serves the city. A keystroke-mode runtime (tmux)
+	// takes a boundary delivery at an idle boundary, a protocol-mode runtime
+	// (t3bridge) at its turn boundary. A message the ops route proposes with
+	// when now, or the legacy interrupt, runs as one deliver-now unit: the
+	// lane host interrupts the session's running turn, then delivers the
+	// message at the boundary the interrupt leaves.
+	// A listed kind needs a sessions store with guarded batches. A change
+	// takes effect at the controller's next start; gc session nudge reads it
+	// at once.
+	Authoritative []string `toml:"authoritative,omitempty" jsonschema:"enum=message,enum=respond"`
 }
 
 // laneAuthoritativeKinds are the op kinds this build's conversation lane can
 // execute, so the only kinds [ops] authoritative accepts.
-var laneAuthoritativeKinds = []opjournal.Kind{opjournal.KindMessage}
+var laneAuthoritativeKinds = []opjournal.Kind{opjournal.KindMessage, opjournal.KindRespond}
 
 // LaneExecutes reports whether [ops] authoritative lists kind.
 func (o OpsConfig) LaneExecutes(kind string) bool {

@@ -34,18 +34,22 @@ const (
 	ClassLease                                    // the cross-process runtime lease (L1)
 	ClassAdvisory                                 // diagnostics and pacing stamps
 	ClassWork                                     // the work cells: agent-owned work_started, controller-owned work_ladder
+	ClassConversation                             // the conversation cells: content_hold, which the conversation lane and the planner's reminders read (DES-O1 D21)
 )
 
 // classInPremise is whether a fence compares a class's keys. Baseline keys are
 // compared by the drift arms, assignment identity only by an effect that reads
 // L5, the lease by its own CAS, and advisory keys never. The work cells never
 // either: each owner writes its own by CAS, so a v2 effect that loses its CAS
-// to one re-reads and re-decides rather than refusing on premise.
+// to one re-reads and re-decides rather than refusing on premise. The
+// conversation cells never either: the conversation lane reads them live on
+// each pass, the planner's reminders on each tick only to hold their own
+// delivery and terminal action, and no lifecycle decision reads them.
 var classInPremise = map[FieldClass]bool{
 	ClassIncarnation: true, ClassLifecycle: true, ClassOperatorIntent: true, ClassRequest: true,
 	ClassStopRequest: true, ClassCounter: true, ClassMarker: true,
 	ClassBaseline: false, ClassAssignmentIdentity: false, ClassLaunchConfig: false, ClassLease: false, ClassAdvisory: false,
-	ClassWork: false,
+	ClassWork: false, ClassConversation: false,
 }
 
 // Mode is who runs a site. ModeOperator is the CLI, the API, the worker
@@ -201,6 +205,9 @@ var (
 	// started, which clears the stop request as PreWake does
 	// (restartStopRequestClears); opConsumeHold's consume does too.
 	opRestartConfirm = op("internal/session/chat.go", "Manager.confirmLiveSessionState")
+	// opContentGateRead is the content gate's reader of the controller half
+	// (V2-18); it runs under either controller.
+	opContentGateRead = op("internal/session/stop_request_keys.go", "ReadStopRequest")
 	// opEncode is the disposition class's one encoder (R7).
 	opEncode     = op("internal/session/disposition.go", "Disposition.Encode")
 	legacyCreate = legacy(srcBeads, "syncCreateMetadata")
@@ -238,7 +245,7 @@ var fields = withObserved(with(with(with(with(with(with(with(registry, false, v2
 	"continuation_claim_nudge_root", "continuation_claim_nudge_store_ref", "continuation_claim_nudge_generation",
 	"continuation_claim_nudge_count", "continuation_claim_nudge_at", "execution_claim_nudge_work", "execution_claim_nudge_root",
 	"execution_claim_nudge_store_ref", "execution_claim_nudge_count", "execution_claim_nudge_at", "execution_claim_nudge_token", "execution_claim_started", "execution_claim_nudge_stalled",
-	"execution_claim_nudge_stalled_token", "execution_claim_hold"), true, v2(srcHeals, "asleepHealPatch"), "session_key", "started_config_hash",
+	"execution_claim_nudge_stalled_token", "execution_claim_hold", "idle_claim_nudge_hold", "continuation_claim_nudge_hold", "warm_bind_notice_trigger"), true, v2(srcHeals, "asleepHealPatch"), "session_key", "started_config_hash",
 	PrimedAtMetadataKey, PrimingAttemptedAtMetadataKey, PromptHashMetadataKey),
 	false, v2("cmd/gc/allocator_create_named.go", "createEffects.writeNamed"), "agent_name", CanonicalInstanceNameMetadata, CanonicalPoolSlotMetadata,
 	"command", NamedSessionIdentityMetadata, NamedSessionModeMetadata, NamedSessionMetadataKey, "continuation_epoch", "dependency_only",
@@ -344,9 +351,9 @@ var registry = slices.Concat([]Field{
 
 	// The stop request: the controller half, then the CLI's ack (E3), which
 	// writes only in a v2 city.
-	{Key: DrainIntentReasonKey, Class: ClassStopRequest, NewKey: true, Writers: sites(v2(srcStopKeys, "stopBeginPatch")), Readers: sites(v2(srcStopKeys, "readStopKeys")), Clears: sites(v2(srcStopKeys, "stopCancelPatch"), opRestartConfirm, opConsumeHold)},
+	{Key: DrainIntentReasonKey, Class: ClassStopRequest, NewKey: true, Writers: sites(v2(srcStopKeys, "stopBeginPatch")), Readers: sites(v2(srcStopKeys, "readStopKeys"), opContentGateRead), Clears: sites(v2(srcStopKeys, "stopCancelPatch"), opRestartConfirm, opConsumeHold)},
 	{Key: DrainIntentAtKey, Class: ClassStopRequest, NewKey: true, Writers: sites(v2(srcStopKeys, "stopBeginPatch")), Readers: sites(v2(srcStopKeys, "readStopKeys")), Clears: sites(v2(srcStopKeys, "stopCancelPatch"), opRestartConfirm, opConsumeHold)},
-	{Key: DrainIntentIncarnationKey, Class: ClassStopRequest, NewKey: true, Writers: sites(v2(srcStopKeys, "stopBeginPatch")), Readers: sites(v2(srcStopKeys, "readStopKeys")), Clears: sites(v2(srcStopKeys, "stopCancelPatch"), opRestartConfirm, opConsumeHold)},
+	{Key: DrainIntentIncarnationKey, Class: ClassStopRequest, NewKey: true, Writers: sites(v2(srcStopKeys, "stopBeginPatch")), Readers: sites(v2(srcStopKeys, "readStopKeys"), opContentGateRead), Clears: sites(v2(srcStopKeys, "stopCancelPatch"), opRestartConfirm, opConsumeHold)},
 	{Key: DrainAckIncarnationKey, Class: ClassStopRequest, NewKey: true, Writers: sites(op("cmd/gc/cmd_runtime_drain.go", "drainAckRowPatch")), Readers: sites(v2(srcStopKeys, "readStopKeys")), Clears: sites(v2(srcStopKeys, "stopVoidResiduePatch"), v2(srcStopKeys, "stopAckVoidPatch"), opRestartConfirm, opConsumeHold)},
 	{Key: DrainAckAtKey, Class: ClassStopRequest, NewKey: true, Writers: sites(op("cmd/gc/cmd_runtime_drain.go", "drainAckRowPatch")), Readers: sites(v2(srcStopKeys, "readStopKeys")), Clears: sites(v2(srcStopKeys, "stopVoidResiduePatch"), v2(srcStopKeys, "stopAckVoidPatch"), opRestartConfirm, opConsumeHold)},
 	// The operator's drain (`gc runtime drain` in a v2 city, PAR-FLOORACK):
@@ -383,6 +390,19 @@ var registry = slices.Concat([]Field{
 	{Key: WorkLadderKey, Class: ClassWork, NewKey: true, CASOnly: true, Writers: sites(
 		v2("cmd/gc/work_ladder_lane.go", "ladderPass.commit"), v2("cmd/gc/work_ladder_lane.go", "ladderPass.settle"),
 		v2("cmd/gc/work_ladder_lane.go", "ladderPass.release"), v2("cmd/gc/work_ladder_lane.go", "externalReadsLane.clearLadderReleases"))},
+
+	// The conversation cells (DES-O1 D21): an operator's content intent the
+	// conversation lane reads, live, at each pass, and the planner's reminders
+	// hold on (SESSION-RUNTIME-027).
+	{
+		Key: ContentHoldKey, Class: ClassConversation, NewKey: true,
+		Writers: sites(op("internal/session/content_hold.go", "Store.SetContentHold"), op("internal/session/content_hold.go", "Store.ContentHoldItem")),
+		Readers: sites(op("cmd/gc/conversation_lane_view.go", "conversationLaneView"),
+			legacy("cmd/gc/nudge_backstop.go", "backstopContentHeld"), v2("cmd/gc/nudge_backstop.go", "backstopContentHeld"),
+			v2("cmd/gc/work_ladder_lane.go", "ladderGate"),
+			legacy("cmd/gc/drain_reminder.go", "drainReminderContentHeld")),
+		Clears: sites(op("internal/session/content_hold.go", "Store.ClearContentHold")),
+	},
 	{Key: ResetCommittedAtKey, Class: ClassMarker, Writers: sites(legacy(srcTransition, "RestartRequestPatch"))},
 	{Key: "drain_finalize", Class: ClassMarker, Writers: sites(legacy("cmd/gc/session_pool_drain_deadline.go", "retirePoolSlotAtDrainDeadline"))},
 	{Key: "startup_dialog_verified", Class: ClassMarker, Writers: sites(op("internal/session/chat.go", "Manager.markStartupDialogsVerifiedLocked"))},
@@ -468,7 +488,9 @@ var registry = slices.Concat([]Field{
 	same(ClassAdvisory, true, sites(legacy("cmd/gc/execution_backstop.go", "poolExecutionBackstop.observeHold")), "execution_claim_hold"),
 	same(ClassAdvisory, true, sites(legacy("cmd/gc/execution_backstop.go", "poolExecutionBackstop.markStarted")), "execution_claim_started"),
 	same(ClassAdvisory, false, sites(legacy("cmd/gc/drain_reminder.go", "writeDrainReminderMarker")), "drain_reminder_at", "drain_reminder_count",
-		"drain_reminder_drain", "drain_reminder_failed"),
+		"drain_reminder_drain"),
+	same(ClassAdvisory, false, sites(legacy("cmd/gc/drain_reminder.go", "writeDrainReminderMarker"), legacy("cmd/gc/drain_reminder.go", "settleLastDrainReminder")),
+		"drain_reminder_failed", "drain_reminder_settled"),
 	same(ClassAdvisory, false, sites(legacy("cmd/gc/drain_reminder.go", "noteDrainReminderHold")), "drain_reminder_hold"),
 	same(ClassAdvisory, false, sites(legacy("cmd/gc/drain_ack_escalation.go", "recordDrainAckEscalationAttempt")), "drain_escalation_at",
 		"drain_escalation_count", "drain_escalation_drain"),
@@ -479,6 +501,8 @@ var registry = slices.Concat([]Field{
 	same(ClassAdvisory, false, sites(legacy("cmd/gc/idle_nudge.go", "writeContinuationClaimMarker")), "continuation_claim_nudge_work",
 		"continuation_claim_nudge_root", "continuation_claim_nudge_store_ref", "continuation_claim_nudge_generation",
 		"continuation_claim_nudge_count", "continuation_claim_nudge_at"),
+	same(ClassAdvisory, true, sites(legacy("cmd/gc/idle_nudge.go", "claimHoldPatch")), "idle_claim_nudge_hold",
+		"continuation_claim_nudge_hold"),
 	same(ClassAdvisory, false, sites(legacy("cmd/gc/build_desired_state_pool_info.go", "recordDeferredNonExpandingPoolAliasConflictInfo")), "pool_alias_conflict",
 		"pool_alias_conflict_count", "pool_alias_conflict_at"),
 	same(ClassAdvisory, false, sites(op("internal/session/waits.go", "StampWaitLookupCapMetadata")),
@@ -502,7 +526,9 @@ var registry = slices.Concat([]Field{
 	same(ClassAdvisory, false, sleepPolicy, "requested_sleep_after_idle", "effective_sleep_after_idle", "sleep_policy_source",
 		"sleep_capability", "sleep_policy_adjustment_reason", "config_wake_suppressed"),
 	same(ClassAdvisory, false, sites(legacy(srcReconciler, "mirrorStartupHealthEpisodeMetadata")), "startup_health_active_count", "startup_health_active_kind"),
-	same(ClassAdvisory, false, sites(legacy("cmd/gc/warm_bind_nudge.go", "deliverWarmBindClaimNudge")), "warm_bind_nudged_for_trigger"),
+	same(ClassAdvisory, false, sites(legacy("cmd/gc/warm_bind_nudge.go", "markWarmBindBinding")), "warm_bind_nudged_for_trigger"),
+	same(ClassAdvisory, false, sites(legacy("cmd/gc/warm_bind_nudge.go", "markWarmBindBinding"), legacy("cmd/gc/warm_bind_nudge.go", "withdrawWarmBindNotice")),
+		"warm_bind_notice_trigger"),
 	// The runtime lease (L1). Legacy writes it too, so no key is new.
 	same(ClassLease, false, sites(leaseAcquire, v2("cmd/gc/reconcile_fenced_store.go", "fencedWriter.closeRow")),
 		RuntimeLeaseHolderKey, RuntimeLeaseExpiresKey, RuntimeLeaseTTLKey, RuntimeLeaseFlockKey),
