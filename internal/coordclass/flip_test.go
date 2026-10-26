@@ -129,67 +129,107 @@ func TestMutationApplyDoesNotAliasTheBefore(t *testing.T) {
 	}
 }
 
-// TestTouchesClassIsExact pins TouchesClass against Classify. Over every
-// before shape and every single-field write drawn from a pool that holds every
-// classifier label and key and as many that are not: a write TouchesClass calls
-// inert never changes the class, and every classifier label and key is called
-// live (so a new Classify arm that reads a new label or key, and is not taught
-// to TouchesClass, fails the first half for the shape that exposes it).
+// TestTouchesClassIsExact checks the vocabulary table that both Classify and
+// TouchesClass read (ClassifierLabels, ClassifierLabelPrefixes,
+// ClassifierMetadataKeys) from both sides, by enumerating it:
+//
+//   - every entry is LIVE: for each label, prefix and key there is a bead in a
+//     pool built from the table whose class an add/remove (set/unset) of that
+//     entry changes, so the table carries nothing TouchesClass would read a
+//     needless before-read for;
+//   - nothing outside it is: Classify of a bead equals Classify of the bead
+//     with every non-table label and key stripped, over the same pool with
+//     non-table labels and keys mixed in. Classify reads labels and metadata
+//     only through the table (hasLabel, hasLabelPrefix, classMeta), so this
+//     holds by construction; the test pins the construction.
+//
+// It cannot prove a FUTURE arm is reached through the table — the
+// construction does that (an arm that reads around it never fires and the
+// golden table fails) — and it does not enumerate types, which TouchesClass
+// always treats as live.
 func TestTouchesClassIsExact(t *testing.T) {
-	labels := []string{
-		"wisp", "gc:wisp", "order-tracking", "gc:session", "gc:wait", "gc:op", "gc:fact", "gc:rt",
-		"gc:nudge", "gc:nudge-queue", "gc:extmsg-binding", "gc:extmsg-transcript",
-		"triage", "session:gc-7", "gc:rt-conv:gc-7", "gc:op-conv:gc-7", "order-run:x", "provides:cap", "gc:other", "Wisp",
+	labels := ClassifierLabels()
+	for _, p := range ClassifierLabelPrefixes() {
+		labels = append(labels, p+"binding")
 	}
-	keys := []string{
-		"gc.kind", "gc.formula_contract", "gc.root_bead_id", "gc.synthetic", "gc.synthetic_kind",
-		"gc.outcome", "gc.output_json", "session_id", "gc.routed_to", "molecule_id", "gc.step_id",
-	}
-	values := []string{"", "wisp", "workflow", "graph.v2", "gcg-1", "true", "x"}
+	keys := ClassifierMetadataKeys()
+	values := []string{"", "wisp", "workflow", "graph.v2", "gcg-1", "true"}
 	types := []string{"task", "convoy", "molecule", "message", "session", "op", "convergence", "gate", "wisp"}
+	junkLabels := []string{"triage", "session:gc-7", "gc:rt-conv:gc-7", "gc:op-conv:gc-7", "order-run:x", "provides:cap", "gc:other", "Wisp", "gc:extmsg", "wisp "}
+	junkKeys := []string{"gc.outcome", "gc.output_json", "session_id", "gc.routed_to", "molecule_id", "gc.step_id", "GC.KIND"}
 
-	var befores []beads.Bead
+	var pool []beads.Bead
 	for _, typ := range types {
-		befores = append(befores, beads.Bead{Type: typ})
+		pool = append(pool, beads.Bead{Type: typ})
 		for _, l := range labels {
-			befores = append(befores, beads.Bead{Type: typ, Labels: []string{l}})
+			pool = append(pool, beads.Bead{Type: typ, Labels: []string{l}})
+			pool = append(pool, beads.Bead{Type: typ, Labels: []string{l, "order-tracking"}})
 		}
 		for _, k := range keys {
 			for _, v := range values {
-				befores = append(befores, beads.Bead{Type: typ, Metadata: map[string]string{k: v}})
-				befores = append(befores, beads.Bead{Type: typ, Labels: []string{"order-tracking"}, Metadata: map[string]string{k: v, "gc.root_bead_id": "gcg-1"}})
-				befores = append(befores, beads.Bead{Type: typ, Metadata: map[string]string{k: v, "gc.synthetic": "true", "gc.root_bead_id": "gcg-1"}})
+				pool = append(pool, beads.Bead{Type: typ, Metadata: map[string]string{k: v}})
+				pool = append(pool, beads.Bead{Type: typ, Labels: []string{"order-tracking", "wisp"}, Metadata: map[string]string{k: v}})
+				pool = append(pool, beads.Bead{Type: typ, Metadata: map[string]string{k: v, "gc.synthetic": "true", "gc.root_bead_id": "gcg-1"}})
 			}
 		}
 	}
-	var writes []Mutation
+
+	live := func(write func(beads.Bead) beads.Bead) bool {
+		for _, b := range pool {
+			if Classify(b) != Classify(write(b)) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, l := range labels {
-		writes = append(writes, Mutation{AddLabels: []string{l}}, Mutation{RemoveLabels: []string{l}})
+		l := l
+		add := func(b beads.Bead) beads.Bead { return Mutation{AddLabels: []string{l}}.Apply(b) }
+		remove := func(b beads.Bead) beads.Bead { return Mutation{RemoveLabels: []string{l}}.Apply(b) }
+		if !live(add) && !live(remove) {
+			t.Errorf("classifier label %q never changes a class: drop it from the table", l)
+		}
+		if !(Mutation{AddLabels: []string{l}}).TouchesClass() {
+			t.Errorf("TouchesClass calls classifier label %q inert", l)
+		}
 	}
 	for _, k := range keys {
-		writes = append(writes, Mutation{UnsetMetadata: []string{k}})
+		k := k
+		found := live(func(b beads.Bead) beads.Bead { return Mutation{UnsetMetadata: []string{k}}.Apply(b) })
 		for _, v := range values {
-			writes = append(writes, Mutation{SetMetadata: map[string]string{k: v}})
+			v := v
+			found = found || live(func(b beads.Bead) beads.Bead { return Mutation{SetMetadata: map[string]string{k: v}}.Apply(b) })
 		}
-	}
-	for _, m := range writes {
-		if m.TouchesClass() {
-			continue
+		if !found {
+			t.Errorf("classifier key %q never changes a class: drop it from the table", k)
 		}
-		for _, b := range befores {
-			if before, after := Classify(b), Classify(m.Apply(b)); before != after {
-				t.Fatalf("TouchesClass calls %+v inert, but it moves %+v from %s to %s", m, b, before, after)
-			}
-		}
-	}
-	for _, l := range labels[:12] {
-		if !(Mutation{AddLabels: []string{l}}).TouchesClass() {
-			t.Errorf("classifier label %q is not live", l)
-		}
-	}
-	for _, k := range keys[:5] {
 		if !(Mutation{UnsetMetadata: []string{k}}).TouchesClass() {
-			t.Errorf("classifier key %q is not live", k)
+			t.Errorf("TouchesClass calls classifier key %q inert", k)
+		}
+	}
+
+	for _, b := range pool {
+		noisy := b
+		noisy.Labels = append(append([]string(nil), b.Labels...), junkLabels...)
+		noisy.Metadata = map[string]string{}
+		for k, v := range b.Metadata {
+			noisy.Metadata[k] = v
+		}
+		for _, k := range junkKeys {
+			noisy.Metadata[k] = "wisp"
+		}
+		if Classify(noisy) != Classify(b) {
+			t.Fatalf("labels/keys outside the table changed the class of %+v: %s vs %s", b, Classify(noisy), Classify(b))
+		}
+	}
+	for _, l := range junkLabels {
+		if (Mutation{AddLabels: []string{l}}).TouchesClass() {
+			t.Errorf("TouchesClass calls non-classifier label %q live", l)
+		}
+	}
+	for _, k := range junkKeys {
+		if (Mutation{SetMetadata: map[string]string{k: "x"}}).TouchesClass() {
+			t.Errorf("TouchesClass calls non-classifier key %q live", k)
 		}
 	}
 }

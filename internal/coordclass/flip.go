@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 )
 
@@ -35,47 +34,28 @@ type Mutation struct {
 // reads. A mutation that does not cannot change a bead's class, whatever the
 // bead, so a caller may skip the read it would otherwise need for
 // [CheckFlip] — an agent stamping gc.outcome on every step costs nothing extra.
-// TestTouchesClassIsExact pins it against Classify itself.
+// It reads the same vocabulary table Classify reads through (classifierLabels,
+// classifierLabelPrefixes, classifierMetadataKeys), so the two cannot drift.
 func (m Mutation) TouchesClass() bool {
 	if m.Type != nil || m.ReplaceLabels {
 		return true
 	}
 	for _, labels := range [][]string{m.AddLabels, m.RemoveLabels} {
 		for _, l := range labels {
-			if classifierLabel(l) {
+			if isClassifierLabel(l) {
 				return true
 			}
 		}
 	}
 	for k := range m.SetMetadata {
-		if classifierMetadataKey(k) {
+		if classifierMetadataKeys[k] {
 			return true
 		}
 	}
 	for _, k := range m.UnsetMetadata {
-		if classifierMetadataKey(k) {
+		if classifierMetadataKeys[k] {
 			return true
 		}
-	}
-	return false
-}
-
-// classifierLabel reports whether one of Classify's arms matches label l.
-func classifierLabel(l string) bool {
-	switch l {
-	case "wisp", "gc:wisp", labelOrderTracking, labelSession, labelWait, labelOp, labelFact,
-		labelRuntime, labelNudge, labelNudgeQueue:
-		return true
-	}
-	return strings.HasPrefix(l, labelExtmsgPrefix)
-}
-
-// classifierMetadataKey reports whether one of Classify's arms reads key k.
-func classifierMetadataKey(k string) bool {
-	switch k {
-	case beadmeta.KindMetadataKey, beadmeta.FormulaContractMetadataKey, beadmeta.RootBeadIDMetadataKey,
-		beadmeta.SyntheticMetadataKey, beadmeta.SyntheticKindMetadataKey:
-		return true
 	}
 	return false
 }
@@ -126,7 +106,7 @@ func (f *Flip) Error() string {
 	}
 	return fmt.Sprintf("this write would turn a %s-class bead into a %s-class bead in a store that holds only %s beads; "+
 		"this city keeps %s beads in a different store, so the bead would be stranded where no %s reader looks "+
-		"(and on a split city every later gc command refuses until it is repaired)",
+		"— and one stranded bead makes every later gc command refuse until it is repaired",
 		f.Before, f.After, strings.Join(held, "/"), f.After, f.After)
 }
 
