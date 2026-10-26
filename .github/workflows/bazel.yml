@@ -679,6 +679,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           [ "$shards" -gt 0 ] && [ "$ratchet_fail" -eq 0 ] && [ "$tests_fail" -eq 0 ] && [ "$missing" -eq 0 ]
 
+      # The split-strict lane's logs carry its observed site tables (the gate
+      # prints them; a remote run brings no test.outputs back), which
+      # scripts/split-strict-baseline regenerates the baselines from. The lane
+      # is evidence-only, so the failure-only upload below never fires for it.
+      - name: Upload split-strict logs
+        if: always() && matrix.lane == 'split-strict' && steps.test.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bazel-split-strict-testlogs-${{ github.run_attempt }}
+          path: bazel-testlogs/**/test.log
+          if-no-files-found: ignore
+          retention-days: 14
+
       # R4: the client heap (setup-bazel sets -Xmx4g). Two weeks of these
       # numbers size any lane that needs a 4 vCPU (16 GB) runner instead; a
       # peak above 3.5 GB warns (the lane is near an OOM).

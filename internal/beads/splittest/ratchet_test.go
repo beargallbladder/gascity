@@ -190,6 +190,9 @@ func TestGateFinishReportsRatchetAndTestsSeparately(t *testing.T) {
 			t.Fatalf("output lacks %q:\n%s", want, out.String())
 		}
 	}
+	if !strings.Contains(out.String(), logTableBegin+observedReportName+"\n# ") || !strings.Contains(out.String(), "internal/api/new.go\tapi.fresh") {
+		t.Fatalf("the observed table is not in the log:\n%s", out.String())
+	}
 	result, err := os.ReadFile(filepath.Join(run.dir, resultReportName))
 	if err != nil || !strings.Contains(string(result), "ratchet=FAIL") || !strings.Contains(string(result), "tests=FAIL") {
 		t.Fatalf("result file = %q, %v", result, err)

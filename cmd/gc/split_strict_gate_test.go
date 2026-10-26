@@ -30,9 +30,12 @@ import (
 
 // splitStrictFiles are this package's checked-in gate inputs, relative to the
 // package directory the test binary runs in.
+//
+// The known-failures list is a .list, not a .txt: TestTutorial01 runs every
+// *.txt in testdata as a testscript.
 var splitStrictFiles = splittest.GateFiles{
 	Baseline:      "testdata/split_strict_baseline.tsv",
-	KnownFailures: "testdata/split_strict_known_failures.txt",
+	KnownFailures: "testdata/split_strict_known_failures.list",
 }
 
 func init() {

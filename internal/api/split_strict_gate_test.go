@@ -28,7 +28,7 @@ import (
 // package directory the test binary runs in.
 var splitStrictFiles = splittest.GateFiles{
 	Baseline:      "testdata/split_strict_baseline.tsv",
-	KnownFailures: "testdata/split_strict_known_failures.txt",
+	KnownFailures: "testdata/split_strict_known_failures.list",
 }
 
 func init() {

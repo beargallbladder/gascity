@@ -74,9 +74,25 @@ func TestNormalizeFunc(t *testing.T) {
 		"gc.(*runtime).loop.gowrap2":           "gc.(*runtime).loop",
 		"api.(*Server).resolveBeadOwner":       "api.(*Server).resolveBeadOwner",
 		"gc.classRoutedHookClaimOps.func1.2.3": "gc.classRoutedHookClaimOps",
+		"gc.(*memoryOrderDispatcher).fireCandidate.(*orderDispatchTrackingIndex).lastRunFunc-fm": "gc.(*orderDispatchTrackingIndex).lastRunFunc",
+		"gc.(*orderDispatchTrackingIndex).lastRunFunc":                                           "gc.(*orderDispatchTrackingIndex).lastRunFunc",
+		"api.cityPost[go.shape.struct {}].func1":                                                 "api.cityPost",
 	} {
 		if got := normalizeFunc(in); got != want {
 			t.Errorf("normalizeFunc(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestFactsFromFramesSkipsGenericGlueForTheCaller(t *testing.T) {
+	SetPackageUnderTest("internal/api")
+	t.Cleanup(func() { SetPackageUnderTest("") })
+	stack := []frameInfo{
+		{file: "internal/api/huma_handlers_convoys.go", line: 288, function: "github.com/gastownhall/gascity/internal/api.(*Server).humaHandleConvoyAdd"},
+		{file: "internal/api/city_scope.go", line: 79, function: "github.com/gastownhall/gascity/internal/api.cityPost[...].func1"},
+		{file: "internal/api/city_scope.go", line: 40, function: "github.com/gastownhall/gascity/internal/api.bindCity"},
+	}
+	if got := factsFromFrames(stack).pkg.Func; got != "api.bindCity" {
+		t.Fatalf("caller = %q, want api.bindCity (generic glue skipped)", got)
 	}
 }

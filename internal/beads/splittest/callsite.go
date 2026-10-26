@@ -139,7 +139,7 @@ func factsFromFrames(stack []frameInfo) stackFacts {
 		case facts.via.File == "" && frame.file != facts.site.File:
 			facts.via = here
 		}
-		if facts.pkg.File == "" && inPackageUnderTest(frame.file) {
+		if facts.pkg.File == "" && inPackageUnderTest(frame.file) && !isGenericGlue(frame.function) {
 			facts.pkg = here
 		}
 	}
@@ -174,19 +174,39 @@ func inPackageUnderTest(file string) bool {
 // closureSuffix matches the compiler's names for closures, deferred and
 // go-statement wrappers ("f.func1", "f.func2.3", "f.gowrap1", "f.deferwrap1"),
 // and generic instantiation markers ("f[...]").
-var closureSuffix = regexp.MustCompile(`(\.(func|gowrap|deferwrap)\d+(\.\d+)*|\[\.\.\.\])`)
+var closureSuffix = regexp.MustCompile(`(\.(func|gowrap|deferwrap)\d+(\.\d+)*|\[[^\]]*\])`)
 
-// normalizeFunc drops closure and instantiation suffixes from a function name,
-// so a key names the function a reader can find in the source, and does not
-// shift when a closure is added above the site.
+// methodValue matches a method value's wrapper name, which the compiler
+// spells with its enclosing function in some builds and without it in others
+// ("pkg.f.(*T).m-fm" or "pkg.(*T).m-fm"): it is named for the method.
+var methodValue = regexp.MustCompile(`^([^.]+)\..*(\(\*?[A-Za-z0-9_]+\)\.[A-Za-z0-9_]+)(-fm)?$`)
+
+// normalizeFunc drops closure, instantiation and method-value decorations
+// from a function name, so a key names the function a reader can find in the
+// source, does not shift when a closure is added above the site, and reads
+// the same whatever the build inlined.
 func normalizeFunc(name string) string {
+	name = strings.TrimSuffix(name, "-fm")
 	for {
 		next := closureSuffix.ReplaceAllString(name, "")
 		if next == name {
-			return name
+			break
 		}
 		name = next
 	}
+	if m := methodValue.FindStringSubmatch(name); m != nil && strings.Count(name, "(") > 1 {
+		return m[1] + "." + m[2]
+	}
+	return name
+}
+
+// isGenericGlue reports a frame of a generic function's instantiation (or a
+// closure inside one): request-routing glue such as internal/api's
+// cityGet[...]/cityPost[...], whose frames builds name and keep differently.
+// The ratchet's caller skips them for the next frame of the package under
+// test.
+func isGenericGlue(function string) bool {
+	return strings.Contains(function, "[")
 }
 
 // relativeSourcePath strips the build's repo-root prefix from a frame's file.

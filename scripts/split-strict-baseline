@@ -11,8 +11,10 @@ bazel-testlogs tree of a FULL GC_TEST_SPLIT_STRICT=1 run of that package
   bazel test --remote_download_outputs=all //internal/api:api_split_strict_test
   scripts/split-strict-baseline internal/api bazel-testlogs/internal/api/api_split_strict_test
 
-It reads every shard's split-strict-observed.tsv (plain, or inside
-test.outputs/outputs.zip) and every test.log, and rewrites:
+It reads every shard's observed table from its test.log (the gate prints it
+there, so a remote run's logs suffice; e.g. the split-strict lane's
+bazel-split-strict-testlogs artifact), else from split-strict-observed.tsv
+(plain, or inside test.outputs/outputs.zip), and rewrites:
 
   <package-dir>/testdata/split_strict_baseline.tsv
       one row per violation key. Per-key test counts add up across shards
@@ -21,7 +23,7 @@ test.outputs/outputs.zip) and every test.log, and rewrites:
       already lists keeps its verdict and note; a new key gets verdict
       "triage", which fails the ratchet until someone rules on it. A key the
       run did not reach is dropped, which is why the run must be full.
-  <package-dir>/testdata/split_strict_known_failures.txt
+  <package-dir>/testdata/split_strict_known_failures.list
       every top-level test that failed (from the test logs' "--- FAIL:" lines).
 
 The header comment blocks are kept. Rows are sorted in byte order (LC_ALL=C).
@@ -50,10 +52,37 @@ def header(path):
     return "".join(lines)
 
 
+TABLE_BEGIN = "SPLIT-STRICT TABLE BEGIN " + OBSERVED
+TABLE_END = "SPLIT-STRICT TABLE END"
+
+
+def tables_in_log(text):
+    """Yield the observed tables a gate run printed into its test log."""
+    lines = None
+    for line in text.splitlines():
+        if line.strip() == TABLE_BEGIN:
+            lines = []
+        elif line.strip() == TABLE_END and lines is not None:
+            yield "\n".join(lines) + "\n"
+            lines = None
+        elif lines is not None:
+            lines.append(line)
+
+
 def observed_tables(run):
     if os.path.isfile(run):
-        with open(run, encoding="utf-8") as f:
-            yield f.read()
+        with open(run, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        found = list(tables_in_log(text))
+        yield from (found or [text])
+        return
+    logs = glob.glob(os.path.join(run, "**", "test.log"), recursive=True)
+    from_logs = []
+    for path in logs:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            from_logs.extend(tables_in_log(f.read()))
+    if from_logs:
+        yield from from_logs
         return
     for path in glob.glob(os.path.join(run, "**", OBSERVED), recursive=True):
         with open(path, encoding="utf-8") as f:
@@ -86,7 +115,7 @@ def main(argv):
     pkg = argv[1].rstrip("/")
     runs = argv[2:]
     baseline_path = os.path.join(pkg, "testdata", "split_strict_baseline.tsv")
-    known_path = os.path.join(pkg, "testdata", "split_strict_known_failures.txt")
+    known_path = os.path.join(pkg, "testdata", "split_strict_known_failures.list")
 
     old = {}
     if os.path.exists(baseline_path):

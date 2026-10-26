@@ -43,6 +43,11 @@ const (
 	relicReportName       = "split-strict-relics.tsv"
 	resultReportName      = "split-strict-result.txt"
 	defaultStrictTestTime = 3 * time.Minute
+
+	// logTableBegin and logTableEnd fence a table the gate prints into the
+	// test log.
+	logTableBegin = "SPLIT-STRICT TABLE BEGIN "
+	logTableEnd   = "SPLIT-STRICT TABLE END"
 )
 
 // gateSink is the process-wide violation sink the gate's views record into.
@@ -396,6 +401,11 @@ func finishGate(code int, run *gateRun, files GateFiles, out io.Writer) int {
 	for _, name := range fixed {
 		fmt.Fprintf(out, "  NOW PASSING %s (remove it from %s)\n", name, files.KnownFailures) //nolint:errcheck // best-effort test log
 	}
+	// The tables also go to the log, which every runner keeps (a remote run
+	// does not bring test.outputs back): scripts/split-strict-baseline reads
+	// them from either place.
+	fmt.Fprintf(out, "%s\n%s%s\n", logTableBegin+observedReportName, FormatSiteTable(observed), logTableEnd) //nolint:errcheck // best-effort test log
+	fmt.Fprintf(out, "%s\n%s%s\n", logTableBegin+relicReportName, FormatSiteTable(relics), logTableEnd)      //nolint:errcheck // best-effort test log
 	writeGateFile(run.dir, resultReportName, fmt.Sprintf("ratchet=%s\ntests=%s\nhung=%s\nnew_failing=%s\n", ratchet, tests, hung, strings.Join(newFailing, ",")), out)
 
 	if failed || ratchet == "FAIL" || tests == "FAIL" {
