@@ -362,6 +362,7 @@ func TestMain(m *testing.M) {
 	// -L test-city have exit-empty off and outlive their sessions forever).
 	testRunner = newTmuxLeakGuardedTestingM(testRunner, tmuxSocketRoot)
 	testRunner = noCityGuardTestingM{m: testRunner}
+	testRunner = splitStrictTestingM{m: testRunner}
 	if tmuxSocketCleanupRoot != "" {
 		testRunner = cleanupTestingM{m: testRunner, paths: []string{tmuxSocketCleanupRoot}}
 	}

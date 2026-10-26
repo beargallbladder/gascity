@@ -1911,7 +1911,7 @@ func (cs *controllerState) SessionProvider() runtime.Provider {
 func (cs *controllerState) BeadStore(rig string) beads.Store {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	return cs.beadStores[rig]
+	return splitStrictWorkView(cs.beadStores[rig])
 }
 
 // BeadStores returns all rig names and their stores, including the HQ city store.
@@ -1928,7 +1928,7 @@ func (cs *controllerState) BeadStores() map[string]beads.Store {
 	for k, v := range cs.beadStores {
 		m[k] = v
 	}
-	return m
+	return splitStrictWorkViews(m)
 }
 
 // MailProvider returns the city-level mail provider.
@@ -2078,7 +2078,7 @@ func (cs *controllerState) RawConfig() *config.City {
 func (cs *controllerState) CityBeadStore() beads.Store {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	return cs.cityBeadStore
+	return splitStrictWorkView(cs.cityBeadStore)
 }
 
 // ScopedStoreLike implements api.State. See the interface doc comment for

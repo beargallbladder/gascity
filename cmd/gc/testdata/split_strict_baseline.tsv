@@ -1,0 +1,22 @@
+# Split-strict ratchet baseline for cmd/gc (GC_TEST_SPLIT_STRICT=1).
+#
+# One known violation site per line: production file:line, function, the
+# number of distinct tests that reached it, the verdict (misroute,
+# known-violation, fixture, triage) and a note naming the fix that owns it.
+# Tab-separated. A site not listed here fails //cmd/gc:gc_split_strict_test.
+# The ratchet matches on file and function; the line is informational.
+# Regenerate from a full run with scripts/split-strict-baseline, then
+# re-adjudicate any new row by hand.
+cmd/gc/cmd_converge.go:294	gc.newConvergeListCmd.func1.1	3	known-violation	S4: gc converge list reads convergence roots (graph) from rig ledgers; graph beads belong in the city binding. The rig-store convergence writer is the owner of this.
+cmd/gc/cmd_converge.go:443	gc.newConvergeTestGateCmd.func1	1	known-violation	S4: gc converge test-gate reads a convergence root (graph) from the rig ledger by store path.
+cmd/gc/cmd_convoy_dispatch.go:1183	gc.controlBeadLedger	2	fixture	The test control bead is type=task with only gc.kind=drain, which classifies as work; a production control bead carries graph metadata.
+cmd/gc/wisp_gc.go:373	gc.enumerateWispGCRoots	1	misroute	Wisp GC enumerates molecule roots through the graph store only; a work-class (v1 poured) type=molecule root on the work ledger is never reached on a split city. Needs a work leg or a ruling that those are not GC targets.
+internal/mail/beadmail/beadmail.go:313	beadmail.(*Provider).createMessageBead	2	fixture	The test builds beadmail.New over the opened WORK store; production opens mail through openCityMailProvider (messaging class).
+internal/molecule/molecule.go:1072	molecule.Instantiate	8	misroute	S3: order dispatchWisp (order_dispatch.go) pours every order recipe into the graph store without moleculeClassStore; a work-class (v1 poured) recipe lands in the binding, hidden from every work reader.
+internal/nudgequeue/store.go:189	nudgequeue.(*Store).Save	1	fixture	The test wraps the opened work store as a NudgesStore; production callers pass the nudges class store.
+internal/orders/store_reads.go:441	orders.lastRunRecords.func1	13	misroute	R17: the order gate reads last-run evidence from the orders/graph binding legs only on a split city; a work-class order-run root (v1 poured order formula) on the work ledger is invisible, so cooldown and cursor regress.
+internal/session/manager.go:998	session.(*Manager).createStarted.func1	3	fixture	The test hands the opened WORK store to resolveSessionIDMaterializingNamed; gc session wake passes the sessions store. Lead to check: cmd_sling.go cliDirectSessionResolver takes the store sling hands it.
+internal/session/resolve.go:55	session.ResolveSessionBeadByExactID	7	fixture	Negative input: a work id handed to the session resolver through the sessions store (the right store); not-a-session either way.
+internal/session/resolve.go:79	session.ResolveSessionRecordByExactID	6	fixture	Negative input: a work id handed to the session resolver through the sessions store (the right store); not-a-session either way.
+internal/session/startup_health.go:167	session.(*Store).startupHealthEpisodeBeads	1	misroute	S1: startup-health-episode beads classify as WORK (coordclass) but are written and read through the sessions store; on a split city the read and the classification disagree. Classify them as sessions.
+internal/sourceworkflow/sourceworkflow.go:289	sourceworkflow.listLiveRoots	2	fixture	Gate artifact: gc formula cook --attach graph.v2 arm reachable only on a single-store city (a split city refuses it first); the gate cannot fake the routes that refusal keys on.

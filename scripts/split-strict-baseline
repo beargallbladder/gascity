@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# split-strict-baseline: regenerate a package's split-strict ratchet baseline
+# (testdata/split_strict_baseline.tsv) from the observed site tables a
+# GC_TEST_SPLIT_STRICT=1 run wrote (internal/beads/splittest/gate.go).
+#
+# Usage:
+#   scripts/split-strict-baseline <baseline.tsv> <observed>...
+#
+# Each <observed> is a site table (GC_TEST_SPLIT_STRICT_REPORT=<file>) or a
+# directory searched for them: a bazel-testlogs tree, where every shard of
+# //cmd/gc:gc_split_strict_test or //internal/api:api_split_strict_test left its
+# table in test.outputs (plain, or inside outputs.zip). For example:
+#
+#   bazel test //internal/api:api_split_strict_test
+#   scripts/split-strict-baseline internal/api/testdata/split_strict_baseline.tsv \
+#     bazel-testlogs/internal/api/api_split_strict_test
+#
+# Shards run disjoint tests, so per-site test counts add up. A site the
+# baseline already lists (same file and function) keeps its verdict and note
+# and takes the observed line and count; a new site is written with verdict
+# "triage" for a human to adjudicate. A listed site the run did not reach is
+# dropped, so feed the script a FULL run. The header comment block is kept.
+# The result is written over <baseline.tsv>; review it with git diff.
+set -euo pipefail
+
+if [ "$#" -lt 2 ]; then
+  sed -n '2,22p' "$0" >&2
+  exit 2
+fi
+baseline=$1
+shift
+
+tables=$(mktemp)
+trap 'rm -f "$tables"' EXIT
+for src in "$@"; do
+  if [ -f "$src" ]; then
+    cat "$src" >>"$tables"
+  elif [ -d "$src" ]; then
+    while IFS= read -r -d '' f; do
+      cat "$f" >>"$tables"
+    done < <(find "$src" -name split-strict-observed.tsv -print0)
+    while IFS= read -r -d '' z; do
+      unzip -p "$z" '*split-strict-observed.tsv' >>"$tables" 2>/dev/null || true
+    done < <(find "$src" -name outputs.zip -print0)
+  else
+    echo "split-strict-baseline: $src is neither a file nor a directory" >&2
+    exit 1
+  fi
+done
+
+if ! grep -qv '^#' "$tables" 2>/dev/null && [ ! -s "$tables" ]; then
+  echo "split-strict-baseline: no observed site tables found in: $*" >&2
+  exit 1
+fi
+
+out=$(mktemp)
+trap 'rm -f "$tables" "$out"' EXIT
+{
+  if [ -f "$baseline" ]; then
+    sed -n '/^#/p;/^#/!q' "$baseline"
+  fi
+  awk -F '\t' -v OFS='\t' '
+    # Pass 1: the existing baseline (verdicts and notes by file+func).
+    FNR == NR {
+      if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) next
+      file = $1; sub(/:[0-9]+$/, "", file)
+      key = file SUBSEP $2
+      verdict[key] = $4; note[key] = $5
+      next
+    }
+    # Pass 2: the observed tables.
+    $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+    {
+      file = $1; sub(/:[0-9]+$/, "", file)
+      key = file SUBSEP $2
+      if (!(key in site)) { site[key] = $1; order[++n] = key; detail[key] = $5 " of " $6 " through the " $7 " view; e.g. " $8 }
+      tests[key] += $3
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        k = order[i]
+        v = (k in verdict) ? verdict[k] : "triage"
+        t = (k in note) ? note[k] : "unadjudicated: " detail[k]
+        split(k, parts, SUBSEP)
+        print site[k], parts[2], tests[k], v, t
+      }
+    }
+  ' <([ -f "$baseline" ] && cat "$baseline" || true) "$tables" | sort -t "$(printf '\t')" -k1,1
+} >"$out"
+cp -f "$out" "$baseline"
+echo "split-strict-baseline: wrote $(grep -vc '^#' "$baseline" || true) site(s) to $baseline" >&2

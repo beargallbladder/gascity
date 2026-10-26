@@ -487,7 +487,14 @@ func (s *Server) cancelRun(runID string, interrupt func(holders []string)) (canc
 		if info.store == nil {
 			continue
 		}
-		roots, err := findWorkflowRoots(info.store, runID)
+		// One leg of the workflowStores federation (graph, city, rigs): the
+		// root probes miss on every leg but the one that owns the run.
+		var roots []beads.Bead
+		err := beads.FederatedRead(func() error {
+			var findErr error
+			roots, findErr = findWorkflowRoots(info.store, runID)
+			return findErr
+		})
 		if err != nil {
 			return res, err
 		}

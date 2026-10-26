@@ -1,0 +1,23 @@
+# Split-strict ratchet baseline for internal/api (GC_TEST_SPLIT_STRICT=1).
+#
+# One known violation site per line: production file:line, function, the
+# number of distinct tests that reached it, the verdict (misroute,
+# known-violation, fixture, triage) and a note naming the fix that owns it.
+# Tab-separated. A site not listed here fails //internal/api:api_split_strict_test.
+# The ratchet matches on file and function; the line is informational.
+# Regenerate from a full run with scripts/split-strict-baseline, then
+# re-adjudicate any new row by hand.
+internal/api/convoy_event_stream.go:502	api.workflowRootInStore	3	known-violation	S4: the root_store_ref hint names a rig ledger holding a graph root (rig:<name>); graph beads belong in the city binding. The federated scan beside it is marked.
+internal/api/handler_convoys.go:17	api.isGraphConvoyID	2	fixture	newFakeState has no city store, so there is no graph leg and owned rows sit in a rig store; with a city store this rig leg is the rig-store graph reader (S4).
+internal/api/huma_handlers_beads.go:179	api.(*Server).humaHandleBeadList	1	fixture	No city store in the fixture and a message seeded in a rig store; on a real city the fan-out appends the class leg.
+internal/api/huma_handlers_convoys.go:225	api.(*Server).humaHandleConvoyCreate.func1	1	fixture	Negative input: the test feeds infra ids as convoy items. The work store is the right store; a split city refuses with 404 instead of 422.
+internal/api/huma_handlers_convoys.go:288	api.(*Server).humaHandleConvoyAdd	1	fixture	Negative input: infra ids as convoy items; the work store is the right store.
+internal/api/huma_handlers_convoys.go:331	api.(*Server).humaHandleConvoyRemove	1	fixture	Negative input: infra ids as convoy items; the work store is the right store.
+internal/api/huma_handlers_convoys.go:509	api.(*Server).humaHandleConvoyDelete	2	fixture	No city store in the fixture; owned rows seeded in a rig store are read on the plain-convoy rig leg.
+internal/api/residency_by_id.go:82	api.(*Server).resolveBeadOwner	20	fixture	No city store in the fixture, so the residency topology has no binding and the plan ends in the unprobed work residual; with a binding the walk goes through the marked storeref.resolveByID legs.
+internal/api/session_resolution.go:205	api.reassignOpenWorkAssignedToSession	1	misroute	S3 (session paths): lists WORK beads assigned to a retired session through the sessions-class store (handed in by materializeNamedSessionWithContext); on a split city it reassigns nothing. Read the work legs, plus the binding for wisp steps.
+internal/molecule/molecule.go:1072	molecule.Instantiate	4	fixture	API sling with no city store: relocatedGraphStore is nil, so the graph.v2 pour falls back to the rig work store; with a city store it pours into the class view.
+internal/session/wait_store.go:44	session.(*Store).GetWait	1	fixture	Negative input: a task id inspected as a wait through the sessions store (the right store); 404 either way.
+internal/sling/sling.go:825	sling.probeBeadInQuerier	1	fixture	Negative input: TestGenericAPINeverWritesAControllerOwnedRow slings infra ids; sling sources are work beads and the work store is right.
+internal/sling/sling_core.go:1865	sling.DoSlingBatch	1	fixture	Negative input: infra ids slung by TestGenericAPINeverWritesAControllerOwnedRow; the work store is right.
+internal/sling/sling_core.go:2203	sling.selectedStoreContainer	1	fixture	Negative input: infra ids slung by TestGenericAPINeverWritesAControllerOwnedRow; the work store is right.

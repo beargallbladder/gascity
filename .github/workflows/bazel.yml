@@ -33,6 +33,10 @@
 #     integration_smoke_test, a go_variant_test) and gates, in
 #     every mode: they
 #     never failed in 33 main runs of the full suite, which is still flaky;
+#   - split-strict runs cmd/gc and internal/api under the split-strict
+#     projection gate (GC_TEST_SPLIT_STRICT=1) and its new-violation-site
+#     ratchet, evidence-only, in mode remote outside merge groups, until it
+#     becomes required before new cities default to split;
 #   - integration runs on the nightly schedule and dispatches only,
 #     evidence-only, until G3 (bazel-nightly.yml; off every push since
 #     rbe-ci-cost-latency-study.md recommendation 5: evidence-only, so its
@@ -278,6 +282,13 @@ jobs:
           # --test_filter (GA-1), so --config=integration alone no longer
           # filters anything.
           smoke='{"lane":"integration-smoke","cmd":"test --config=ci --config=integration --keep_going //test/integration:integration_smoke_test'"$fresh"'"}'
+          # Evidence-only: cmd/gc and internal/api under the split-strict
+          # projection gate (GC_TEST_SPLIT_STRICT=1; the manual
+          # gc_split_strict_test and api_split_strict_test targets). Its
+          # ratchet fails a run that reaches a violation site the packages'
+          # testdata/split_strict_baseline.tsv does not list. Non-blocking
+          # until it becomes required before new cities default to split.
+          splitstrict='{"lane":"split-strict","cmd":"test --config=ci --keep_going //cmd/gc:gc_split_strict_test //internal/api:api_split_strict_test'"$fresh"'","evidence-only":true}'
           # Every mode tests: the gate (the required check) fails a run that
           # started no lane. Acceptance and integration-packages run on the
           # fork pool too (mode fork-ro, instance oss-fork, loopback only):
@@ -293,6 +304,12 @@ jobs:
           # gate it in a merge queue instead of moving it back onto push
           # (follow-up, not built here).
           case "$EVENT" in workflow_dispatch|schedule) lanes+=",$integration" ;; esac
+          # Mode remote only, so a fork run still mints at most 4 rbe-fork
+          # certificates and a cache/local run does not execute both suites
+          # again on its runner; never in a merge group, which it cannot gate.
+          if [ "$MODE" = remote ] && [ "$EVENT" != merge_group ]; then
+            lanes+=",$splitstrict"
+          fi
           echo "lanes=[$lanes]" >> "$GITHUB_OUTPUT"
 
       - name: Resolve the base branch commit (fresh-merge)
@@ -586,7 +603,7 @@ jobs:
             --experimental_build_event_upload_strategy=local || rc=$?
           echo "bazel / $LANE: exit $rc, $(( $(date +%s) - start ))s wall, mode $MODE" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -ne 0 ] && [ "$EVIDENCE_ONLY" = true ]; then
-            echo "::warning title=$LANE is evidence-only::bazel exited $rc; not gating until G3"
+            echo "::warning title=$LANE is evidence-only::bazel exited $rc; not gating (integration until G3, split-strict until split is the default)"
             exit 0
           fi
           exit "$rc"
@@ -958,7 +975,8 @@ jobs:
             acceptance="$dir/bazel-bep-acceptance-$ATTEMPT/bazel-bep.json" \
             integration-packages="$dir/bazel-bep-integration-packages-$ATTEMPT/bazel-bep.json" \
             integration-smoke="$dir/bazel-bep-integration-smoke-$ATTEMPT/bazel-bep.json" \
-            integration="$dir/bazel-bep-integration-$ATTEMPT/bazel-bep.json" >> "$GITHUB_STEP_SUMMARY"
+            integration="$dir/bazel-bep-integration-$ATTEMPT/bazel-bep.json" \
+            split-strict="$dir/bazel-bep-split-strict-$ATTEMPT/bazel-bep.json" >> "$GITHUB_STEP_SUMMARY"
       # rbe-ci-cost-latency-study.md recommendation 4: keeps #7241's
       # acceptance re-shard gain and would have caught a slowest-shard
       # straggler like beads' server-Dolt storage tier (4.3-4.5 min behind
@@ -975,6 +993,7 @@ jobs:
             "$dir/bazel-bep-integration-packages-${{ github.run_attempt }}/bazel-bep.json" \
             "$dir/bazel-bep-integration-smoke-${{ github.run_attempt }}/bazel-bep.json" \
             "$dir/bazel-bep-integration-${{ github.run_attempt }}/bazel-bep.json" \
+            "$dir/bazel-bep-split-strict-${{ github.run_attempt }}/bazel-bep.json" \
             --allow-missing >> "$GITHUB_STEP_SUMMARY"
       - name: Upload bazel test cache report
         if: always()

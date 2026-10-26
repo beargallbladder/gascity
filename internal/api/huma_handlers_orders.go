@@ -561,15 +561,22 @@ func orderHistoryBeadsAcrossStoreInfosCachedFirst(infos []workflowStoreInfo, sco
 			rows []beads.Bead
 			err  error
 		)
-		if cached, ok := info.store.(cachedListStore); ok {
-			var cacheOK bool
-			rows, cacheOK = cached.CachedList(query)
-			if !cacheOK {
-				rows, err = info.store.List(query)
+		// One leg of the order-history federation (rig and city scopes for
+		// pre-cutover history, the orders binding): each leg holds only its
+		// own rows.
+		err = beads.FederatedRead(func() error {
+			var listErr error
+			if cached, ok := info.store.(cachedListStore); ok {
+				var cacheOK bool
+				rows, cacheOK = cached.CachedList(query)
+				if !cacheOK {
+					rows, listErr = info.store.List(query)
+				}
+			} else {
+				rows, listErr = info.store.List(query)
 			}
-		} else {
-			rows, err = info.store.List(query)
-		}
+			return listErr
+		})
 		if err != nil {
 			if i == 0 && len(rows) == 0 {
 				return nil, err
@@ -613,13 +620,20 @@ func orderHistoryBeadsAcrossStoreInfos(infos []workflowStoreInfo, scopedName str
 		if info.store == nil {
 			continue
 		}
-		rows, err := info.store.List(beads.ListQuery{
-			Label:         label,
-			CreatedBefore: beforeTime,
-			Limit:         limit,
-			IncludeClosed: true,
-			Sort:          beads.SortCreatedDesc,
-			TierMode:      beads.TierBoth,
+		// One leg of the order-history federation; each leg holds only its
+		// own rows.
+		var rows []beads.Bead
+		err := beads.FederatedRead(func() error {
+			var listErr error
+			rows, listErr = info.store.List(beads.ListQuery{
+				Label:         label,
+				CreatedBefore: beforeTime,
+				Limit:         limit,
+				IncludeClosed: true,
+				Sort:          beads.SortCreatedDesc,
+				TierMode:      beads.TierBoth,
+			})
+			return listErr
 		})
 		if err != nil {
 			if i == 0 && len(rows) == 0 {
@@ -662,7 +676,8 @@ func orderHistoryBeadAcrossStoreInfos(infos []workflowStoreInfo, beadID string) 
 		if info.store == nil {
 			continue
 		}
-		bead, err := info.store.Get(beadID)
+		// A residence probe over the order-history legs.
+		bead, err := beads.FederatedGet(info.store, beadID)
 		if err == nil {
 			return orderHistoryStoreBead{storeRef: info.ref, bead: bead}, nil
 		}

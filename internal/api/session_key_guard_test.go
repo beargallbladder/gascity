@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/beads/splittest"
 	"github.com/gastownhall/gascity/internal/session"
 )
 
@@ -16,7 +17,11 @@ func init() {
 }
 
 // TestMain fails the run on a violation a recover() swallowed, and on a start
-// or stop refused for want of a city that no test expected.
+// or stop refused for want of a city that no test expected. Under
+// GC_TEST_SPLIT_STRICT=1 it also runs the split-strict ratchet: a violation
+// site the checked-in baseline does not list fails the run
+// (split_strict_gate_test.go).
 func TestMain(m *testing.M) {
-	os.Exit(session.FailOnNoCityRefusals(func() int { return session.FailOnKeyViolations(m.Run(), os.Stderr) }, os.Stderr))
+	code := session.FailOnNoCityRefusals(func() int { return session.FailOnKeyViolations(m.Run(), os.Stderr) }, os.Stderr)
+	os.Exit(splittest.GateMain(code, splitStrictBaseline, os.Stderr))
 }

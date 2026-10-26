@@ -262,7 +262,13 @@ var multiLaneCommands = map[string]string{
 	"integration":          "test --config=ci --config=integration --keep_going //test/integration:integration_test",
 	"integration-packages": "test --config=ci --config=integration-packages --keep_going //test:integration_packages",
 	"integration-smoke":    "test --config=ci --config=integration --keep_going //test/integration:integration_smoke_test",
+	"split-strict":         "test --config=ci --keep_going //cmd/gc:gc_split_strict_test //internal/api:api_split_strict_test",
 }
+
+// multiLaneEvidenceOnly are the lanes whose failure never fails the run:
+// integration until G3, and the split-strict projection gate until split is
+// the default for new cities.
+var multiLaneEvidenceOnly = map[string]bool{"integration": true, "split-strict": true}
 
 // multiLaneFreshTargets are the targets the nightly fresh run adds to a lane
 // before --config=fresh: the timer-bound acceptance tests at their real
@@ -412,7 +418,7 @@ var (
 )
 
 // wantMultiLanes: the lanes each (event, mode) starts, in order.
-func wantMultiLanes(event, _ string) []string {
+func wantMultiLanes(event, mode string) []string {
 	// Every mode tests (the gate fails a run with no lane). Acceptance and
 	// the gating integration lanes run in every mode, the fork pool's
 	// (fork-ro: no network) included: gc init no longer clones gascity-packs
@@ -423,12 +429,17 @@ func wantMultiLanes(event, _ string) []string {
 	if event == "workflow_dispatch" || event == "schedule" {
 		lanes = append(lanes, "integration")
 	}
+	// The split-strict gate runs remotely only (no fork certificate, no
+	// local re-execution of two whole suites) and never in a merge group.
+	if mode == "remote" && event != "merge_group" {
+		lanes = append(lanes, "split-strict")
+	}
 	return lanes
 }
 
 // TestBazelMultiLaneLaneList runs the rbe job's Lanes step for every event
 // and mode and checks the lane job's matrix it yields: the lanes that start,
-// each lane's exact command, evidence-only on integration alone, and at most
+// each lane's exact command, evidence-only on integration and split-strict, and at most
 // multiLaneForkCertificates lanes (one rbe-fork certificate each) for a fork
 // PR.
 func TestBazelMultiLaneLaneList(t *testing.T) {
@@ -471,10 +482,11 @@ func TestBazelMultiLaneLaneList(t *testing.T) {
 					if cmd, _ := entry["cmd"].(string); cmd != wantCmd {
 						t.Errorf("event %s, mode %s, fresh %s: lane %s cmd %q, want %q", event, mode, fresh, name, cmd, wantCmd)
 					}
-					// Evidence-only (exit 0 on failure) is integration's alone, until G3.
+					// Evidence-only (exit 0 on failure): integration until G3,
+					// split-strict until split is the default.
 					ev, set := entry["evidence-only"]
-					if (name == "integration") != (set && ev == true) {
-						t.Errorf("event %s, mode %s, fresh %s: lane %s evidence-only %v; want true on integration only", event, mode, fresh, name, ev)
+					if multiLaneEvidenceOnly[name] != (set && ev == true) {
+						t.Errorf("event %s, mode %s, fresh %s: lane %s evidence-only %v; want true on integration and split-strict only", event, mode, fresh, name, ev)
 					}
 					for key := range entry {
 						if key != "lane" && key != "cmd" && key != "evidence-only" {

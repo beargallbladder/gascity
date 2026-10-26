@@ -110,7 +110,9 @@ func (s *Server) buildWorkflowSnapshot(workflowID, fallbackScopeKind, fallbackSc
 			storesScanned = append(storesScanned, info.ref)
 			seenStoreRefs[info.ref] = true
 		}
-		root, err := info.store.Get(workflowID)
+		// One leg of the workflowStores federation (graph, city, rigs): a
+		// miss here is covered by the leg that owns the root.
+		root, err := beads.FederatedGet(info.store, workflowID)
 		if err != nil {
 			if firstGetErr == nil && !errors.Is(err, beads.ErrNotFound) {
 				firstGetErr = err
@@ -138,12 +140,18 @@ func (s *Server) buildWorkflowSnapshot(workflowID, fallbackScopeKind, fallbackSc
 			if info.store == nil {
 				continue
 			}
-			roots, err := info.store.List(beads.ListQuery{
-				Metadata: map[string]string{
-					beadmeta.KindMetadataKey:       beadmeta.KindWorkflow,
-					beadmeta.WorkflowIDMetadataKey: workflowID,
-				},
-				IncludeClosed: true,
+			var roots []beads.Bead
+			// One leg of the workflowStores federation; see the Get above.
+			err := beads.FederatedRead(func() error {
+				var listErr error
+				roots, listErr = info.store.List(beads.ListQuery{
+					Metadata: map[string]string{
+						beadmeta.KindMetadataKey:       beadmeta.KindWorkflow,
+						beadmeta.WorkflowIDMetadataKey: workflowID,
+					},
+					IncludeClosed: true,
+				})
+				return listErr
 			})
 			if err != nil {
 				listPartial = true

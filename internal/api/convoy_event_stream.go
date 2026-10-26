@@ -447,7 +447,8 @@ func workflowEventBeadFromSubject(state State, subjectID string) (beads.Bead, bo
 		if info.store == nil {
 			continue
 		}
-		bead, err := info.store.Get(subjectID)
+		// A residence probe over every workflowStores leg; only the owner hits.
+		bead, err := beads.FederatedGet(info.store, subjectID)
 		if err == nil {
 			matches = append(matches, bead)
 		}
@@ -479,7 +480,14 @@ func workflowEventRoot(state State, bead beads.Bead) (workflowStoreInfo, beads.B
 		if info.store == nil {
 			continue
 		}
-		root, ok := workflowRootInStore(info.store, rootID)
+		// A residence probe over every workflowStores leg; only the owner
+		// hits. (The root_store_ref hint above names one store and is not.)
+		var root beads.Bead
+		var ok bool
+		_ = beads.FederatedRead(func() error {
+			root, ok = workflowRootInStore(info.store, rootID)
+			return nil
+		})
 		if ok {
 			matches = append(matches, workflowRootMatch{info: info, root: root})
 		}

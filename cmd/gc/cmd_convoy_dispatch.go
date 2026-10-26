@@ -1283,7 +1283,9 @@ func findBeadScopeAcrossStores(cityPath, beadID string, warningWriter io.Writer)
 	if err != nil {
 		return nil, "", fmt.Errorf("opening city store: %w", err)
 	}
-	if _, err := cityStore.Get(beadID); err == nil {
+	// A scope probe (city, then rigs, then the graph binding below): a miss
+	// moves to the next scope.
+	if _, err := beads.FederatedGet(cityStore, beadID); err == nil {
 		return cityStore, cityPath, nil
 	} else if !errors.Is(err, beads.ErrNotFound) {
 		return nil, "", fmt.Errorf("getting bead %q from %s: %w", beadID, cityPath, err)
@@ -1300,7 +1302,7 @@ func findBeadScopeAcrossStores(cityPath, beadID string, warningWriter io.Writer)
 		if err != nil {
 			return nil, "", fmt.Errorf("opening rig store %q: %w", rig.Name, err)
 		}
-		if _, err := store.Get(beadID); err != nil {
+		if _, err := beads.FederatedGet(store, beadID); err != nil {
 			if errors.Is(err, beads.ErrNotFound) {
 				continue
 			}
@@ -1902,7 +1904,14 @@ func cmdWorkflowDelete(workflowID string, force, deleteBeads bool, stdout, stder
 	}
 	for _, info := range stores {
 		label := workflowDeleteStoreLabelForView(cfg, cityPath, info)
-		found, err := findWorkflowBeads(info.store, workflowID)
+		// One view of the federated sweep (scope stores and the binding):
+		// each holds only its own rows of the workflow.
+		var found []beads.Bead
+		err := beads.FederatedRead(func() error {
+			var findErr error
+			found, findErr = findWorkflowBeads(info.store, workflowID)
+			return findErr
+		})
 		if err != nil {
 			fmt.Fprintf(stderr, "gc workflow delete: %v\n", refusePartialSweep("scanning", label, err)) //nolint:errcheck // best-effort stderr
 			return 1
@@ -3033,7 +3042,14 @@ func (c *sourceWorkflowMatchCollector) collect(currentSourceID, currentSourceSto
 		return nil
 	}
 	for i, info := range c.stores {
-		children, err := c.scanStore(i, info, currentSourceID, currentSourceStoreRef)
+		// One view of the source-workflow walk (scope stores and the
+		// binding): each lists only the roots and children it holds.
+		var children []beads.Bead
+		err := beads.FederatedRead(func() error {
+			var scanErr error
+			children, scanErr = c.scanStore(i, info, currentSourceID, currentSourceStoreRef)
+			return scanErr
+		})
 		if err != nil {
 			return err
 		}
@@ -3229,10 +3245,16 @@ func assessZeroMatchSourceWorkflowScan(scans []sourceWorkflowStoreScan, sourceBe
 
 	blockingSet := make(map[string]struct{})
 	for _, view := range successfulViews {
-		roots, err := beads.HandlesFor(view.store).Live.List(beads.ListQuery{
-			Metadata: map[string]string{
-				beadmeta.FormulaVarPrefix + graphv2.LegacyIssueVar: sourceBeadID,
-			},
+		// One view of the zero-match re-scan; each holds only its own roots.
+		var roots []beads.Bead
+		err := beads.FederatedRead(func() error {
+			var listErr error
+			roots, listErr = beads.HandlesFor(view.store).Live.List(beads.ListQuery{
+				Metadata: map[string]string{
+					beadmeta.FormulaVarPrefix + graphv2.LegacyIssueVar: sourceBeadID,
+				},
+			})
+			return listErr
 		})
 		if err != nil {
 			return zeroMatchSourceWorkflowScan{

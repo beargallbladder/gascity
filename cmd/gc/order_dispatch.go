@@ -3211,7 +3211,15 @@ func sweepStaleOrderTrackingAcrossStoresLimitMode(stores []beads.Store, wispStor
 				break
 			}
 		}
-		partial, err := sweepStaleOrderTrackingWithOptionsLimitMode(store, now, staleAfter, onlyOrders, initiator, perStoreWisps, remainingLimit, dryRun)
+		// One leg of the sweep federation (the scope stores kept for
+		// pre-cutover tracking history, plus the orders binding on a split
+		// city): each sweeps only the tracking rows it holds.
+		var partial orderTrackingSweepResult
+		err := beads.FederatedRead(func() error {
+			var sweepErr error
+			partial, sweepErr = sweepStaleOrderTrackingWithOptionsLimitMode(store, now, staleAfter, onlyOrders, initiator, perStoreWisps, remainingLimit, dryRun)
+			return sweepErr
+		})
 		result.trackingClosed += partial.trackingClosed
 		result.wispClosed += partial.wispClosed
 		if err != nil {
@@ -3343,7 +3351,13 @@ func sweepClosedOrderTrackingRetentionAcrossStores(stores []beads.Store, now tim
 		if store == nil {
 			continue
 		}
-		n, err := sweepClosedOrderTrackingRetention(store, now, policy, onlyOrders)
+		// One leg of the sweep federation; see sweepStaleOrderTrackingAcrossStores.
+		var n int
+		err := beads.FederatedRead(func() error {
+			var sweepErr error
+			n, sweepErr = sweepClosedOrderTrackingRetention(store, now, policy, onlyOrders)
+			return sweepErr
+		})
 		result.deleted += n
 		if err != nil {
 			errs = append(errs, fmt.Errorf("pruning closed order-tracking %s: %w", orderTrackingSweepStoreLabel(store, i), err))
@@ -3539,7 +3553,13 @@ func countClosedOrderTrackingRetentionEligible(stores []beads.Store, now time.Ti
 		if store == nil {
 			continue
 		}
-		runs, err := orders.NewStore(beads.OrdersStore{Store: store}).ClosedRunsForRetention()
+		// One leg of the sweep federation; see sweepStaleOrderTrackingAcrossStores.
+		var runs []orders.OrderRun
+		err := beads.FederatedRead(func() error {
+			var listErr error
+			runs, listErr = orders.NewStore(beads.OrdersStore{Store: store}).ClosedRunsForRetention()
+			return listErr
+		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("listing closed order-tracking %s: %w", orderTrackingSweepStoreLabel(store, i), err))
 			continue
