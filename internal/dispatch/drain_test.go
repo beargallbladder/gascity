@@ -2999,16 +2999,7 @@ func TestProcessDrainSplitCityDoesNotWriteACrossStoreBlockerEdge(t *testing.T) {
 					t.Fatalf("row 1 item workflow %s has nothing ready; it has no blocker", manifest.Rows[1].ItemRootID)
 				}
 				gates := crossStoreGatesIn(t, graph)
-				resolve := func(id string) ([]beads.Bead, error) {
-					b, err := work.Get(id)
-					if errors.Is(err, beads.ErrNotFound) {
-						return nil, nil
-					}
-					if err != nil {
-						return nil, err
-					}
-					return []beads.Bead{b}, nil
-				}
+				resolve := storesResolver(work)
 				if tc.closeBlocker {
 					if len(gates) != 0 {
 						t.Fatalf("gates = %+v, want none: a closed blocker constrains nothing", gates)
@@ -3069,7 +3060,7 @@ func TestReleaseCrossStoreGatesKeepsAGateWhoseBlockerNoStoreHolds(t *testing.T) 
 	if err != nil || gateID == "" {
 		t.Fatalf("ensureCrossStoreGate = %q, %v", gateID, err)
 	}
-	none := func(string) ([]beads.Bead, error) { return nil, nil }
+	none := storesResolver()
 	report, err := ReleaseCrossStoreGates(graph, none)
 	if err != nil || len(report.Released) != 0 || len(report.Unresolved) != 1 {
 		t.Fatalf("release = %+v, %v; want the gate kept and reported unresolved", report, err)
@@ -3083,6 +3074,26 @@ func TestReleaseCrossStoreGatesKeepsAGateWhoseBlockerNoStoreHolds(t *testing.T) 
 	report, err = ReleaseCrossStoreGates(graph, none)
 	if err != nil || len(report.Released) != 1 {
 		t.Fatalf("release after the drain control closed = %+v, %v; want the gate released", report, err)
+	}
+}
+
+// storesResolver resolves gate blockers against stores, one batched read per
+// store, as the controller's resolver does.
+func storesResolver(stores ...beads.Store) CrossStoreBlockerResolver {
+	return func(ids []string) (map[string][]beads.Bead, map[string]bool, error) {
+		copies := make(map[string][]beads.Bead)
+		for _, store := range stores {
+			found, err := beads.GetMany(store, ids)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, id := range ids {
+				if b, ok := found[id]; ok {
+					copies[id] = append(copies[id], b)
+				}
+			}
+		}
+		return copies, nil, nil
 	}
 }
 

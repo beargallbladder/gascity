@@ -273,6 +273,9 @@ func (cr *CityRuntime) startTickDeltaLanes(ctx context.Context, prov events.Prov
 			claimLoop.observe(evt)
 		})
 	go cr.runRouteRecoveryBackstopLoop(ctx, route)
+	// The cross-store gate lane reads work stores, so it polls off the tick
+	// too (cross_store_gate_lane.go).
+	go cr.runCrossStoreGateLoop(ctx)
 	go cr.runCompletionsSweepLoop(ctx, completions)
 	go cr.runDetachedOrphanBackstopLoop(ctx, orphans)
 }

@@ -887,6 +887,17 @@ func drainProjectedBlockerIDs(store beads.Store, control beads.Bead, memberID st
 			continue
 		}
 		dependsOnID := strings.TrimSpace(dep.DependsOnID)
+		if len(opts.MemberStores) > 0 {
+			// A split city judges what an edge names (owner decision):
+			// "external:<id>" is the bead <id>, and an external capability
+			// names no bead and never blocks, as in bd. A single-store city
+			// projects the edge as written, which bd answers as it always has.
+			target, capability := beads.ExternalBlockerTarget(dependsOnID)
+			if capability {
+				continue
+			}
+			dependsOnID = target
+		}
 		if dependsOnID == "" || dependsOnID == memberID {
 			continue
 		}

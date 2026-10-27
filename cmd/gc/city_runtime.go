@@ -173,10 +173,6 @@ type CityRuntime struct {
 	routeRecovery     *routeRecoveryLane
 	routeRecoveryOnce sync.Once
 
-	// crossStoreGates is the cadence of the lane that releases drain items held
-	// behind cross-store gates (cross_store_gate_lane.go).
-	crossStoreGates crossStoreGateLane
-
 	// completions is the graph.v2 completion-fact lane, the same delta/sweep
 	// split as routeRecovery.
 	completions     *completionsLane
@@ -1351,7 +1347,6 @@ var legacyTickPhases = []tickPhase{
 	{name: "wake_orders_lane", run: (*CityRuntime).tickWakeOrdersLane},
 	{name: "runtime_inventory_lane", run: (*CityRuntime).tickRecordInventoryLane},
 	{name: "recover_unrouted_work_routes", run: (*CityRuntime).tickRecoverUnroutedWorkRoutes},
-	{name: "release_cross_store_gates", run: (*CityRuntime).tickReleaseCrossStoreGates},
 	{name: "load_session_snapshot", run: (*CityRuntime).tickLoadSessionSnapshot},
 	{name: "cleanup_dead_runtime_session_corpses", session: true, run: (*CityRuntime).phaseCleanupDeadRuntimeSessionCorpses},
 	{name: "reap_runtimes_bound_to_closed_beads", run: (*CityRuntime).phaseReapRuntimesBoundToClosedBeads},
