@@ -871,11 +871,13 @@ foreground, low-priority `git repack --geometric=2`:
 - `GC_JSONL_GC_LOOSE_KB=262144` (256 MiB)
 
 A geometric repack packs the loose backlog into a new pack and merges only the
-small packs beside it. A large existing pack is left as it is, so a run writes
-only the new pack where a full `git gc` rewrote the whole archive. The same pass
-runs when a run has nothing new to export, so a backlog left by an earlier
-failure is packed on the next run. It needs Git 2.32 or newer; on an older Git
-the pass fails with a message that says so.
+small packs beside it. A large existing pack is left alone until the smaller
+packs beside it grow large enough for the geometric progression to merge it;
+only `mode=geometric-keep-largest` (below) leaves it out outright. So a run
+usually writes only the new pack where a full `git gc` rewrote the whole
+archive. The same pass runs when a run has nothing new to export, so a
+backlog left by an earlier failure is packed on the next run. It needs Git 2.32
+or newer; on an older Git the pass fails with a message that says so.
 
 Packing is deliberately single-threaded and uses
 `GC_JSONL_GC_WINDOW_MEMORY=256m` (a positive byte count, without leading

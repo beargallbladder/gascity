@@ -658,7 +658,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now exports, commits and pushes first, then packs the archive, so a pack
   that fails or times out can no longer hold back snapshots. The pass is an
   incremental `git repack --geometric=2` (Git 2.32 or newer) that packs the
-  backlog and leaves a large existing pack untouched, instead of a `git gc`
+  backlog and postpones rewriting a large existing pack, instead of a `git gc`
   that rewrote the whole archive. It also runs on the "no changes" and
   pending-push exits, keeps the largest pack when free space is short, stops
   Git's own auto-maintenance from running during the archive commit, and

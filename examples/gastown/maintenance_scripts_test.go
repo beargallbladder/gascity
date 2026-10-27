@@ -11352,6 +11352,68 @@ func TestJsonlExportArchiveRepackCommandAndGitAutoMaintenance(t *testing.T) {
 	}
 }
 
+// The archive's fetches and rebases turn git's own maintenance off for each
+// call, as the snapshot commit does. Origin advances before the run and again
+// during its first push, so the run fetches and rebases both before its push
+// and on the retry.
+func TestJsonlExportArchiveFetchAndRebaseDisableGitAutoMaintenance(t *testing.T) {
+	f := newArchiveMaintenanceFixture(t, 3, 5)
+	remoteRepo := f.addOrigin(t)
+	realGit := lookPathGit(t)
+	advanceDir := filepath.Join(t.TempDir(), "advance")
+	runGit(t, f.archiveRepo, "clone", "-q", remoteRepo, advanceDir)
+	runGit(t, advanceDir, "checkout", "-q", "main")
+	runGit(t, advanceDir, "config", "user.email", "test@example.invalid")
+	runGit(t, advanceDir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(advanceDir, "remote-advance.txt"), []byte("remote advance before the run\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(remote-advance.txt): %v", err)
+	}
+	runGit(t, advanceDir, "add", "-A")
+	runGit(t, advanceDir, "commit", "-q", "-m", "remote advance before the run")
+	runGit(t, advanceDir, "push", "-q", "origin", "main")
+	raceDir := t.TempDir()
+	writeGitPushRemoteAdvanceRaceStub(t, raceDir, realGit, remoteRepo, filepath.Join(t.TempDir(), "git-push.log"))
+	argvLog := filepath.Join(t.TempDir(), "git-argv.log")
+	writeGitArgvLogStub(t, f.binDir, filepath.Join(raceDir, "git"), argvLog)
+	configBefore := runGitOut(t, f.archiveRepo, "config", "--local", "--list")
+
+	out, err := f.run(t)
+	if err != nil {
+		t.Fatalf("jsonl-export.sh failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "push succeeded on retry attempt 2") {
+		t.Fatalf("expected the push to succeed on its retry:\n%s", out)
+	}
+	data, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("ReadFile(git argv log): %v", err)
+	}
+	log := string(data)
+	calls := map[string]int{}
+	for _, line := range strings.Split(log, "\n") {
+		match := regexp.MustCompile(`^ARGV (?:.* )?(fetch|rebase)(?: |$)`).FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		calls[match[1]]++
+		if !strings.Contains(line, "-c maintenance.auto=false -c gc.auto=0 "+match[1]+" ") {
+			t.Errorf("the %s must turn off git's own maintenance: %q", match[1], line)
+		}
+	}
+	if calls["fetch"] < 2 || calls["rebase"] < 2 {
+		t.Fatalf("expected a fetch and rebase before the push and on its retry, got %v:\n%s", calls, log)
+	}
+	if strings.Contains(log, "ENV ") {
+		t.Fatalf("the script must not inject git configuration through GIT_CONFIG_*:\n%s", log)
+	}
+	if config := runGitOut(t, f.archiveRepo, "config", "--local", "--list"); config != configBefore {
+		t.Fatalf("the script must not write to the archive config:\nbefore the run:\n%s\nafter:\n%s", configBefore, config)
+	}
+	if got := f.originMain(t, remoteRepo); got != f.head(t) {
+		t.Fatalf("origin main = %s, want the rebased snapshot %s pushed:\n%s", got, f.head(t), out)
+	}
+}
+
 // A git without --geometric (before 2.32) fails the pass through the normal
 // failure path and names the version it needs.
 func TestJsonlExportArchiveMaintenanceNamesGitVersionWhenRepackRejectsGeometric(t *testing.T) {

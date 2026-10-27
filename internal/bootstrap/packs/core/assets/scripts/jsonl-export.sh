@@ -357,7 +357,7 @@ has_pending_archive_push() {
 }
 
 refresh_archive_remote_main() {
-    git fetch origin main -q 2>/dev/null
+    git -c maintenance.auto=false -c gc.auto=0 fetch origin main -q 2>/dev/null
 }
 
 archive_has_local_only_commits_from_tracking() {
@@ -680,7 +680,7 @@ ESCALATION
     # Successful git commands can emit benign stderr (e.g. "warning: redirecting
     # to https://...", credential-helper notes, protocol upgrade hints) which
     # would otherwise misclassify the run as a failure and falsely escalate.
-    if ! fetch_err=$(git fetch origin main -q 2>&1 >/dev/null); then
+    if ! fetch_err=$(git -c maintenance.auto=false -c gc.auto=0 fetch origin main -q 2>&1 >/dev/null); then
         if git rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1; then
             record_archive_push_failure \
                 "jsonl-export: fetching origin/main failed" \
@@ -692,7 +692,7 @@ ESCALATION
 
     if git rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1; then
         if ! git merge-base --is-ancestor refs/remotes/origin/main HEAD >/dev/null 2>&1; then
-            if ! rebase_err=$(git rebase refs/remotes/origin/main 2>&1 >/dev/null); then
+            if ! rebase_err=$(git -c maintenance.auto=false -c gc.auto=0 rebase refs/remotes/origin/main 2>&1 >/dev/null); then
                 git rebase --abort >/dev/null 2>&1 || true
                 record_archive_push_failure \
                     "jsonl-export: rebase onto origin/main failed during archive push recovery" \
@@ -727,10 +727,10 @@ ESCALATION
 
             # Refresh origin tracking before retry — a sibling rig may have
             # moved the ref while we slept.
-            if fetch_err=$(git fetch origin main -q 2>&1 >/dev/null); then
+            if fetch_err=$(git -c maintenance.auto=false -c gc.auto=0 fetch origin main -q 2>&1 >/dev/null); then
                 if git rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1 \
                     && ! git merge-base --is-ancestor refs/remotes/origin/main HEAD >/dev/null 2>&1; then
-                    if ! rebase_err=$(git rebase refs/remotes/origin/main 2>&1 >/dev/null); then
+                    if ! rebase_err=$(git -c maintenance.auto=false -c gc.auto=0 rebase refs/remotes/origin/main 2>&1 >/dev/null); then
                         git rebase --abort >/dev/null 2>&1 || true
                         record_archive_push_failure \
                             "jsonl-export: rebase onto origin/main failed during retry $push_attempt" \
@@ -769,9 +769,10 @@ commit_archive_snapshot() {
     fi
 }
 
-# Git 2.55 and newer start a detached maintenance run after a commit; the
-# snapshot commit turns that off (above), so the repack below is the only
-# thing that packs the archive.
+# Git 2.55 and newer start a detached maintenance run after a commit, and
+# fetch and rebase run git's auto-maintenance too; the snapshot commit and the
+# archive's fetches and rebases turn that off for each call (above), so the
+# repack below is the only thing that packs the archive.
 run_archive_repack() {
     local -a repack_command=(
         git -C "$ARCHIVE_REPO"
