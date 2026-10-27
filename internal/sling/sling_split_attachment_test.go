@@ -354,3 +354,50 @@ func TestSplitSlingPoursEachRecipeIntoTheStoreOfItsClass(t *testing.T) {
 		}
 	})
 }
+
+// oneIDUnreadableStore fails Get for one id with a non-not-found error: a store that
+// could not answer, as distinct from one that answered "absent".
+type oneIDUnreadableStore struct {
+	beads.Store
+	failID string
+}
+
+func (s oneIDUnreadableStore) Get(id string) (beads.Bead, error) {
+	if id == s.failID {
+		return beads.Bead{}, errors.New("store unavailable")
+	}
+	return s.Store.Get(id)
+}
+
+// Should-fix 4: the attach guard fails closed when it cannot read an
+// attachment (it may be live), and stays open for a dangling reference that
+// every store answers as absent (the molecule was purged).
+func TestAttachGuardFailsClosedOnAnUnreadableAttachment(t *testing.T) {
+	work := beads.NewMemStore()
+	src, err := work.Create(beads.Bead{Title: "source", Type: "task", Metadata: map[string]string{
+		beadmeta.MoleculeIDMetadataKey: "gcg-77",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := oneIDUnreadableStore{Store: beads.NewMemStore(), failID: "gcg-77"}
+	scope := attachmentScope{work: work, graph: graph}
+
+	var result SlingResult
+	err = checkNoMoleculeChildren(work, src.ID, scope, &result, false)
+	if err == nil || !strings.Contains(err.Error(), "could not verify molecule attachment") {
+		t.Fatalf("single check with an unreadable attachment: err=%v, want a could-not-verify refusal", err)
+	}
+	err = checkBatchNoMoleculeChildren(work, []beads.Bead{src}, scope, &result, false)
+	if err == nil || !strings.Contains(err.Error(), "could not verify molecule attachment") {
+		t.Fatalf("batch check with an unreadable attachment: err=%v, want a could-not-verify refusal", err)
+	}
+
+	dangling := attachmentScope{work: work, graph: beads.NewMemStore()}
+	if err := checkNoMoleculeChildren(work, src.ID, dangling, &result, false); err != nil {
+		t.Fatalf("single check with a dangling molecule_id: %v, want no refusal", err)
+	}
+	if err := checkBatchNoMoleculeChildren(work, []beads.Bead{src}, dangling, &result, false); err != nil {
+		t.Fatalf("batch check with a dangling molecule_id: %v, want no refusal", err)
+	}
+}
