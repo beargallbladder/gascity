@@ -38,6 +38,7 @@ case "$1" in
   show) echo '[{"id":"demo-abc","title":"t","status":"open","issue_type":"task"}]' ;;
   list|ready) echo '[]' ;;
   update) echo '{"id":"demo-abc"}' ;;
+  version) echo 'bd version 1.3.2 (test)' ;;
   *) : ;;
 esac
 exit 0

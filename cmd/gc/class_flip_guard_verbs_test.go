@@ -2,9 +2,10 @@ package main
 
 import (
 	"bytes"
-	"maps"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -28,117 +29,206 @@ func splitGuardTestCity() *config.City {
 }
 
 // TestGcBdSplitAllowlistDecidesEveryCommand is the allowlist's coverage test
-// over the whole pinned bd inventory (internal/bdflags/commands_gen.go): every
-// command path is either allowlisted with its vetted flag set or refused with a
-// stated alternative, and every alias is either mapped onto an allowlisted path
-// or refused. A command or alias bd adds reaches the inventory through
-// TestBdCommandInventoryCurrent (integration) and then fails here until it has
-// a decision. The decisions are checked by behavior, through
-// resolveBdSplitCommand, not just by table membership.
+// over every pinned bd inventory (internal/bdflags/inventory, dumped from bd's
+// own cobra tree, hidden commands and flags included): every command path is
+// either allowlisted with its vetted flag set or refused with a stated
+// alternative, and every alias is either mapped onto an allowlisted path or
+// refused. A command, alias or flag in a regenerated inventory fails here until
+// it has a decision. The decisions are checked by behavior, through
+// resolveBdSplitCommand on each inventory, not just by table membership.
 func TestGcBdSplitAllowlistDecidesEveryCommand(t *testing.T) {
-	inventory := map[string]bool{"release-if-current": true}
-	for _, p := range bdflags.CommandPaths() {
-		inventory[p] = true
-	}
 	for path := range bdSplitAllowlist {
-		if !inventory[path] {
-			t.Errorf("allowlisted %q is not a command path in the inventory", path)
+		if !bdflags.IsCommandPath(path) {
+			t.Errorf("allowlisted %q is not a command path in any inventory", path)
 		}
 	}
 	for key := range bdSplitRefusals {
-		if !inventory[key] {
-			t.Errorf("refusal %q is not a command path in the inventory", key)
+		if !bdflags.IsCommandPath(key) {
+			t.Errorf("refusal %q is not a command path in any inventory", key)
 		}
 		if _, allowed := bdSplitAllowlist[key]; allowed {
 			t.Errorf("%q is both allowlisted and refused", key)
 		}
 	}
-	paths := slices.Sorted(maps.Keys(inventory))
-	for _, path := range paths {
-		cmd, allowed := bdSplitAllowlist[path]
-		if !allowed {
-			r, decided := bdSplitRefusalFor(path)
-			if !decided {
-				t.Errorf("command %q has no split-city decision: allowlist it (with its flag set) or add a refusal with an alternative", path)
-				continue
+	for _, inv := range bdflags.Inventories() {
+		t.Run(inv.Name, func(t *testing.T) {
+			for _, path := range inv.Paths() {
+				if path == "" {
+					continue
+				}
+				cmd, allowed := bdSplitAllowlist[path]
+				if !allowed {
+					r, decided := bdSplitRefusalFor(path)
+					if !decided {
+						t.Errorf("command %q has no split-city decision: allowlist it (with its flag set) or add a refusal with an alternative", path)
+						continue
+					}
+					if strings.TrimSpace(r.why) == "" || strings.TrimSpace(r.alt) == "" {
+						t.Errorf("refusal of %q states no reason or no alternative", path)
+					}
+					res := resolveBdSplitCommand(inv, strings.Fields(path), "/scope")
+					if res.refusal == "" {
+						t.Errorf("refused %q resolved without a refusal", path)
+					}
+					if help := resolveBdSplitCommand(inv, append(strings.Fields(path), "--help"), "/scope"); help.refusal != "" && !inv.Command(path).DisableFlagParsing {
+						t.Errorf("--help on refused %q was refused: %s", path, help.refusal)
+					}
+					continue
+				}
+				if strings.TrimSpace(cmd.why) == "" {
+					t.Errorf("allowlisted %q states no reason", path)
+				}
+				declared := map[string]bool{}
+				for _, f := range inv.Flags(path) {
+					declared["--"+f.Name] = true
+				}
+				for _, f := range append(slices.Clone(cmd.only), cmd.exclude...) {
+					if !bdflags.IsCommandPath(path) || !declaredInSomeInventory(path, f) {
+						t.Errorf("allowlisted %q vets %s, which no inventory declares for it", path, f)
+					}
+				}
+				res := resolveBdSplitCommand(inv, strings.Fields(path), "/scope")
+				if res.refusal != "" || res.path != path {
+					t.Errorf("allowlisted %q did not resolve to itself: path=%q refusal=%q", path, res.path, res.refusal)
+				}
+				// Each vetted flag parses; each unvetted one is refused.
+				local := map[string]bool{}
+				for _, f := range inv.Command(path).Local {
+					local["--"+f.Name] = true
+				}
+				for _, f := range inv.Flags(path) {
+					long := "--" + f.Name
+					argv := append(strings.Fields(path), long)
+					if f.TakesValue() {
+						argv = append(argv, bdFlagSampleValue(f))
+					}
+					vetted, _ := bdSplitVetted(cmd, local, long)
+					got := resolveBdSplitCommand(inv, argv, "/scope")
+					if long == "--help" || long == "--version" {
+						continue
+					}
+					if vetted && got.refusal != "" {
+						t.Errorf("vetted flag %s of %q was refused: %s", long, path, got.refusal)
+					}
+					if !vetted && got.refusal == "" {
+						t.Errorf("unvetted flag %s of %q was accepted", long, path)
+					}
+				}
 			}
-			if strings.TrimSpace(r.why) == "" || strings.TrimSpace(r.alt) == "" {
-				t.Errorf("refusal of %q states no reason or no alternative", path)
+			for alias, target := range inv.Aliases() {
+				mapped, allowed := bdSplitAllowedAliases[alias]
+				_, refused := bdSplitRefusedAliases[alias]
+				switch {
+				case allowed && refused:
+					t.Errorf("alias %q is both allowed and refused", alias)
+				case allowed:
+					if mapped != target {
+						t.Errorf("alias %q maps to %q, but bd runs it as %q", alias, mapped, target)
+					}
+					if res := resolveBdSplitCommand(inv, strings.Fields(alias), "/scope"); res.refusal != "" || res.path != target {
+						t.Errorf("allowed alias %q resolved to %q (%q)", alias, res.path, res.refusal)
+					}
+				case refused:
+					if res := resolveBdSplitCommand(inv, strings.Fields(alias), "/scope"); res.refusal == "" {
+						t.Errorf("refused alias %q resolved to %q", alias, res.path)
+					}
+				default:
+					t.Errorf("alias %q (of %q) has no split-city decision", alias, target)
+				}
 			}
-			res := resolveBdSplitCommand(strings.Fields(path), "/scope")
-			if res.refusal == "" || !strings.Contains(res.refusal, path) {
-				t.Errorf("refused %q resolved without a refusal naming it: %+v", path, res)
-			}
-			continue
-		}
-		if strings.TrimSpace(cmd.why) == "" {
-			t.Errorf("allowlisted %q states no reason", path)
-		}
-		// Every vetted flag of the command is a flag bd declares for it.
-		declared := map[string]bool{}
-		for _, f := range bdflags.CommandFlagSpecs(path) {
-			declared[f.Long] = true
-		}
-		for _, f := range append(slices.Clone(cmd.only), cmd.exclude...) {
-			if !declared[f] {
-				t.Errorf("allowlisted %q vets %s, which bd does not declare for it", path, f)
-			}
-		}
-		if path == "release-if-current" {
-			continue
-		}
-		res := resolveBdSplitCommand(strings.Fields(path), "/scope")
-		if res.refusal != "" || res.path != path {
-			t.Errorf("allowlisted %q did not resolve to itself: path=%q refusal=%q", path, res.path, res.refusal)
-		}
-		// Each vetted flag parses; each unvetted one of the command is refused.
-		for _, f := range bdflags.CommandFlagSpecs(path) {
-			argv := append(strings.Fields(path), f.Long)
-			if f.TakesValue {
-				argv = append(argv, "v")
-			}
-			vetted := (cmd.only == nil || slices.Contains(cmd.only, f.Long)) && !slices.Contains(cmd.exclude, f.Long)
-			got := resolveBdSplitCommand(argv, "/scope")
-			if vetted && got.refusal != "" {
-				t.Errorf("vetted flag %s of %q was refused: %s", f.Long, path, got.refusal)
-			}
-			if !vetted && got.refusal == "" {
-				t.Errorf("unvetted flag %s of %q was accepted", f.Long, path)
-			}
-		}
-	}
-	for alias, target := range bdflags.CommandAliases() {
-		mapped, allowed := bdSplitAllowedAliases[alias]
-		_, refused := bdSplitRefusedAliases[alias]
-		switch {
-		case allowed && refused:
-			t.Errorf("alias %q is both allowed and refused", alias)
-		case allowed:
-			if mapped != target {
-				t.Errorf("alias %q maps to %q, but bd runs it as %q", alias, mapped, target)
-			}
-			if _, ok := bdSplitAllowlist[mapped]; !ok {
-				t.Errorf("alias %q maps to %q, which is not allowlisted", alias, mapped)
-			}
-			if res := resolveBdSplitCommand(strings.Fields(alias), "/scope"); res.refusal != "" || res.path != target {
-				t.Errorf("allowed alias %q resolved to %q (%q)", alias, res.path, res.refusal)
-			}
-		case refused:
-			if res := resolveBdSplitCommand(strings.Fields(alias), "/scope"); res.refusal == "" {
-				t.Errorf("refused alias %q resolved to %q", alias, res.path)
-			}
-		default:
-			t.Errorf("alias %q (of %q) has no split-city decision", alias, target)
-		}
+		})
 	}
 	for alias := range bdSplitAllowedAliases {
 		if _, ok := bdflags.CommandAliases()[alias]; !ok {
-			t.Errorf("allowed alias %q is not in the inventory", alias)
+			t.Errorf("allowed alias %q is not in any inventory", alias)
 		}
 	}
 	for alias := range bdSplitRefusedAliases {
 		if _, ok := bdflags.CommandAliases()[alias]; !ok {
-			t.Errorf("refused alias %q is not in the inventory", alias)
+			t.Errorf("refused alias %q is not in any inventory", alias)
+		}
+	}
+}
+
+// declaredInSomeInventory reports whether some inventory declares long on path.
+func declaredInSomeInventory(path, long string) bool {
+	for _, inv := range bdflags.Inventories() {
+		if inv.Command(path) == nil {
+			continue
+		}
+		for _, f := range inv.Flags(path) {
+			if "--"+f.Name == long {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bdFlagSampleValue is a value pflag accepts for f's type.
+func bdFlagSampleValue(f bdflags.InventoryFlag) string {
+	switch f.Type {
+	case "int", "int64":
+		return "1"
+	case "float64":
+		return "1.5"
+	case "duration":
+		return "1h"
+	default:
+		return "v"
+	}
+}
+
+// TestGcBdSplitRefusesEveryRedirectFlag: every flag in the inventories whose
+// name has path/dir/repo/db/server/remote shape is either refused as a store
+// redirect or reviewed as one that is not, and every refused redirect is
+// refused wherever it appears on an allowlisted command.
+func TestGcBdSplitRefusesEveryRedirectFlag(t *testing.T) {
+	shape := regexp.MustCompile(`(?i)(path|dir|repo|db|database|server|remote|url|host|port|socket|profile|global|backend|file|output|input|prefix|jsonl|token|export)`)
+	for _, inv := range bdflags.Inventories() {
+		for _, path := range inv.Paths() {
+			for _, f := range inv.Flags(path) {
+				long := "--" + f.Name
+				if !shape.MatchString(f.Name) {
+					continue
+				}
+				if _, allowed := bdSplitAllowlist[path]; !allowed && path != "" {
+					continue // a refused command is refused with every flag it has
+				}
+				_, refused := bdSplitRedirectFlags[long]
+				_, reviewed := bdSplitReviewedPathFlags[long]
+				if refused == reviewed && !strings.HasPrefix(f.Name, "proxied-server-") {
+					t.Errorf("%s: flag %s of %q has path/store shape and no decision (refuse it in bdSplitRedirectFlags or review it in bdSplitReviewedPathFlags)", inv.Name, long, path)
+				}
+				if strings.HasPrefix(f.Name, "proxied-server-") && bdSplitAllowlist[path].only == nil && bdSplitAllowlist[path].why != "" {
+					t.Errorf("%s: %q vets every flag, including %s", inv.Name, path, long)
+				}
+			}
+		}
+		for path := range bdSplitAllowlist {
+			if inv.Command(path) == nil {
+				continue
+			}
+			for _, f := range inv.Flags(path) {
+				long := "--" + f.Name
+				if _, refused := bdSplitRedirectFlags[long]; !refused {
+					continue
+				}
+				argv := append(strings.Fields(path), long)
+				if f.TakesValue() {
+					argv = append(argv, "v")
+				}
+				if res := resolveBdSplitCommand(inv, argv, "/scope"); res.refusal == "" {
+					t.Errorf("%s: redirect flag %s on %q was accepted", inv.Name, long, path)
+				}
+			}
+		}
+	}
+	for _, argv := range [][]string{{"-C", "/elsewhere", "update", "a", "--status", "open"}, {"create", "--repo", "x", "--title", "t"}, {"gate", "create", "--repo", "x", "--blocks", "a"}, {"dolt", "push", "--remote", "x"}, {"--db", "x", "list"}} {
+		for _, inv := range bdflags.Inventories() {
+			if res := resolveBdSplitCommand(inv, argv, "/scope"); res.refusal == "" {
+				t.Errorf("%s: gc bd %s was accepted", inv.Name, strings.Join(argv, " "))
+			}
 		}
 	}
 }
@@ -232,7 +322,7 @@ func TestGcBdImportSkipInfraWritesAWorkOnlyCopy(t *testing.T) {
 	read := func(string) (beads.Bead, bdReadResult) { return beads.Bead{}, bdReadNotFound }
 
 	for _, argv := range [][]string{{"import", "a.jsonl", "--skip-infra"}, {"import", "--skip-infra", "-i", "a.jsonl"}, {"import", "--input=a.jsonl", "--skip-infra"}} {
-		g := bdClassFlipGuard(splitGuardTestCity(), scope, argv, bdClassGuardDeps{read: read})
+		g := bdClassFlipGuard(splitGuardTestCity(), scope, argv, splitTestDeps(nil, read))
 		if g.refusal != "" {
 			t.Fatalf("%v refused: %s", argv, g.refusal)
 		}
@@ -259,7 +349,7 @@ func TestGcBdImportSkipInfraWritesAWorkOnlyCopy(t *testing.T) {
 		}
 	}
 
-	g := bdClassFlipGuard(splitGuardTestCity(), scope, []string{"import", "-", "--skip-infra"}, bdClassGuardDeps{stdin: bytes.NewBufferString(archive), read: read})
+	g := bdClassFlipGuard(splitGuardTestCity(), scope, []string{"import", "-", "--skip-infra"}, splitTestDeps(bytes.NewBufferString(archive), read))
 	if g.refusal != "" || g.stdin == nil {
 		t.Fatalf("stdin import: refusal=%q stdin=%v", g.refusal, g.stdin)
 	}
@@ -282,4 +372,16 @@ func slicesContainsString(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// splitTestDeps are guard deps for a split-city unit test: the pinned bd 1.3.2,
+// no bead held by the binding, no template beads.
+func splitTestDeps(stdin io.Reader, read func(string) (beads.Bead, bdReadResult)) bdClassGuardDeps {
+	return bdClassGuardDeps{
+		stdin:     stdin,
+		version:   func() (string, error) { return "bd version 1.3.2 (dev)\n", nil },
+		read:      read,
+		held:      func(string) (bool, error) { return false, nil },
+		templates: func() ([]beads.Bead, error) { return nil, nil },
+	}
 }

@@ -23,7 +23,7 @@ func bdParityWrites(log string) []string {
 			continue
 		}
 		switch verb, _ := bdRelocatedClassVerbOf(strings.Fields(argv)); verb {
-		case "show", "list", "query":
+		case "show", "list", "query", "version":
 			continue
 		}
 		writes = append(writes, argv)

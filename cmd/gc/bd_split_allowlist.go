@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -21,26 +17,31 @@ import (
 // On a split city `gc bd` is an ALLOWLIST. bd writes whatever it is told into
 // the work store, and a bead that lands there with an infrastructure class is
 // stranded: every later routed gc command refuses until the fleet is stopped
-// and the row repaired. A denylist of the verbs that can do that kept growing
-// with every review, so the owner decided the other way round: gc bd forwards
-// only the (verb, subverb) pairs in bdSplitAllowlist, each with a vetted flag
-// set, parsed exactly as bd's pflag parses them (bdflags.ParseArgs). Anything
-// else — an unknown verb, an alias that is not explicitly mapped, a subverb, a
-// flag, or a positional shape the guard cannot judge — is refused with a
-// pointer to the gc-native command. The verbs that can change a bead's class
-// carry a judge built on the one class-must-not-flip guard
-// (coordclass.CheckFlip).
+// and the row repaired. gc bd forwards only the command paths in
+// bdSplitAllowlist, each with a vetted flag set; anything else is refused with
+// a pointer to the gc-native command.
+//
+// The command gc judges is the command bd runs. gc reads the version of the bd
+// it is about to run, picks the pinned inventory of exactly that build
+// (internal/bdflags/inventory, dumped from bd's own cobra tree, hidden flags
+// included) and refuses any other build. It then resolves the argv with a
+// mirror of that cobra tree under the cobra and pflag versions bd uses, so
+// cobra's subcommand pre-scan and pflag's flag parse are bd's own. It also
+// refuses an argv whose cobra reading and pflag reading disagree about which
+// tokens name the command, and any short-flag cluster ending in a value flag
+// that takes the next token (cobra's pre-scan and pflag read those
+// differently).
+//
+// The mutating commands carry judges built on the one class-must-not-flip
+// guard (coordclass.CheckFlip) and on the cross-store edge rule: an edge's
+// every endpoint must be a bead of this work store that no class binding
+// holds.
 //
 // Single-store cities never reach any of this: storeClassHolds answers nil
 // there and gc bd forwards argv unchanged.
-//
-// TestGcBdSplitAllowlistDecidesEveryCommand holds every command path and alias
-// in the pinned bd inventory (internal/bdflags/commands_gen.go) to a decision
-// here: allowlisted, or refused with a stated alternative. The docs list the
-// allowlist in docs/runbooks/split-storage-classes.md ("gc bd on split
-// cities"), which TestGcBdSplitAllowlistIsDocumented keeps in step.
 
-// bdSplitJudge decides an allowlisted command that can change a bead's class.
+// bdSplitJudge decides an allowlisted command that can change a bead's class
+// or write an edge.
 type bdSplitJudge func(in bdClassGuardInput) bdClassGuard
 
 // bdSplitCommand is one vetted command path.
@@ -50,11 +51,8 @@ type bdSplitCommand struct {
 	// vets every flag bd declares for the command except those in exclude.
 	only    []string
 	exclude []string
-	// globals are global flags this command additionally vets beyond
-	// bdSplitVettedGlobals (init's --db, which names the database it creates).
-	globals []string
 	// judge, when set, decides the command; nil means it writes no field
-	// coordclass.Classify reads.
+	// coordclass.Classify reads and no edge.
 	judge bdSplitJudge
 	// why says what makes the command safe to forward.
 	why string
@@ -70,50 +68,49 @@ const (
 // bdSplitAllowlist is every command path gc bd forwards on a split city.
 var bdSplitAllowlist = map[string]bdSplitCommand{
 	// Reads.
-	"show":               {why: "read"},
-	"list":               {why: "read (the relocated-class read guard runs first)"},
-	"ready":              {why: "read (refused earlier by the relocated-class read guard unless overridden)"},
-	"search":             {why: "read"},
-	"query":              {why: "read (the relocated-class read guard runs first)"},
-	"count":              {why: "read"},
-	"children":           {why: "read"},
-	"blocked":            {why: "read"},
-	"stale":              {why: "read"},
-	"status":             {why: "read"},
-	"statuses":           {why: "read"},
-	"types":              {why: "read"},
-	"where":              {why: "read"},
-	"info":               {why: "read"},
-	"context":            {why: "read"},
-	"version":            {why: "read"},
-	"help":               {why: "help text"},
-	"human":              {why: "help text"},
-	"prime":              {why: "prints workflow context"},
-	"history":            {why: "read"},
-	"graph":              {why: "read"},
-	"export":             {why: "writes JSONL out of the ledger"},
-	"state":              {why: "read"},
-	"comments":           {why: "lists comments"},
-	"comments list":      {why: "lists comments"},
-	"state list":         {why: "read"},
-	"label list":         {why: "read"},
-	"label list-all":     {why: "read"},
-	"dep list":           {why: "read"},
-	"dep tree":           {why: "read"},
-	"dep cycles":         {why: "read"},
-	"mol current":        {why: "read (binding residents are refused by the by-id door)"},
-	"mol show":           {why: "read"},
-	"mol progress":       {why: "read"},
-	"formula list":       {why: "read"},
-	"formula show":       {why: "read"},
-	"gate list":          {why: "read"},
-	"config get":         {why: "read"},
-	"config list":        {why: "read"},
-	"config show":        {why: "read"},
-	"backup status":      {why: "read"},
-	"dolt status":        {why: "read"},
-	"dolt show":          {why: "read"},
-	"release-if-current": {why: "gc's own verb: a conditional assignee release, parsed and served by gc"},
+	"show":           {why: "read"},
+	"list":           {why: "read (the relocated-class read guard runs first)"},
+	"ready":          {why: "read (refused earlier by the relocated-class read guard unless overridden)"},
+	"search":         {why: "read"},
+	"query":          {why: "read (the relocated-class read guard runs first)"},
+	"count":          {why: "read"},
+	"children":       {why: "read"},
+	"blocked":        {why: "read"},
+	"stale":          {why: "read"},
+	"status":         {why: "read"},
+	"statuses":       {why: "read"},
+	"types":          {why: "read"},
+	"where":          {why: "read"},
+	"info":           {why: "read"},
+	"context":        {why: "read"},
+	"version":        {why: "read"},
+	"help":           {why: "help text"},
+	"human":          {why: "help text"},
+	"prime":          {why: "prints workflow context"},
+	"history":        {why: "read"},
+	"graph":          {why: "read"},
+	"export":         {why: "writes JSONL out of the ledger"},
+	"state":          {why: "read"},
+	"comments":       {why: "lists comments"},
+	"comments list":  {why: "lists comments"},
+	"state list":     {why: "read"},
+	"label list":     {why: "read"},
+	"label list-all": {why: "read"},
+	"dep list":       {why: "read"},
+	"dep tree":       {why: "read"},
+	"dep cycles":     {why: "read"},
+	"mol current":    {why: "read (binding residents are refused by the by-id door)"},
+	"mol show":       {why: "read"},
+	"mol progress":   {why: "read"},
+	"formula list":   {why: "read"},
+	"formula show":   {why: "read"},
+	"gate list":      {why: "read"},
+	"config get":     {why: "read"},
+	"config list":    {why: "read"},
+	"config show":    {why: "read"},
+	"backup status":  {why: "read"},
+	"dolt status":    {why: "read"},
+	"dolt show":      {why: "read"},
 
 	// Writes that touch no field Classify reads.
 	"close":        {why: "status and close reason"},
@@ -129,19 +126,20 @@ var bdSplitAllowlist = map[string]bdSplitCommand{
 	"reclaim":      {why: "returns stale in_progress beads to ready"},
 	"defer":        {why: "status and defer_until"},
 	"undefer":      {why: "status and defer_until"},
-	"link":         {why: "a dependency edge (its -t is the edge type)"},
-	"dep add":      {why: "a dependency edge (its -t is the edge type)"},
+	"link":         {judge: judgeBdEdgeVerb, why: "a dependency edge (its -t is the edge type); both endpoints must be work-store beads"},
+	"dep add":      {judge: judgeBdEdgeVerb, why: "a dependency edge (its -t is the edge type); every endpoint must be a work-store bead; --file is refused"},
 	"dep remove":   {why: "a dependency edge"},
-	"dep relate":   {why: "a relates-to edge"},
+	"dep relate":   {judge: judgeBdEdgeVerb, why: "a relates-to edge; both endpoints must be work-store beads"},
 	"dep unrelate": {why: "a relates-to edge"},
 	"promote":      {why: "moves a wisp row to the durable table with its type, labels and metadata unchanged"},
-	"duplicate":    {why: "closes the bead and records an edge"},
-	"supersede":    {why: "closes the bead and records an edge"},
+	"duplicate":    {judge: judgeBdEdgeVerb, why: "closes the bead and records an edge; both endpoints must be work-store beads"},
+	"supersede":    {judge: judgeBdEdgeVerb, why: "closes the bead and records an edge; both endpoints must be work-store beads"},
 	"purge":        {why: "deletes closed ephemeral beads (the core reaper)"},
 	"prune":        {why: "deletes old closed beads (the core reaper)"},
-	"gate create":  {why: "mints a type=gate bead (work class); its --type is the gate's await type, not the bead type"},
+	"gate create":  {judge: judgeBdEdgeVerb, why: "mints a type=gate bead (work class); its --type is the gate's await type; the bead it --blocks must be a work-store bead"},
 	"gate resolve": {why: "closes a gate"},
 	"gate check":   {why: "resolves and escalates gates (the core gate-sweep order)"},
+	"mol wisp gc":  {why: "closes abandoned wisps and purges closed ones in the work store (the deacon prompt); it mints nothing and rewrites no class field"},
 	"mol burn":     {why: "closes or deletes a molecule (gastown patrols); binding residents are refused by the by-id door"},
 	"backup sync":  {why: "pushes the store to its backup; writes nothing into the store"},
 	"backup init":  {why: "configures the backup destination (the dolt pack's backup order)"},
@@ -149,11 +147,10 @@ var bdSplitAllowlist = map[string]bdSplitCommand{
 	"dolt stop":    {why: "stops the scope's server"},
 	"dolt push":    {why: "pushes to the remote; writes nothing into the store"},
 	"dolt commit":  {why: "commits the working set already written"},
-	"config set":   {why: "configuration, not bead rows"},
+	"config set":   {judge: judgeBdConfigSet, why: "configuration, not bead rows; only the keys in bdSplitConfigSetKeys"},
 	"init": {
-		only:    []string{"--prefix", "--non-interactive", "--skip-hooks", "--skip-agents", "--init-if-missing", "--recreate-missing"},
-		globals: []string{"--db"},
-		why:     "creates an empty store (the journal-corruption runbook); --from-jsonl and the remote/reset flags are not vetted",
+		only: []string{"--prefix", "--non-interactive", "--skip-hooks", "--skip-agents", "--init-if-missing", "--recreate-missing"},
+		why:  "creates an empty store (the journal-corruption runbook); --from-jsonl, the backend/server/remote flags and the global --db are not vetted",
 	},
 
 	// Writes judged by the class-must-not-flip guard.
@@ -216,7 +213,6 @@ var bdSplitRefusals = map[string]bdSplitRefusal{
 	"mol pour":          {"it instantiates every step of a formula or proto, and bd copies each step's type, labels and metadata onto the beads it mints", bdSplitAltSling},
 	"mol bond":          {"it instantiates a formula or proto into an existing molecule", bdSplitAltSling},
 	"mol":               {"molecule maintenance outside the patrol verbs is not vetted", bdSplitAltSling},
-	"mol wisp gc":       {"bulk wisp cleanup is not vetted", bdSplitAltRequest},
 	"mol wisp list":     {"not vetted", bdSplitAltRequest},
 	"backup restore":    {"it replaces the work store with the backup, and a backup taken before the split brings back every infrastructure row of that time; gc cannot verify a backup's age against the split", bdSplitAltRestore},
 	"backup remove":     {"not vetted", bdSplitAltRequest},
@@ -299,12 +295,85 @@ var bdSplitRefusals = map[string]bdSplitRefusal{
 	"logout":            {"not vetted", bdSplitAltRequest},
 	"profile":           {"not vetted", bdSplitAltRequest},
 	"whoami":            {"not vetted", bdSplitAltRequest},
+	"codex-hook":        {"a hidden editor hook", bdSplitAltRequest},
+	"cursor-hook":       {"a hidden editor hook", bdSplitAltRequest},
+	"db-proxy-child":    {"a hidden database proxy process", bdSplitAltRequest},
+	"send-metrics":      {"a hidden metrics sender", bdSplitAltRequest},
+	"migrate-issues":    {"a hidden spelling of migrate issues, which is not vetted", bdSplitAltBulk},
+	"__gw-credential":   {"a hidden enterprise credential helper", bdSplitAltRequest},
+	"observer":          {"enterprise observer administration is not vetted", bdSplitAltRequest},
 }
 
-// bdSplitRefusedGlobals are bd's global flags that point bd at a store other
-// than the one gc resolved and judged; they are refused on a split city.
-var bdSplitRefusedGlobals = map[string]bool{
-	"--db": true, "--database": true, "--profile": true, "--server-url": true, "--global": true,
+// bdSplitRedirectFlags are the flags, on any command, that point bd at a
+// store, workspace, repo or server other than the one gc resolved and judged.
+// They are refused on a split city wherever they appear.
+// TestGcBdSplitRefusesEveryRedirectFlag holds every path/dir/repo/db/server/
+// remote-shaped flag of the inventory to a decision: here, or in
+// bdSplitReviewedPathFlags.
+var bdSplitRedirectFlags = map[string]string{
+	"--directory":      "it replaces BEADS_DIR, so bd opens a different workspace",
+	"--db":             "it opens a different database",
+	"--database":       "it opens a different database",
+	"--profile":        "a named storage profile can name a different store",
+	"--server-url":     "it runs against another bd serve",
+	"--global":         "it uses the shared global database",
+	"--repo":           "it targets a different repository",
+	"--remote":         "it names a remote, outside the store gc judged",
+	"--search-path":    "it reads formulas from paths gc did not resolve",
+	"--backend":        "it selects a different storage backend",
+	"--server":         "it selects server mode",
+	"--server-host":    "it names a server",
+	"--server-port":    "it names a server",
+	"--server-socket":  "it names a server",
+	"--server-user":    "it names a server",
+	"--server-tls":     "it names a server",
+	"--shared-server":  "it selects a shared server",
+	"--team-server":    "it selects a team server",
+	"--pg-url":         "it names a database",
+	"--mysql-url":      "it names a database",
+	"--mysql-database": "it names a database",
+	"--sqlite-path":    "it names a database",
+	"--from-jsonl":     "it imports rows unjudged",
+	"--discard-remote": "it replaces remote history",
+	"--destroy-token":  "it authorizes destroying a store",
+}
+
+// bdSplitReviewedPathFlags are path-shaped flags that do NOT redirect the
+// store, and why. TestGcBdSplitRefusesEveryRedirectFlag requires every
+// path/dir/repo/db/server/remote-shaped flag name in the inventory to be in
+// one of the two maps (or a proxied-server init flag, all of which init's
+// vetted set excludes).
+var bdSplitReviewedPathFlags = map[string]string{
+	"--body-file":        "reads the description text from a file",
+	"--description-file": "reads the description text from a file",
+	"--design-file":      "reads the design text from a file",
+	"--reason-file":      "reads the close reason from a file",
+	"--file":             "an input file: refused by the judge on create and dep add, judged on batch, comment text elsewhere",
+	"--from-file":        "reads the ids to delete from a file",
+	"--input":            "the import source, judged",
+	"--output":           "where export writes its JSONL",
+	"--mem-profile":      "where bd writes a heap profile",
+	"--cpu-profile":      "turns on CPU profiling",
+	"--sandbox":          "disables auto-push",
+	"--export":           "prime output mode",
+	"--direction":        "dep traversal direction",
+	"--show-all-paths":   "dep tree output",
+	"--root-only":        "mol wisp: create only the root",
+	"--no-auto":          "close: skip auto-close",
+	"--event-target":     "an event bead's target field",
+	"--prefix":           "an id or label prefix (label remove, cook, init)",
+	"--agents-file":      "init agent setup (not vetted for init)",
+	"--agents-profile":   "init agent setup (not vetted for init)",
+	"--proxied-server":   "init server mode (not vetted for init)",
+}
+
+// bdSplitConfigSetKeys are the config keys `gc bd config set` may write on a
+// split city. Every other key is refused: storage-class.*, routing.*, dolt.*,
+// backup.*, sync.*, federation.* and the like redirect writes or change what
+// create does.
+var bdSplitConfigSetKeys = map[string]string{
+	"types.custom": "the custom bead types the store accepts (troubleshooting.md)",
+	"types.infra":  "which types list hides without --include-infra (troubleshooting.md)",
 }
 
 // bdSplitRefusalFor returns the decision for a path that is not allowlisted:
@@ -318,93 +387,130 @@ func bdSplitRefusalFor(path string) (bdSplitRefusal, bool) {
 	return r, ok
 }
 
-// bdSplitFlagSpecs returns the vetted flag specs for an allowlisted command:
-// the vetted globals, the command's vetted flags, and gc's own extras.
-func bdSplitFlagSpecs(path string, cmd bdSplitCommand) []bdflags.FlagSpec {
-	var specs []bdflags.FlagSpec
-	for _, g := range bdflags.GlobalFlagSpecs() {
-		if bdSplitRefusedGlobals[g.Long] && !slices.Contains(cmd.globals, g.Long) {
-			continue
-		}
-		specs = append(specs, g)
+// bdSplitVetted reports whether long is a vetted flag of cmd.
+func bdSplitVetted(cmd bdSplitCommand, local map[string]bool, long string) (bool, string) {
+	if why, refused := bdSplitRedirectFlags[long]; refused {
+		return false, why
 	}
-	for _, f := range bdflags.CommandFlagSpecs(path) {
-		if cmd.only != nil && !slices.Contains(cmd.only, f.Long) {
-			continue
-		}
-		if slices.Contains(cmd.exclude, f.Long) {
-			continue
-		}
-		specs = append(specs, f)
+	if !local[long] {
+		return true, "" // a global flag, not a redirect
 	}
-	return specs
+	if cmd.only != nil && !slices.Contains(cmd.only, long) {
+		return false, "not vetted for this command"
+	}
+	if slices.Contains(cmd.exclude, long) {
+		return false, "not vetted for this command"
+	}
+	return true, ""
+}
+
+// bdSplitArgs are an allowlisted command's parsed flags and positionals.
+type bdSplitArgs struct {
+	flags       map[string][]string
+	positionals []string
+}
+
+// Values returns the values given to the long flag (a slice flag's elements,
+// as pflag split them).
+func (a bdSplitArgs) Values(long string) []string { return a.flags[long] }
+
+// Last returns the long flag's value and whether it was given.
+func (a bdSplitArgs) Last(long string) (string, bool) {
+	v := a.flags[long]
+	if len(v) == 0 {
+		return "", false
+	}
+	return v[len(v)-1], true
+}
+
+// Bool reports a bool flag's value.
+func (a bdSplitArgs) Bool(long string) bool {
+	v, ok := a.Last(long)
+	return ok && v == "true"
 }
 
 // bdSplitResolution is a gc bd argv resolved against the allowlist.
 type bdSplitResolution struct {
 	path    string
 	cmd     bdSplitCommand
-	args    bdflags.ParsedArgs
+	args    bdSplitArgs
 	refusal string
 }
 
-// resolveBdSplitCommand resolves bdArgs to an allowlisted command, parsing the
-// whole argv as bd's pflag would, or returns the refusal.
-func resolveBdSplitCommand(bdArgs []string, scopeRoot string) bdSplitResolution {
+// resolveBdSplitCommand resolves bdArgs exactly as the bd build inv describes
+// would, and checks the result against the allowlist.
+func resolveBdSplitCommand(inv *bdflags.Inventory, bdArgs []string, scopeRoot string) bdSplitResolution {
 	refuse := func(format string, a ...any) bdSplitResolution {
 		return bdSplitResolution{refusal: fmt.Sprintf(format, a...)}
 	}
-	globals := bdflags.GlobalFlagSpecs()
-	// Leading global flags, then the verb.
-	i := 0
-	for i < len(bdArgs) && strings.HasPrefix(bdArgs[i], "-") && bdArgs[i] != "-" {
-		if bdArgs[i] == "--" {
-			return refuse("gc bd: refused on this split city: `--` before the verb leaves the verb undecidable. Nothing was written.")
-		}
-		width, err := bdflags.FlagTokenWidth(globals, bdArgs[i:])
-		if err != nil {
-			return refuse("gc bd: refused on this split city: %v before the verb; gc forwards only vetted commands and flags here (%s). Nothing was written.", err, bdSplitAltRequest)
-		}
-		i += width
+	res, err := inv.Resolve(bdArgs)
+	if err != nil {
+		return refuse("gc bd: refused on this split city: bd would reject this argv (%v), and gc forwards only vetted commands and flags here. Nothing was written.", err)
 	}
-	leading := bdArgs[:i]
-	if i == len(bdArgs) {
-		// No verb: bd prints its help or version.
-		if _, err := bdflags.ParseArgs(bdSplitGlobalsOnly(), leading); err != nil {
-			return refuse("gc bd: refused on this split city: %v. Nothing was written.", err)
-		}
-		return bdSplitResolution{path: ""}
+	path := res.Path
+	label := path
+	if label == "" {
+		label = "(no command)"
 	}
-	verb := bdArgs[i]
-	path := verb
-	rest := bdArgs[i+1:]
-	if target, aliased := bdflags.CommandAliases()[path]; aliased {
-		mapped, ok := bdSplitAllowedAliases[path]
-		if !ok {
-			return refuse("gc bd %s: refused on this split city: %s is %s. gc forwards only explicitly vetted aliases here. Nothing was written.", path, path, bdSplitRefusedAliases[path])
-		}
-		_ = target
-		path = mapped
+	if res.DisableFlagParsing {
+		r, _ := bdSplitRefusalFor(path)
+		return refuse("gc bd %s: refused on this split city: bd does not parse this command's flags, so gc cannot judge them; %s. Instead: %s. Nothing was written.", label, r.why, r.alt)
 	}
-	if !bdflags.IsCommandPath(path) && path != "release-if-current" {
-		return refuse("gc bd %s: refused on this split city: %q is not a bd command gc knows, and gc forwards only vetted commands here (%s). Nothing was written.", verb, verb, bdSplitAltRequest)
-	}
-	// Descend into subcommands: the subverb must follow its parent directly.
-	for len(bdflags.SubcommandsOf(path)) > 0 && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		candidate := path + " " + rest[0]
-		if mapped, aliased := bdSplitAllowedAliases[candidate]; aliased {
-			path, rest = mapped, rest[1:]
-			continue
-		}
-		if why, aliased := bdSplitRefusedAliases[candidate]; aliased {
-			return refuse("gc bd %s: refused on this split city: %s is %s. gc forwards only explicitly vetted aliases here. Nothing was written.", candidate, rest[0], why)
-		}
-		if !bdflags.IsCommandPath(candidate) {
+	tokens := strings.Fields(path)
+	// The words that name the command, as pflag reads the argv (flag values
+	// consumed, interspersed positionals kept in order). cobra's lookup and
+	// pflag must agree: the leading pflag positionals must spell bd's command
+	// path word for word (a name or an alias of each command on it). They
+	// disagree when a flag value spells a command name, or a short-flag run's
+	// last flag takes the next token.
+	specs := inv.FlagSpecs(path)
+	for _, tok := range bdArgs {
+		if tok == "--" {
 			break
 		}
-		path, rest = candidate, rest[1:]
+		if bdflags.ClusterTakesNextToken(specs, tok) {
+			return refuse("gc bd %s: refused on this split city: the short-flag run %q ends in a flag that takes the next argument, which bd's command lookup and its flag parser read differently. Spell the value flag on its own (-X value). Nothing was written.", label, tok)
+		}
+	}
+	parsed, err := bdflags.ParseArgs(specs, bdArgs)
+	if err != nil {
+		return refuse("gc bd %s: refused on this split city: %v. Nothing was written.", label, err)
+	}
+	if len(parsed.Positionals) < len(tokens) {
+		return refuse("gc bd %s: refused on this split city: bd's command lookup and its flag parser disagree about which arguments name the command. Nothing was written.", label)
+	}
+	for i, word := range parsed.Positionals[:len(tokens)] {
+		cmdPath := strings.Join(tokens[:i+1], " ")
+		if word == tokens[i] {
+			continue
+		}
+		if !slices.Contains(inv.Command(cmdPath).Aliases, word) {
+			return refuse("gc bd %s: refused on this split city: bd's command lookup and its flag parser disagree about which arguments name the command (%q is read as the command by one and as an argument by the other). Nothing was written.", label, word)
+		}
+		if res.Help {
+			continue
+		}
+		alias := strings.TrimSpace(strings.Join(tokens[:i], " ") + " " + word)
+		if mapped, ok := bdSplitAllowedAliases[alias]; ok && mapped == cmdPath {
+			continue
+		}
+		why, known := bdSplitRefusedAliases[alias]
+		if !known {
+			why = "an alias gc has not vetted"
+		}
+		return refuse("gc bd %s: refused on this split city: %q is %s. gc forwards only explicitly vetted aliases here. Nothing was written.", alias, word, why)
+	}
+	if res.Help {
+		// bd prints the command's help and runs nothing.
+		return bdSplitResolution{path: path, args: bdSplitArgs{flags: res.Flags, positionals: res.Positionals}}
 	}
 	cmd, allowed := bdSplitAllowlist[path]
+	if path == "" {
+		if len(res.Positionals) > 0 {
+			return refuse("gc bd %s: refused on this split city: %q is not a bd command. Nothing was written.", res.Positionals[0], res.Positionals[0])
+		}
+		cmd, allowed = bdSplitCommand{why: "bd's root prints its help or version"}, true
+	}
 	if !allowed {
 		r, decided := bdSplitRefusalFor(path)
 		if !decided {
@@ -412,42 +518,19 @@ func resolveBdSplitCommand(bdArgs []string, scopeRoot string) bdSplitResolution 
 		}
 		return refuse("gc bd %s: refused on this split city: %s. Instead: %s. Nothing was written.", path, r.why, strings.ReplaceAll(r.alt, "the scope", scopeRoot))
 	}
-	if subs := bdflags.SubcommandsOf(path); len(subs) > 0 {
-		// A subcommand name anywhere in the remaining positionals means bd may
-		// run that subcommand (cobra finds it past interleaved flags); the
-		// guard would be judging a different command.
-		parsed, err := bdflags.ParseArgs(bdSplitFlagSpecs(path, cmd), rest)
-		if err == nil {
-			for _, p := range parsed.Positionals {
-				if slices.Contains(subs, p) {
-					return refuse("gc bd %s: refused on this split city: %q names a subcommand of %s; put it directly after %s, with no flag in between. Nothing was written.", path, p, path, path)
-				}
-			}
+	local := map[string]bool{}
+	for _, f := range inv.Command(path).Local {
+		local["--"+f.Name] = true
+	}
+	for _, long := range slices.Sorted(maps.Keys(res.Flags)) {
+		if ok, why := bdSplitVetted(cmd, local, long); !ok {
+			return refuse("gc bd %s: refused on this split city: %s is not allowed here (%s). gc forwards only vetted flags for %s (%s). Nothing was written.", label, long, why, label, bdSplitAltRequest)
 		}
 	}
-	args := append(slices.Clone(leading), rest...)
-	if path == "import" {
-		args, _ = stripSkipInfraFlag(args)
-	}
-	parsed, err := bdflags.ParseArgs(bdSplitFlagSpecs(path, cmd), args)
-	if err != nil {
-		return refuse("gc bd %s: refused on this split city: %v — gc forwards only vetted flags for %s here (%s). Nothing was written.", path, err, path, bdSplitAltRequest)
-	}
-	return bdSplitResolution{path: path, cmd: cmd, args: parsed}
+	return bdSplitResolution{path: path, cmd: cmd, args: bdSplitArgs{flags: res.Flags, positionals: res.Positionals}}
 }
 
-// bdSplitGlobalsOnly are the vetted global flags.
-func bdSplitGlobalsOnly() []bdflags.FlagSpec {
-	var specs []bdflags.FlagSpec
-	for _, g := range bdflags.GlobalFlagSpecs() {
-		if !bdSplitRefusedGlobals[g.Long] {
-			specs = append(specs, g)
-		}
-	}
-	return specs
-}
-
-// bdReadResult is what a pre-read of the bead a write lands on found.
+// bdReadResult is what a pre-read of a bead found.
 type bdReadResult int
 
 const (
@@ -468,14 +551,22 @@ const (
 type bdClassGuardDeps struct {
 	// stdin is what bd would read; the guard reads it for import - and batch.
 	stdin io.Reader
-	// read returns the bead id resolves to, collision-aware.
+	// version returns `bd version` of the bd gc is about to run.
+	version func() (string, error)
+	// read returns the bead id resolves to in the work store, collision-aware.
 	read func(id string) (beads.Bead, bdReadResult)
+	// held reports whether a class binding holds id (a migrated relic keeps a
+	// work-shaped id).
+	held func(id string) (bool, error)
+	// templates lists the work store's template-labeled beads (bd's legacy
+	// proto lookup for a mol-* name).
+	templates func() ([]beads.Bead, error)
 }
 
 // bdClassGuardInput is everything a judge may consult.
 type bdClassGuardInput struct {
 	path      string
-	args      bdflags.ParsedArgs
+	args      bdSplitArgs
 	bdArgs    []string
 	holds     []coordclass.Class
 	scopeRoot string
@@ -488,10 +579,11 @@ func (in bdClassGuardInput) refuse(format string, a ...any) bdClassGuard {
 
 func (in bdClassGuardInput) pass() bdClassGuard { return bdClassGuard{args: in.bdArgs} }
 
-// bdClassFlipGuard is gc bd's split-city gate: the allowlist, then the judge
-// of the allowlisted command. It runs after the by-id door, which has already
-// served or refused every binding resident. A single-store city passes
-// everything through unchanged (gc's own --skip-infra on import is dropped).
+// bdClassFlipGuard is gc bd's split-city gate: the bd build check, the
+// allowlist, then the allowlisted command's judge. It runs after the by-id
+// door, which has already served or refused every binding resident. A
+// single-store city passes everything through unchanged (gc's own
+// --skip-infra on import is dropped).
 func bdClassFlipGuard(cfg *config.City, scopeRoot string, bdArgs []string, deps bdClassGuardDeps) bdClassGuard {
 	holds := workStoreClassHolds(cfg)
 	if holds == nil {
@@ -501,7 +593,22 @@ func bdClassFlipGuard(cfg *config.City, scopeRoot string, bdArgs []string, deps 
 		}
 		return bdClassGuard{args: bdArgs}
 	}
-	res := resolveBdSplitCommand(bdArgs, scopeRoot)
+	if deps.version == nil {
+		return bdClassGuard{refusal: "gc bd: refused on this split city: gc could not determine which bd build it would run. Nothing was written."}
+	}
+	out, err := deps.version()
+	if err != nil {
+		return bdClassGuard{refusal: fmt.Sprintf("gc bd: refused on this split city: `bd version` failed (%v), so gc cannot tell which commands this bd has. Nothing was written.", err)}
+	}
+	inv, err := bdflags.InventoryFor(out)
+	if err != nil {
+		return bdClassGuard{refusal: fmt.Sprintf("gc bd: refused on this split city: %v. A bd build gc has not inventoried may have commands and flags gc has not vetted; regenerate internal/bdflags/inventory (inventorygen/generate.sh) for it, or run bd directly in %s. Nothing was written.", err, scopeRoot)}
+	}
+	args := bdArgs
+	if verb, _, ok := bdRelocatedClassVerb(bdArgs); ok && verb == "import" {
+		args, _ = stripSkipInfraFlag(bdArgs)
+	}
+	res := resolveBdSplitCommand(inv, args, scopeRoot)
 	if res.refusal != "" {
 		return bdClassGuard{refusal: res.refusal}
 	}
@@ -511,473 +618,6 @@ func bdClassFlipGuard(cfg *config.City, scopeRoot string, bdArgs []string, deps 
 	return res.cmd.judge(bdClassGuardInput{
 		path: res.path, args: res.args, bdArgs: bdArgs, holds: holds, scopeRoot: scopeRoot, bdClassGuardDeps: deps,
 	})
-}
-
-// checkIDs judges a write against every addressed bead. variants are the
-// readings of the one write a bd build might make (see bdUpdateMutation); the
-// write is refused if ANY of them flips the class. A write that touches no
-// field Classify reads passes without a read. Otherwise each id must resolve
-// to exactly one bead — the one bd would write — and that bead is judged; an
-// id that is absent, resolves to a different bead, or cannot be read is
-// refused, because the guard cannot know what the write would do.
-func (in bdClassGuardInput) checkIDs(ids []string, variants ...coordclass.Mutation) bdClassGuard {
-	touches := false
-	for _, m := range variants {
-		touches = touches || m.TouchesClass()
-	}
-	if !touches {
-		return in.pass()
-	}
-	if len(ids) == 0 {
-		return in.refuse("gc bd %s: refused on this split city: a write of a bead's type, labels or metadata is judged against the bead it lands on; name the bead explicitly (bd's id-less form writes the last touched issue, which gc cannot read). Nothing was written.", in.path)
-	}
-	for _, id := range ids {
-		before, result := in.read(id)
-		if refusal := in.readRefusal(id, result); refusal != "" {
-			return in.refuse("%s", refusal)
-		}
-		for _, m := range variants {
-			if flip := coordclass.CheckFlip(before, m.Apply(before), in.holds); flip != nil {
-				return in.refuse("%s", classFlipRefusalText(fmt.Sprintf("gc bd %s %s", in.path, id), flip))
-			}
-		}
-	}
-	return in.pass()
-}
-
-// readRefusal is the refusal for a pre-read that did not find exactly the
-// bead id names, or "".
-func (in bdClassGuardInput) readRefusal(id string, result bdReadResult) string {
-	switch result {
-	case bdReadFound:
-		return ""
-	case bdReadCollision:
-		return fmt.Sprintf("gc bd %s %s: refused on this split city: bd resolves %q to a different bead (a short or partial id), so the write would land on a bead gc did not judge. Name the bead by its full id. Nothing was written.", in.path, id, id)
-	case bdReadNotFound:
-		return fmt.Sprintf("gc bd %s %s: refused on this split city: no bead %q in this store, so gc cannot judge what a type, label or metadata write would do. Nothing was written.", in.path, id, id)
-	default:
-		return fmt.Sprintf("gc bd %s %s: refused on this split city: gc could not read the bead to check that this write leaves its storage class alone. Retry once the store answers. Nothing was written.", in.path, id)
-	}
-}
-
-// judgeBdCreate classifies the bead `create` / `q` would mint.
-func judgeBdCreate(in bdClassGuardInput) bdClassGuard {
-	if len(in.args.Values("--file")) > 0 {
-		return in.refuse("gc bd %s --file: refused on this split city: bd's multi-issue markdown is not classified by gc. Create the beads one at a time with flags. Nothing was written.", in.path)
-	}
-	var shape beads.Bead
-	for _, f := range in.args.Flags {
-		switch f.Long {
-		case "--type":
-			shape.Type = strings.TrimSpace(f.Value)
-		case "--labels", "--label":
-			labels, err := bdLabelFlagValues(f.Value)
-			if err != nil {
-				return in.refuse("gc bd %s: refused: %s %q is not a label list bd can parse (%v). Nothing was written.", in.path, f.Long, f.Value, err)
-			}
-			shape.Labels = append(shape.Labels, labels...)
-		case "--metadata":
-			fields, problem := bdMetadataObject(f.Value)
-			if problem != "" {
-				return in.refuse("gc bd %s: refused: %s. Nothing was written.", in.path, problem)
-			}
-			if shape.Metadata == nil {
-				shape.Metadata = map[string]string{}
-			}
-			maps.Copy(shape.Metadata, fields)
-		case "--graph":
-			if class, parsed := bdRelocatedClassGraphPlanClass(in.scopeRoot, f.Value); parsed && !slices.Contains(in.holds, class) {
-				return in.refuse("gc bd %s --graph: refused on this split city: the plan is %s class, which this store does not hold. Mint it with `%s`. Nothing was written.", in.path, class, coordclass.MintCommand(class))
-			}
-		}
-	}
-	if flip := coordclass.CheckFlip(beads.Bead{}, shape, in.holds); flip != nil {
-		return in.refuse("%s", classFlipRefusalText("gc bd "+in.path, flip))
-	}
-	return in.pass()
-}
-
-// bdMetadataObject decodes an inline --metadata object as bd reads it back.
-func bdMetadataObject(value string) (map[string]string, string) {
-	if strings.HasPrefix(strings.TrimSpace(value), "@") {
-		return nil, "--metadata @file cannot be judged before the write"
-	}
-	var fields beads.StringMap
-	if err := json.Unmarshal([]byte(value), &fields); err != nil {
-		return nil, fmt.Sprintf("--metadata is not an inline JSON object (%v)", err)
-	}
-	return fields, ""
-}
-
-// judgeBdUpdate judges `gc bd update`.
-func judgeBdUpdate(in bdClassGuardInput) bdClassGuard {
-	variants, problem := bdUpdateMutation(in.args)
-	if problem != "" {
-		return in.refuse("gc bd update: refused on this split city: %s. Nothing was written.", problem)
-	}
-	return in.checkIDs(in.args.Positionals, variants...)
-}
-
-// bdUpdateMutation states a parsed `bd update` as the write it makes, in bd's
-// order (labels: replace, add, remove; metadata: merge/set, then unset — see
-// coordclass.Mutation.Apply). `--set-metadata k=null` is stored differently by
-// the bd builds the fleet runs (bd 1.3.2: JSON null, read back absent; 1.3.0
-// Enterprise: the string "null"), so it comes back as two variants and the
-// write must pass both.
-func bdUpdateMutation(args bdflags.ParsedArgs) ([]coordclass.Mutation, string) {
-	var m coordclass.Mutation
-	var nullKeys []string
-	for _, f := range args.Flags {
-		switch f.Long {
-		case "--type":
-			v := strings.TrimSpace(f.Value)
-			m.Type = &v
-		case "--add-label", "--remove-label", "--set-labels":
-			labels, err := bdLabelFlagValues(f.Value)
-			if err != nil {
-				return nil, fmt.Sprintf("%s %q is not a label list bd can parse (%v)", f.Long, f.Value, err)
-			}
-			switch f.Long {
-			case "--remove-label":
-				m.RemoveLabels = append(m.RemoveLabels, labels...)
-			case "--set-labels":
-				m.ReplaceLabels = true
-				m.SetLabels = append(m.SetLabels, labels...)
-			default:
-				m.AddLabels = append(m.AddLabels, labels...)
-			}
-		case "--set-metadata":
-			key, v, ok := strings.Cut(f.Value, "=")
-			if !ok || strings.TrimSpace(key) == "" {
-				return nil, fmt.Sprintf("--set-metadata %q is not key=value", f.Value)
-			}
-			if m.SetMetadata == nil {
-				m.SetMetadata = map[string]string{}
-			}
-			m.SetMetadata[key] = v
-			if v == "null" {
-				nullKeys = append(nullKeys, key)
-			}
-		case "--unset-metadata":
-			m.UnsetMetadata = append(m.UnsetMetadata, f.Value)
-		case "--metadata":
-			fields, problem := bdMetadataObject(f.Value)
-			if problem != "" {
-				return nil, problem
-			}
-			if m.SetMetadata == nil {
-				m.SetMetadata = map[string]string{}
-			}
-			maps.Copy(m.SetMetadata, fields)
-		}
-	}
-	variants := []coordclass.Mutation{m}
-	if len(nullKeys) > 0 {
-		absent := m
-		absent.SetMetadata = maps.Clone(m.SetMetadata)
-		absent.UnsetMetadata = slices.Clone(m.UnsetMetadata)
-		for _, k := range nullKeys {
-			delete(absent.SetMetadata, k)
-			absent.UnsetMetadata = append(absent.UnsetMetadata, k)
-		}
-		variants = append(variants, absent)
-	}
-	return variants, ""
-}
-
-// judgeBdLabelAddRemove judges `label add|remove <id...> <label[,label]>`, which
-// split their label argument on plain commas (no CSV quoting).
-func judgeBdLabelAddRemove(in bdClassGuardInput) bdClassGuard {
-	pos := in.args.Positionals
-	if len(pos) < 2 {
-		return in.refuse("gc bd %s: refused on this split city: expected <id...> <label>. Nothing was written.", in.path)
-	}
-	labels := bdLabelVerbList(pos[len(pos)-1])
-	m := coordclass.Mutation{AddLabels: labels}
-	if in.path == "label remove" {
-		m = coordclass.Mutation{RemoveLabels: labels}
-	}
-	return in.checkIDs(pos[:len(pos)-1], m)
-}
-
-// judgeBdLabelPropagate refuses a class-marker label pushed to a parent's
-// children, whoever they are.
-func judgeBdLabelPropagate(in bdClassGuardInput) bdClassGuard {
-	pos := in.args.Positionals
-	if len(pos) != 2 {
-		return in.refuse("gc bd label propagate: refused on this split city: expected <parent-id> <label>. Nothing was written.")
-	}
-	empty := beads.Bead{}
-	if flip := coordclass.CheckFlip(empty, coordclass.Mutation{AddLabels: bdLabelVerbList(pos[1])}.Apply(empty), in.holds); flip != nil {
-		return in.refuse("%s", classFlipRefusalText("gc bd label propagate "+pos[0], flip))
-	}
-	return in.pass()
-}
-
-// judgeBdTag judges `tag <id> <label>`, which takes its one label trimmed.
-func judgeBdTag(in bdClassGuardInput) bdClassGuard {
-	pos := in.args.Positionals
-	if len(pos) != 2 {
-		return in.refuse("gc bd tag: refused on this split city: expected <id> <label>. Nothing was written.")
-	}
-	return in.checkIDs(pos[:1], coordclass.Mutation{AddLabels: []string{strings.TrimSpace(pos[1])}})
-}
-
-// judgeBdSetState judges `set-state <id> <dimension>=<value>`, which swaps the
-// bead's first <dimension>:* label for <dimension>:<value>.
-func judgeBdSetState(in bdClassGuardInput) bdClassGuard {
-	pos := in.args.Positionals
-	if len(pos) != 2 || !strings.Contains(pos[1], "=") {
-		return in.refuse("gc bd set-state: refused on this split city: expected <id> <dimension>=<value>. Nothing was written.")
-	}
-	id := pos[0]
-	dimension, value, _ := strings.Cut(pos[1], "=")
-	before, result := in.read(id)
-	if refusal := in.readRefusal(id, result); refusal != "" {
-		return in.refuse("%s", refusal)
-	}
-	m := coordclass.Mutation{AddLabels: []string{dimension + ":" + value}}
-	for _, l := range before.Labels {
-		if strings.HasPrefix(l, dimension+":") {
-			m.RemoveLabels = []string{l}
-			break
-		}
-	}
-	if flip := coordclass.CheckFlip(before, m.Apply(before), in.holds); flip != nil {
-		return in.refuse("%s", classFlipRefusalText("gc bd set-state "+id, flip))
-	}
-	return in.pass()
-}
-
-// judgeBdSQL passes a single plain read statement only (sqlReadOnlyProblem).
-func judgeBdSQL(in bdClassGuardInput) bdClassGuard {
-	if len(in.args.Positionals) != 1 {
-		return in.refuse("gc bd sql: refused on this split city: expected exactly one query. Nothing was written.")
-	}
-	if why := sqlReadOnlyProblem(in.args.Positionals[0]); why != "" {
-		return in.refuse("gc bd sql: refused on this split city: %s. Only a single plain read statement (SELECT, SHOW, DESCRIBE, EXPLAIN SELECT), with no comments and no Dolt procedures, passes through gc bd sql here: a raw write can give a work-store bead an infrastructure type or label, which strands it. Use the gc bd verbs, which gc judges, or run bd directly in %s if you have checked what it will write. Nothing was written.", why, in.scopeRoot)
-	}
-	return in.pass()
-}
-
-// judgeBdMolWisp admits the one wisp shape a workflow depends on — the gastown
-// patrols' `gc bd mol wisp <formula> --root-only [--var k=v]...` — and judges,
-// in process, every bead it creates, before anything is written.
-//
-// With --root-only bd creates exactly ONE bead, the molecule root, and its shape
-// does not come from the formula's steps: for a formula, bd mints the root as
-// type molecule carrying only the "template" label and no metadata (bd
-// cookFormulaToSubgraph); for a legacy proto id, bd clones that proto bead's
-// type, labels and metadata. So the guard resolves the target the way bd does
-// — a bead with that id is the proto; otherwise it is a formula — and judges
-// the one root that results. Without --root-only bd instantiates every step,
-// children and expansion templates included, from content gc would have to
-// re-derive; that shape has no workflow depending on it and is refused toward
-// gc's own sling/cook paths. TestGcBdMolWispRootOnlyMintsOneWorkBead (an
-// integration test against a real bd) pins the root shape.
-func judgeBdMolWisp(in bdClassGuardInput) bdClassGuard {
-	if rootOnly, _ := in.args.BoolValue("--root-only"); !rootOnly {
-		return in.refuse("gc bd %s: refused on this split city: without --root-only it instantiates every step of the formula, and bd copies each step's type, labels and metadata onto the beads it mints in the work store. Instead: %s. Nothing was written.", in.path, bdSplitAltSling)
-	}
-	if len(in.args.Positionals) != 1 {
-		return in.refuse("gc bd %s: refused on this split city: expected exactly one formula or proto. Nothing was written.", in.path)
-	}
-	target := in.args.Positionals[0]
-	root := beads.Bead{Type: "molecule", Labels: []string{"template"}}
-	proto, result := in.read(target)
-	switch result {
-	case bdReadNotFound:
-		// A formula: the root shape above.
-	case bdReadFound:
-		root = beads.Bead{ID: proto.ID, Type: proto.Type, Labels: proto.Labels, Metadata: proto.Metadata}
-	default:
-		return in.refuse("%s", in.readRefusal(target, result))
-	}
-	if flip := coordclass.CheckFlip(beads.Bead{}, root, in.holds); flip != nil {
-		return in.refuse("%s", classFlipRefusalText(fmt.Sprintf("gc bd %s %s (the proto it clones)", in.path, target), flip))
-	}
-	return in.pass()
-}
-
-// judgeBdCook passes `cook` that only prints; --persist writes a proto into the
-// work store and is refused.
-func judgeBdCook(in bdClassGuardInput) bdClassGuard {
-	if persist, _ := in.args.BoolValue("--persist"); persist {
-		return in.refuse("gc bd cook --persist: refused on this split city: it writes the formula's steps into the work store as a proto, with each step's type, labels and metadata. Instead: %s. Nothing was written.", bdSplitAltSling)
-	}
-	return in.pass()
-}
-
-// judgeBdBatch judges `gc bd batch`, whose script (stdin or --file) can mint a
-// bead of any type with `create <type> ...`.
-func judgeBdBatch(in bdClassGuardInput) bdClassGuard {
-	if len(in.args.Positionals) != 0 {
-		return in.refuse("gc bd batch: refused on this split city: batch takes no positional arguments. Nothing was written.")
-	}
-	files := in.args.Values("--file")
-	var script []byte
-	var err error
-	out := in.pass()
-	if len(files) > 0 {
-		path := files[len(files)-1]
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(in.scopeRoot, path)
-		}
-		script, err = os.ReadFile(path)
-	} else {
-		script, err = io.ReadAll(in.stdin)
-		out.stdin = bytes.NewReader(script)
-	}
-	if err != nil {
-		return in.refuse("gc bd batch: refused on this split city: gc must read the batch script to check that it mints no infrastructure bead into the work store, and could not: %v. Nothing was written.", err)
-	}
-	if problem := batchScriptClassProblem(script, in.holds); problem != "" {
-		return in.refuse("gc bd batch: refused on this split city: %s. Nothing was written.", problem)
-	}
-	return out
-}
-
-// judgeBdImport judges `gc bd import`, the documented restore path for a JSONL
-// archive. A row whose class this store does not hold — every infrastructure
-// row of an archive taken before the split — would be stranded by bd's
-// upsert. Those rows are not routed to the binding: it already holds the live
-// copies (gc storage migrate preserved ids), and replaying an archive over them
-// would roll sessions and running graphs back. The import is refused and names
-// --skip-infra (gc's own flag), which imports a copy holding only the rows this
-// store holds and counts the rest. A dry run writes nothing, so it is reported.
-func judgeBdImport(in bdClassGuardInput) bdClassGuard {
-	args, skipInfra := stripSkipInfraFlag(in.bdArgs)
-	inputs := in.args.Values("--input")
-	sources := append(slices.Clone(in.args.Positionals), inputs...)
-	switch len(sources) {
-	case 0:
-		return in.refuse("gc bd import: refused on this split city: with no file bd imports its configured import path, which gc does not resolve; name the file (or - for stdin). Nothing was written.")
-	case 1:
-	default:
-		return in.refuse("gc bd import: refused on this split city: more than one import source is named. Nothing was written.")
-	}
-	source := sources[0]
-	var data []byte
-	var err error
-	if source == "-" {
-		data, err = io.ReadAll(in.stdin)
-	} else {
-		path := source
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(in.scopeRoot, path)
-		}
-		data, err = os.ReadFile(path)
-	}
-	if err != nil {
-		return in.refuse("gc bd import: refused on this split city: gc must read %s to check which classes it holds, and could not: %v. Nothing was written.", source, err)
-	}
-	split, problem := splitBdImportRows(data, in.holds)
-	if problem != "" {
-		return in.refuse("gc bd import: refused on this split city: %s. Nothing was written.", problem)
-	}
-	out := bdClassGuard{args: args}
-	if split.skipped == 0 {
-		if source == "-" {
-			out.stdin = bytes.NewReader(data)
-		}
-		return out
-	}
-	if dryRun, _ := in.args.BoolValue("--dry-run"); dryRun && !skipInfra {
-		if source == "-" {
-			out.stdin = bytes.NewReader(data)
-		}
-		out.notice = fmt.Sprintf("gc bd import: dry run: %s holds %d row(s) of a class this store does not hold (%s); on this split city the real import is refused unless re-run with %s, which imports the %d other row(s) only\n",
-			source, split.skipped, formatClassCounts(split.byClass), bdImportSkipInfraFlag, len(split.keep))
-		return out
-	}
-	if !skipInfra {
-		return in.refuse("gc bd import: refused on this split city: %s holds %d row(s) of a class this store does not hold (%s). bd import would strand every one in the work store, and every later gc command would refuse until they were repaired. They are not routed to the class store either: it already holds the live copies, and replaying an archive over them would roll sessions and running graphs back. Re-run with %s to import only the %d row(s) this store holds; the rest are left out and counted. Nothing was written.",
-			source, split.skipped, formatClassCounts(split.byClass), bdImportSkipInfraFlag, len(split.keep))
-	}
-	filtered := bytes.Join(split.keep, []byte("\n"))
-	if len(filtered) > 0 {
-		filtered = append(filtered, '\n')
-	}
-	notice := fmt.Sprintf("gc bd import: %s: importing %d row(s); left out %d row(s) of a class this store does not hold (%s), which this split city keeps in its class store\n",
-		source, len(split.keep), split.skipped, formatClassCounts(split.byClass))
-	if len(split.dependents) > 0 {
-		shown := split.dependents
-		if len(shown) > 10 {
-			shown = shown[:10]
-		}
-		notice += fmt.Sprintf("gc bd import: %d kept row(s) carry a dependency on a left-out id (%s); those edges point at beads the class store holds under the same ids, so check them after the import\n",
-			len(split.dependents), strings.Join(shown, ", "))
-	}
-	out.notice = notice
-	if source == "-" {
-		out.stdin = bytes.NewReader(filtered)
-		return out
-	}
-	tmp, err := os.CreateTemp("", "gc-bd-import-work-*.jsonl")
-	if err == nil {
-		_, err = tmp.Write(filtered)
-		if closeErr := tmp.Close(); err == nil {
-			err = closeErr
-		}
-	}
-	if err != nil {
-		if tmp != nil {
-			_ = os.Remove(tmp.Name())
-		}
-		return in.refuse("gc bd import: refused: could not write the filtered copy of %s: %v. Nothing was written.", source, err)
-	}
-	redirected, ok := bdImportRedirect(args, source, tmp.Name())
-	if !ok {
-		_ = os.Remove(tmp.Name())
-		return in.refuse("gc bd import: refused on this split city: gc could not point bd at the filtered copy of %s (spell the source as a plain argument or --input <file>). Nothing was written.", source)
-	}
-	out.args = redirected
-	name := tmp.Name()
-	out.cleanup = func() { _ = os.Remove(name) }
-	return out
-}
-
-// bdImportRedirect points the one token of argv that names source (the
-// positional, `-i x`, `-ix`, `-i=x`, `--input x`, `--input=x`) at path. It
-// finds the token by re-parsing argv token by token with import's flags, so a
-// flag value that happens to equal source is never rewritten.
-func bdImportRedirect(argv []string, source, path string) ([]string, bool) {
-	out := slices.Clone(argv)
-	specs := bdSplitFlagSpecs("import", bdSplitCommand{})
-	verbSeen := false
-	for i := 0; i < len(out); i++ {
-		tok := out[i]
-		if !strings.HasPrefix(tok, "-") || tok == "-" {
-			if !verbSeen {
-				verbSeen = tok == "import"
-				continue
-			}
-			if tok == source {
-				out[i] = path
-				return out, true
-			}
-			continue
-		}
-		width, err := bdflags.FlagTokenWidth(specs, out[i:])
-		if err != nil {
-			return nil, false
-		}
-		name, _, _ := strings.Cut(tok, "=")
-		switch {
-		case name == "--input" || name == "-i":
-			if width == 2 {
-				out[i+1] = path
-			} else {
-				out[i] = name + "=" + path
-			}
-			return out, true
-		case strings.HasPrefix(tok, "-i") && !strings.HasPrefix(tok, "--"):
-			out[i] = "-i" + path
-			return out, true
-		}
-		i += width - 1
-	}
-	return nil, false
 }
 
 // bdSplitAllowlistPaths returns the allowlisted paths, sorted (for the docs

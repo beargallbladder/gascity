@@ -310,31 +310,21 @@ const bdImportSkipInfraFlag = "--skip-infra"
 
 // bdImportSplit is a bd export JSONL split by class.
 type bdImportSplit struct {
-	keep    [][]byte // work rows and non-issue records such as memories
-	skipped int      // infrastructure-class issue rows
+	keep    [][]byte // rows of a class the store holds, and non-issue records such as memories
+	skipped int      // issue rows of a class the store does not hold
 	byClass map[coordclass.Class]int
-	// dependents are the ids of kept work rows with a dependency on a skipped
-	// row's id.
-	dependents []string
+	// keptIDs are the kept issue rows' ids; keptDeps every depends_on_id
+	// their dependencies name.
+	keptIDs  []string
+	keptDeps []string
 }
 
-// splitBdImportRows splits a bd export JSONL into the lines to keep (work
-// rows and non-issue records such as memories) and counts the
-// infrastructure-class issue rows by class.
-//
-// A row is kept when the target store HOLDS its class — on a split city's work
-// store that is work plus any class the city leaves on work — not merely when
-// it is work.
+// splitBdImportRows splits a bd export JSONL into the lines to keep and counts
+// the rest by class. A row is kept when the target store HOLDS its class — on
+// a split city's work store that is work plus any class the city leaves on
+// work — not merely when it is work.
 func splitBdImportRows(data []byte, holds []coordclass.Class) (bdImportSplit, string) {
-	byClass := map[coordclass.Class]int{}
-	var keep [][]byte
-	skipped := 0
-	skippedIDs := map[string]bool{}
-	type keptDeps struct {
-		id   string
-		deps []string
-	}
-	var kept []keptDeps
+	split := bdImportSplit{byClass: map[coordclass.Class]int{}}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
 	line := 0
@@ -350,6 +340,7 @@ func splitBdImportRows(data []byte, holds []coordclass.Class) (bdImportSplit, st
 			Type         string           `json:"issue_type"`
 			Labels       []string         `json:"labels"`
 			Metadata     *beads.StringMap `json:"metadata"`
+			Parent       string           `json:"parent"`
 			Dependencies []struct {
 				DependsOnID string `json:"depends_on_id"`
 			} `json:"dependencies"`
@@ -359,7 +350,7 @@ func splitBdImportRows(data []byte, holds []coordclass.Class) (bdImportSplit, st
 		}
 		keepLine := append([]byte(nil), raw...)
 		if row.Kind != "" && row.Kind != "issue" {
-			keep = append(keep, keepLine) // memories and other non-issue records
+			split.keep = append(split.keep, keepLine)
 			continue
 		}
 		b := beads.Bead{Type: row.Type, Labels: row.Labels}
@@ -367,29 +358,23 @@ func splitBdImportRows(data []byte, holds []coordclass.Class) (bdImportSplit, st
 			b.Metadata = map[string]string(*row.Metadata)
 		}
 		if class := coordclass.Classify(b); !slices.Contains(holds, class) {
-			skipped++
-			byClass[class]++
-			skippedIDs[row.ID] = true
+			split.skipped++
+			split.byClass[class]++
 			continue
 		}
-		keep = append(keep, keepLine)
-		k := keptDeps{id: row.ID}
+		split.keep = append(split.keep, keepLine)
+		split.keptIDs = append(split.keptIDs, row.ID)
 		for _, d := range row.Dependencies {
-			k.deps = append(k.deps, d.DependsOnID)
+			if d.DependsOnID != "" {
+				split.keptDeps = append(split.keptDeps, d.DependsOnID)
+			}
 		}
-		kept = append(kept, k)
+		if row.Parent != "" {
+			split.keptDeps = append(split.keptDeps, row.Parent)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return bdImportSplit{}, fmt.Sprintf("reading the file: %v", err)
-	}
-	split := bdImportSplit{keep: keep, skipped: skipped, byClass: byClass}
-	for _, k := range kept {
-		for _, d := range k.deps {
-			if skippedIDs[d] {
-				split.dependents = append(split.dependents, k.id)
-				break
-			}
-		}
 	}
 	return split, ""
 }

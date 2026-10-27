@@ -340,7 +340,10 @@ func rewriteBdHeartbeatArgs(bdArgs []string) ([]string, error) {
 // are provenance, not rig-qualified routes. Both bd metadata spellings are
 // examined so --metadata cannot bypass the --set-metadata guard. Inputs this
 // preflight cannot interpret exactly are refused before bd can mutate state.
-func bdRigQualifiedMetadataRefusal(cfg *config.City, bdArgs []string) (string, bool) {
+//
+// An `@file` body is read — relative to scopeRoot, the directory bd runs in —
+// and validated like an inline one; a file that cannot be read is refused.
+func bdRigQualifiedMetadataRefusal(cfg *config.City, scopeRoot string, bdArgs []string) (string, bool) {
 	verb, args := bdflags.SplitGlobalFlags(bdArgs)
 	// bd registers `new` as an alias for `create` (bd create --help: "Aliases:
 	// create, new"), so the alias has to reach the same admission check AND the
@@ -412,8 +415,15 @@ func bdRigQualifiedMetadataRefusal(cfg *config.City, bdArgs []string) (string, b
 		}
 
 		metadataJSON := strings.TrimSpace(value)
-		if strings.HasPrefix(metadataJSON, "@") {
-			return fmt.Sprintf("gc bd: refusing --metadata %q: @file input cannot be validated before write\n", value), true
+		if path, isFile := strings.CutPrefix(metadataJSON, "@"); isFile {
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(scopeRoot, path)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Sprintf("gc bd: refusing --metadata %q: @file input could not be read to validate it before write: %v\n", value, err), true
+			}
+			metadataJSON = string(data)
 		}
 		var metadata map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
@@ -479,14 +489,14 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gc bd: loading config: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	if msg, refused := bdRigQualifiedMetadataRefusal(cfg, bdArgs); refused {
-		fmt.Fprint(stderr, msg) //nolint:errcheck // best-effort stderr
-		return 1
-	}
 
 	target, err := resolveBdScopeTarget(cfg, cityPath, rigName, bdArgs, cityName != "", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc bd: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	if msg, refused := bdRigQualifiedMetadataRefusal(cfg, target.ScopeRoot, bdArgs); refused {
+		fmt.Fprint(stderr, msg) //nolint:errcheck // best-effort stderr
 		return 1
 	}
 
@@ -568,6 +578,19 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	var classGuardStore beads.Store
 	classGuard := bdClassFlipGuard(cfg, target.ScopeRoot, bdArgs, bdClassGuardDeps{
 		stdin: os.Stdin,
+		version: func() (string, error) {
+			return bdVersionInScope(cityPath, cfg, target)
+		},
+		held: func(id string) (bool, error) {
+			_, owned, err := cliByIDBindingOwner(cityPath, id)
+			return owned, err
+		},
+		templates: func() ([]beads.Bead, error) {
+			if classGuardStore == nil {
+				classGuardStore = bdWriteGuardStore(target.ScopeRoot, cityPath, cfg)
+			}
+			return classGuardStore.List(beads.ListQuery{Label: "template", IncludeClosed: true, AllowScan: true})
+		},
 		read: func(id string) (beads.Bead, bdReadResult) {
 			if classGuardStore == nil {
 				classGuardStore = bdWriteGuardStore(target.ScopeRoot, cityPath, cfg)
@@ -816,6 +839,31 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	// only through the city event log, so announce it (bd_close_events.go).
 	announceBdPassthroughCloses(cityPath, guardStore, guardBeads, bdArgs)
 	return 0
+}
+
+// bdVersionInScope runs `bd version` with the binary, working directory and
+// environment the passthrough would use, so the split-city allowlist judges
+// against the inventory of the bd that will actually run.
+func bdVersionInScope(cityPath string, cfg *config.City, target execStoreTarget) (string, error) {
+	bdPath, err := resolveBdBinaryForScope(cityPath, target.ScopeRoot)
+	if err != nil {
+		return "", err
+	}
+	env, err := bdCommandEnv(cityPath, cfg, target)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(bdPath, "version")
+	cmd.Dir = target.ScopeRoot
+	cmd.Env = workQueryEnvForDir(env, cmd.Dir)
+	start := time.Now()
+	out, err := cmd.Output()
+	exit := 0
+	if err != nil {
+		exit = -1
+	}
+	beads.TraceBDCall("go:gc-bd-split-version", target.ScopeRoot, []string{"version"}, start, exit, err)
+	return string(out), err
 }
 
 func parseBdReleaseIfCurrentArgs(args []string) (id, expectedAssignee string, ok bool, err error) {

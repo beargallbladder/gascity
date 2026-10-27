@@ -81,7 +81,7 @@ title = "a metadata-only infra step"
 	}
 
 	argv := []string{"mol", "wisp", "mol-strand", "--root-only", "--var", "label=gc:session", "--json"}
-	notFound := bdClassGuardDeps{read: func(string) (beads.Bead, bdReadResult) { return beads.Bead{}, bdReadNotFound }}
+	notFound := splitTestDeps(nil, func(string) (beads.Bead, bdReadResult) { return beads.Bead{}, bdReadNotFound })
 	if g := bdClassFlipGuard(splitGuardTestCity(), ws, argv, notFound); g.refusal != "" {
 		t.Fatalf("the allowlist refused the patrol shape: %s", g.refusal)
 	}

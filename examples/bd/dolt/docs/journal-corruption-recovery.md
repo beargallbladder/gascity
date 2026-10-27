@@ -172,7 +172,8 @@ If no backup is configured or the backup itself is corrupt, proceed to Step 4b.
 # Drop the corrupt database directory
 rm -rf /path/to/city/.beads/dolt/<dbname>
 
-# Re-initialize an empty store
+# Re-initialize an empty store (on a split-store city, gc bd refuses --db:
+# run `bd init --db <dbname>` directly in the scope with the city stopped)
 gc bd init --db <dbname>
 
 # Import the latest JSONL archive snapshot of this database (written by the
