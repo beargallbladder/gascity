@@ -3618,7 +3618,8 @@ roots, step beads and control beads live.
 It is the in-process, city-wide drop-in for the single-store "bd ready" work
 query, so workers and the control plane see graph-class work instead of an
 authoritative-looking short answer. On a city that relocates no coordination
-class it reads the one store, unchanged.
+class there is no graph store to add: it reads the city store and the rig
+stores.
 
 The flags mirror the "bd ready" contract the default work_query builds:
   gc ready --metadata-field "gc.routed_to=$target" --unassigned \
@@ -3630,6 +3631,12 @@ Rows are emitted in canonical ready order (priority, created_at, id) unless
 --sort selects a created_at order, and --limit is applied last, so a bounded
 read is the true top-N of the merged set rather than the top-N of whichever
 store answered first.
+
+The rows of --status in_progress carry their blockers (blocked_by), and a row
+whose blockers cannot be resolved fails the read. --until-unblocked ends that
+answer at its first unblocked row, the one a crash-recovery read resumes, and
+resolves no row past it, so a later row's unresolvable blocker does not fail
+the read.
 
 Every leg is read across both storage tiers, so the wisp/ephemeral rows an
 orchestration step runs as are claimable work here whether or not
@@ -3669,6 +3676,7 @@ gc ready [flags]
 | `--sort` | string |  | sort order: oldest\|newest (default: canonical ready order) |
 | `--status` | string |  | list beads in this status instead of ready work: open\|in_progress\|blocked\|closed |
 | `--unassigned` | bool |  | only unassigned work |
+| `--until-unblocked` | bool |  | with --status in_progress, end the answer at its first unblocked row, resolving no row past it |
 
 ## gc register
 

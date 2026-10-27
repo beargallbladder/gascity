@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
 )
@@ -218,6 +221,104 @@ func TestPromptQueriesForCityScopedAgentReachRigStores(t *testing.T) {
 		}
 		if !strings.Contains(tp.Prompt, ctx.AssignedInProgressQuery) {
 			t.Errorf("the controller-rendered mayor prompt does not carry the AssignedInProgressQuery gc prime renders; prime renders %q", ctx.AssignedInProgressQuery)
+		}
+	})
+}
+
+// TestCityScopedPromptDiscoveryFailsLoudOnABrokenRigStore pins the trade
+// promptQueryTopology documents. A city-scoped agent's discovery placeholders
+// read every serving rig store through `gc ready`, so while one rig store
+// cannot be opened they exit non-zero naming that rig — even though the claim
+// the agent holds sits in the healthy city store — rather than answer from the
+// stores that still read. The healthy-city control runs the same rendered query
+// over the same claim and serves it, so the failure belongs to the broken rig,
+// not to a query that reads nothing.
+func TestCityScopedPromptDiscoveryFailsLoudOnABrokenRigStore(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required to run the generated discovery query")
+	}
+	gcBin := reexecGCTestBinaryForTests(t)
+	fakeBD := filepath.Join(t.TempDir(), "bd")
+	if err := os.WriteFile(fakeBD, []byte("#!/bin/sh\nprintf '[]'\n"), 0o755); err != nil {
+		t.Fatalf("writing fake bd: %v", err)
+	}
+	const session = "planner-session"
+
+	// runInProgressQuery stores an in_progress claim for session in the city
+	// store, renders the city-scoped agent's AssignedInProgressQuery the way
+	// gc prime does, and runs it as the agent's shell would.
+	runInProgressQuery := func(t *testing.T, cityDir string) (stdout, stderr string, exitCode int, claimID string) {
+		t.Helper()
+		cityStore, err := openStoreAtForCity(cityDir, cityDir)
+		if err != nil {
+			t.Fatalf("open city store: %v", err)
+		}
+		claim := mustCreateReadyBead(t, cityStore, beads.Bead{Title: "claimed city work", Type: "task"})
+		if err := cityStore.Update(claim.ID, beads.UpdateOpts{Status: stringPtr("in_progress"), Assignee: stringPtr(session)}); err != nil {
+			t.Fatalf("claim %s: %v", claim.ID, err)
+		}
+		cfg, err := loadCityConfig(cityDir, io.Discard)
+		if err != nil {
+			t.Fatalf("loadCityConfig: %v", err)
+		}
+		topo := cityQueryTopology(cityDir, cfg)
+		if topo.FederatedReady {
+			t.Fatal("fixture precondition: this city relocates no coordination class")
+		}
+		agent := &config.Agent{Name: "planner", Scope: "city"}
+		query := buildAgentPromptContext(cityDir, cfg.Workspace.Name, agent, cfg.Rigs, topo, io.Discard).AssignedInProgressQuery
+		if !strings.Contains(query, "gc ready --status in_progress") {
+			t.Fatalf("the city-scoped AssignedInProgressQuery does not read through the federated reader: %q", query)
+		}
+
+		var out, errOut bytes.Buffer
+		cmd := exec.Command("sh", "-c", query)
+		cmd.Dir = cityDir
+		cmd.Env = append(os.Environ(),
+			"PATH="+filepath.Dir(gcBin)+string(os.PathListSeparator)+filepath.Dir(fakeBD)+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GC_SESSION_ID="+session, "GC_SESSION_NAME=", "GC_ALIAS=",
+			// The local read: no controller runs here, and asking for one only
+			// waits out its timeout before reading the stores anyway.
+			"GC_NO_API=1",
+		)
+		cmd.Stdout, cmd.Stderr = &out, &errOut
+		exitCode = 0
+		if err := cmd.Run(); err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("running the discovery query: %v", err)
+			}
+			exitCode = exitErr.ExitCode()
+		}
+		return out.String(), errOut.String(), exitCode, claim.ID
+	}
+
+	t.Run("healthy rig stores: the claim is served", func(t *testing.T) {
+		clearGCEnv(t)
+		cityDir := newReadyCityWithRigs(t)
+		stdout, stderr, exitCode, claimID := runInProgressQuery(t, cityDir)
+		if exitCode != 0 {
+			t.Fatalf("query exited %d over healthy rig stores; stderr=%s", exitCode, stderr)
+		}
+		if !strings.Contains(stdout, claimID) {
+			t.Fatalf("query served %q, want the agent's city-store claim %s", stdout, claimID)
+		}
+	})
+
+	t.Run("one rig store broken: the query fails naming it", func(t *testing.T) {
+		clearGCEnv(t)
+		cityDir := newReadyCityWithBrokenRig(t)
+		stdout, stderr, exitCode, claimID := runInProgressQuery(t, cityDir)
+		if exitCode == 0 {
+			t.Fatalf("query exited 0 with the %q rig store unopenable and printed %q; an answer short a store is the false \"no work\" the federated reader exists to rule out", readyBrokenRigName, stdout)
+		}
+		if strings.Contains(stdout, claimID) || strings.Contains(stdout, "[]") {
+			t.Errorf("query printed %q alongside its failure; a caller must not find a plausible answer on stdout", stdout)
+		}
+		for _, want := range []string{readyBrokenRigName, "gc work query: gc ready --status in_progress failed"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("query stderr = %q, want it to contain %q", stderr, want)
+			}
 		}
 	})
 }

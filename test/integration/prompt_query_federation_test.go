@@ -11,13 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/config"
 )
 
 // This file proves, against real bd and the built gc, that a city-scoped
 // agent's rendered discovery queries can find work that lives in a rig store
-// (issue #1689's routed half): an open rig bead routed to the agent, and an
-// in_progress rig bead assigned to the agent's session identity.
+// (issue #1689's routed half): an open rig bead routed to the agent, an
+// in_progress rig bead assigned to the agent's session identity, and that
+// in_progress bead when gated claims sort ahead of it.
 
 const (
 	promptQueryWorkBeginMarker             = "__PROMPT_QUERY_WORK_BEGIN__"
@@ -247,20 +249,74 @@ func TestCityScopedAgentPromptQueriesFindRigWork(t *testing.T) {
 			t.Errorf("AC-3: AssignedInProgressQuery of city-scoped agent %s does not list its in-progress rig bead %s; output:\n%s", qualifiedName, rigID, got)
 		}
 	})
+
+	t.Run("case G: gated in-progress claims do not hide a servable rig claim", func(t *testing.T) {
+		cityDir, rigDir, qualifiedName := setUpPromptQueryFederationCity(t)
+		rigPrefix := config.DeriveBeadsPrefix("watcher-rig-alpha")
+		claim := func(id string, inRig bool) {
+			t.Helper()
+			args := []string{"update", id, "--assignee", qualifiedName, "--status", "in_progress"}
+			var out string
+			var err error
+			if inRig {
+				out, err = bdDoltInRig(cityDir, rigDir, args...)
+			} else {
+				out, err = bdDolt(cityDir, args...)
+			}
+			if err != nil {
+				t.Fatalf("claiming %s for %s failed: %v\noutput: %s", id, qualifiedName, err, out)
+			}
+		}
+
+		// Three in_progress claims held by the agent's session identity, in the
+		// federated reader's (priority, created_at, id) order:
+		//   - P0 in the CITY store, parked on a dispatch hold;
+		//   - P1 in the rig store, blocked by an open rig gate;
+		//   - P2 in the rig store, servable: the one claim the session can resume.
+		// The two gated claims sort first, so a one-row read of the merged answer
+		// sees only the held one and the servable claim is never read.
+		cityName := filepath.Base(cityDir)
+		heldID := promptQueryBeadID(t, mustCreateCityBead(t, cityDir, "held city claim", "--priority", "0", "--labels", beadmeta.HoldExternalLabel), config.DeriveBeadsPrefix(cityName))
+		claim(heldID, false)
+		gateID := promptQueryBeadID(t, mustCreateRigBead(t, cityDir, rigDir, "gate the blocked claim waits on"), rigPrefix)
+		blockedID := promptQueryBeadID(t, mustCreateRigBead(t, cityDir, rigDir, "blocked rig claim", "--priority", "1"), rigPrefix)
+		if out, err := bdDoltInRig(cityDir, rigDir, "dep", "add", blockedID, gateID); err != nil {
+			t.Fatalf("blocking %s on %s failed: %v\noutput: %s", blockedID, gateID, err, out)
+		}
+		claim(blockedID, true)
+		servableID := promptQueryBeadID(t, mustCreateRigBead(t, cityDir, rigDir, "servable rig claim", "--priority", "2"), rigPrefix)
+		claim(servableID, true)
+
+		workQuery, inProgressQuery := renderPromptQueryFederationQueries(t, cityDir)
+		for _, q := range []struct{ name, query string }{
+			{"AssignedInProgressQuery", inProgressQuery},
+			{"WorkQuery", workQuery},
+		} {
+			got := runPromptQueryAsNamedSession(t, cityDir, qualifiedName, q.query)
+			if !strings.Contains(got, servableID) {
+				t.Errorf("%s of city-scoped agent %s does not list its servable in-progress rig bead %s behind the held %s and the blocked %s; output:\n%s", q.name, qualifiedName, servableID, heldID, blockedID, got)
+			}
+			for _, gated := range []string{heldID, blockedID} {
+				if strings.Contains(got, gated) {
+					t.Errorf("%s of city-scoped agent %s serves gated in-progress bead %s; output:\n%s", q.name, qualifiedName, gated, got)
+				}
+			}
+		}
+	})
 }
 
-func mustCreateRigBead(t *testing.T, cityDir, rigDir, title string) string {
+func mustCreateRigBead(t *testing.T, cityDir, rigDir, title string, args ...string) string {
 	t.Helper()
-	out, err := bdDoltInRig(cityDir, rigDir, "create", title)
+	out, err := bdDoltInRig(cityDir, rigDir, append([]string{"create", title}, args...)...)
 	if err != nil {
 		t.Fatalf("bd create in rig failed: %v\noutput: %s", err, out)
 	}
 	return out
 }
 
-func mustCreateCityBead(t *testing.T, cityDir, title string) string {
+func mustCreateCityBead(t *testing.T, cityDir, title string, args ...string) string {
 	t.Helper()
-	out, err := bdDolt(cityDir, "create", title)
+	out, err := bdDolt(cityDir, append([]string{"create", title}, args...)...)
 	if err != nil {
 		t.Fatalf("bd create in city failed: %v\noutput: %s", err, out)
 	}

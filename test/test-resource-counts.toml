@@ -1064,6 +1064,11 @@ resource = "environment"
 calls = 1
 
 [[count]]
+path = "cmd/gc/prompt_query_topology_test.go"
+resource = "subprocess"
+calls = 1
+
+[[count]]
 path = "cmd/gc/provider_factory_e2c1_test.go"
 resource = "subprocess"
 calls = 1

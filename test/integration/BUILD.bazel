@@ -125,6 +125,7 @@ go_test(
     deps = [
         "//internal/api/apicontract",
         "//internal/bazeltest",
+        "//internal/beadmeta",
         "//internal/beads",
         "//internal/beads/beadstest",
         "//internal/beads/contract",

@@ -155,10 +155,11 @@ func TestPromptQueriesUserWorkQueryOverridesVerbatim(t *testing.T) {
 }
 
 // TestHookQueryStaysSingleStorePerStoreForCityScopedAgents pins AC-6 of issue
-// #1689: the prompt-side federation does not leak into `gc hook`. The hook's
-// query is built from the city topology — still the single-store `bd` form on
-// a city that relocates nothing — and its fan-out runs that one query once per
-// store: the agent's own first, then one leg per serving rig.
+// #1689: the prompt-side federation does not leak into `gc hook`. The query
+// the hook builds (hookWorkQuery) comes from the city topology — still the
+// single-store `bd` form on a city that relocates nothing — and its fan-out runs
+// that one query once per store: the agent's own first, then one leg per
+// serving rig.
 func TestHookQueryStaysSingleStorePerStoreForCityScopedAgents(t *testing.T) {
 	cityPath := t.TempDir()
 	rigs := []config.Rig{
@@ -168,11 +169,10 @@ func TestHookQueryStaysSingleStorePerStoreForCityScopedAgents(t *testing.T) {
 	cfg := &config.City{Workspace: config.Workspace{Name: "bright-lights"}, Rigs: rigs}
 	agent := &config.Agent{Name: "planner", Scope: "city"}
 
-	topo := cityQueryTopology(cityPath, cfg)
+	topo, query := hookWorkQuery(cityPath, "bright-lights", cfg, agent, io.Discard)
 	if topo.FederatedReady {
-		t.Fatalf("fixture precondition: a temp-dir city relocates no coordination class")
+		t.Fatalf("gc hook reads with a federated topology on a city that relocates no coordination class")
 	}
-	query := agent.EffectiveWorkQueryFor(topo)
 	if !strings.Contains(query, "bd ready") {
 		t.Errorf("the hook's work query left the single-store form: %q", query)
 	}

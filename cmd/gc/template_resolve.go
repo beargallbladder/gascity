@@ -395,11 +395,6 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 	if p.city != nil {
 		topo.Beads = p.city.Beads
 	}
-	// The four discovery placeholders run verbatim in the agent's own shell,
-	// with no hook-style store fan-out around them, so they render against the
-	// prompt topology — federated for a cross-store-eligible agent on a city
-	// with rigs. SlingQuery is not a discovery reader and keeps the raw
-	// topology, which carries no federation bit here anyway.
 	// Controller-owned: config.QueryTopology{Beads: ...} and NOT
 	// cityQueryTopology. Resolving the federation fact means asking the
 	// storage routes, and the one-shot funnel that answers for a CLI command
@@ -409,6 +404,13 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 	// The controller's own routes are the right source; threading them into
 	// this plumbing is a change to controller wiring, not part of swapping
 	// the reader, so it stays with the claim-routing slice (ga-601v2).
+	//
+	// The four discovery placeholders are a separate question from that
+	// storage-route fact. They run verbatim in the agent's own shell, with no
+	// hook-style store fan-out around them, so they render against
+	// promptQueryTopology, which federates them for a cross-store-eligible agent
+	// on a city with configured rigs and asks no storage route. SlingQuery is
+	// not a discovery reader and keeps the raw topology.
 	promptTopo := promptQueryTopology(topo, cfgAgent, p.rigs)
 	prompt = renderPrompt(p.fs, p.cityPath, p.cityName, cfgAgent.PromptTemplate, PromptContext{
 		CityRoot:                p.cityPath,
