@@ -4,6 +4,8 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/config"
@@ -149,5 +151,62 @@ func TestPromptQueriesUserWorkQueryOverridesVerbatim(t *testing.T) {
 				t.Errorf("%s %s = %q, want the user work_query verbatim %q", []string{"prime", "controller"}[i], promptQueryPinNames[j], got, custom)
 			}
 		}
+	}
+}
+
+// TestHookQueryStaysSingleStorePerStoreForCityScopedAgents pins AC-6 of issue
+// #1689: the prompt-side federation does not leak into `gc hook`. The hook's
+// query is built from the city topology — still the single-store `bd` form on
+// a city that relocates nothing — and its fan-out runs that one query once per
+// store: the agent's own first, then one leg per serving rig.
+func TestHookQueryStaysSingleStorePerStoreForCityScopedAgents(t *testing.T) {
+	cityPath := t.TempDir()
+	rigs := []config.Rig{
+		{Name: "alpha", Path: filepath.Join(cityPath, "rigs", "alpha")},
+		{Name: "beta", Path: filepath.Join(cityPath, "rigs", "beta")},
+	}
+	cfg := &config.City{Workspace: config.Workspace{Name: "bright-lights"}, Rigs: rigs}
+	agent := &config.Agent{Name: "planner", Scope: "city"}
+
+	topo := cityQueryTopology(cityPath, cfg)
+	if topo.FederatedReady {
+		t.Fatalf("fixture precondition: a temp-dir city relocates no coordination class")
+	}
+	query := agent.EffectiveWorkQueryFor(topo)
+	if !strings.Contains(query, "bd ready") {
+		t.Errorf("the hook's work query left the single-store form: %q", query)
+	}
+	if !strings.Contains(query, "bd list --status in_progress") {
+		t.Errorf("the hook's crash-recovery tier left the single-store form: %q", query)
+	}
+	if strings.Contains(query, "gc ready") {
+		t.Errorf("the hook's work query federated; its fan-out already covers every store: %q", query)
+	}
+	if hookStoresScopeToPrimary(query, singleStoreHookWorkQuery(cityPath, "bright-lights", cfg, agent, topo, io.Discard)) {
+		t.Fatal("gc hook pins a city-scoped agent's read to its primary store; it must fan out over every store")
+	}
+
+	prev := hookStoreQueryEnv
+	hookStoreQueryEnv = func(_ string, _ *config.City, a *config.Agent) (map[string]string, error) {
+		return map[string]string{"GC_STORE": "leg-" + a.Dir}, nil
+	}
+	t.Cleanup(func() { hookStoreQueryEnv = prev })
+
+	stores := hookWorkQueryStores(cityPath, cfg, agent, "planner", cityPath, nil, nil, nil)
+	if len(stores) == 0 {
+		t.Fatal("gc hook built no fan-out legs")
+	}
+	if stores[0].dir != cityPath || stores[0].rig != "" {
+		t.Errorf("primary leg = dir %q rig %q, want the agent's own store %q with no rig", stores[0].dir, stores[0].rig, cityPath)
+	}
+	var legs []string
+	for _, st := range stores {
+		legs = append(legs, st.rig)
+		if got := hookStoreCommand(st, query); got != query {
+			t.Errorf("store %q runs its own command %q, want the one shared work query", st.rig, got)
+		}
+	}
+	if want := []string{"", "alpha", "beta"}; !slices.Equal(legs, want) {
+		t.Errorf("fan-out legs = %q, want the agent's own store then each rig %q", legs, want)
 	}
 }
