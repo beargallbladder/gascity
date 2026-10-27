@@ -661,3 +661,46 @@ func TestReadHoldsABdRowOnAMigratedRelicTheBindingHoldsOpen(t *testing.T) {
 		t.Fatalf("ready = %v withholds %s after its relic blocker closed", got, row.ID)
 	}
 }
+
+// TestReadInProgressOmitsAnExternalRefToTheServingStoresOwnBead: bd treats an
+// "external:" target as external even when it names a bead the serving store
+// holds, and never blocks on it; on a city with no binding gc does the same.
+func TestReadInProgressOmitsAnExternalRefToTheServingStoresOwnBead(t *testing.T) {
+	city := splittest.NewNativeWorkStore(t, "gc")
+	own := mustCreate(t, city, beads.Bead{Title: "own open bead", Type: "task"})
+	row := mustCreate(t, city, beads.Bead{Title: "row", Type: "task"})
+	setInProgress(t, city, row.ID, "w1")
+	if err := city.DepAdd(row.ID, "external:"+own.ID, "blocks"); err != nil {
+		t.Skipf("this bd refuses an external ref to its own bead: %v", err)
+	}
+	rows, err := Read([]Leg{testLeg("city", city)}, Query{Status: StatusInProgress, Assignee: "w1"})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("Read = %+v, %v", rows, err)
+	}
+	if len(rows[0].BlockedBy) != 0 {
+		t.Fatalf("blocked_by = %+v; bd never blocks on an external: target", rows[0].BlockedBy)
+	}
+}
+
+// TestReadInProgressReportsEverySpellingOfOneBlocker: a row whose edges name
+// one blocker twice — as written and as external:<id> — reports both edges,
+// each with the blocker's status, on a split city.
+func TestReadInProgressReportsEverySpellingOfOneBlocker(t *testing.T) {
+	work := beads.NewMemStore()
+	binding := sqliteBinding(t)
+	step := mustCreate(t, binding, beads.Bead{Title: "graph step", Type: "task"})
+	row := mustCreate(t, work, beads.Bead{Title: "row", Type: "task"})
+	setInProgress(t, work, row.ID, "w1")
+	for _, target := range []string{step.ID, "external:" + step.ID} {
+		if err := work.DepAdd(row.ID, target, "blocks"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := Read(splitLegs(work, binding), Query{Status: StatusInProgress, Assignee: "w1"})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("Read = %+v, %v", rows, err)
+	}
+	if got := rows[0].BlockedBy; len(got) != 2 || got[0].Status != "open" || got[1].Status != "open" {
+		t.Fatalf("blocked_by = %+v; want both spellings of %s, each open", got, step.ID)
+	}
+}

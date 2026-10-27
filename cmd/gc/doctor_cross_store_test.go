@@ -8,9 +8,12 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/splittest"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/dispatch"
 	"github.com/gastownhall/gascity/internal/doctor"
+	"github.com/gastownhall/gascity/internal/fsys"
+	"github.com/gastownhall/gascity/internal/suspensionstate"
 )
 
 // TestDanglingBlockingEdgesCheckFindsAndRemovesOnlyDanglingEdges: on a split
@@ -238,5 +241,285 @@ func TestDanglingBlockingEdgesFixRewritesAMalformedDiscoveredFromLiteral(t *test
 	}
 	if len(crossDeps) != 1 || crossDeps[0].DependsOnID != "discovered-from:"+elsewhere.ID {
 		t.Fatalf("deps of %s after --fix = %+v; want the literal left for the operator (its id lives in another store)", cross.ID, crossDeps)
+	}
+}
+
+// rewriteStores are the two engines whose DepAdd RETYPES an existing edge in
+// place, which is what makes a careless rewrite downgrade a blocks edge.
+func rewriteStores(t *testing.T) map[string]func() beads.Store {
+	return map[string]func() beads.Store{
+		"memstore": func() beads.Store { return beads.NewMemStore() },
+		"sqlite": func() beads.Store {
+			s, err := beads.OpenSQLiteStore(t.TempDir(), beads.WithSQLiteStoreIDPrefix("gc"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.(interface{ CloseStore() error }).CloseStore() })
+			return s
+		},
+	}
+}
+
+// TestDanglingBlockingEdgesFixKeepsAnExistingRealBlocksEdge: a row that has a
+// real blocks edge to X AND a malformed "discovered-from:X" literal keeps
+// waiting on X after --fix: the literal is removed, the blocks edge is never
+// retyped.
+func TestDanglingBlockingEdgesFixKeepsAnExistingRealBlocksEdge(t *testing.T) {
+	for name, mk := range rewriteStores(t) {
+		t.Run(name, func(t *testing.T) {
+			cityPath := t.TempDir()
+			sessionSplitRoutes(t, cityPath)
+			work := mk()
+			origin, _ := work.Create(beads.Bead{Title: "open blocker and origin", Type: "task"})
+			row, _ := work.Create(beads.Bead{Title: "row", Type: "task"})
+			if err := work.DepAdd(row.ID, origin.ID, "blocks"); err != nil {
+				t.Fatal(err)
+			}
+			if err := work.DepAdd(row.ID, "discovered-from:"+origin.ID, "blocks"); err != nil {
+				t.Fatal(err)
+			}
+			check := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return work, nil })
+			if err := check.Fix(nil); err != nil {
+				t.Fatalf("Fix: %v", err)
+			}
+			deps, _ := work.DepList(row.ID, "down")
+			if len(deps) != 1 || deps[0].DependsOnID != origin.ID || deps[0].Type != "blocks" {
+				t.Fatalf("deps of %s after --fix = %+v; want only the real blocks edge to %s", row.ID, deps, origin.ID)
+			}
+		})
+	}
+}
+
+type failDepAdd struct{ beads.Store }
+
+func (failDepAdd) DepAdd(string, string, string) error { return errors.New("injected: write failed") }
+
+// TestDanglingBlockingEdgesFixKeepsTheLiteralWhenTheAddFails: the typed edge
+// is added before the literal is removed, so a failed add loses nothing; the
+// fix is idempotent once it succeeds.
+func TestDanglingBlockingEdgesFixKeepsTheLiteralWhenTheAddFails(t *testing.T) {
+	cityPath := t.TempDir()
+	sessionSplitRoutes(t, cityPath)
+	inner := beads.NewMemStore()
+	origin, _ := inner.Create(beads.Bead{Title: "origin", Type: "task"})
+	row, _ := inner.Create(beads.Bead{Title: "row", Type: "task"})
+	if err := inner.DepAdd(row.ID, "discovered-from:"+origin.ID, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	failing := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return failDepAdd{inner}, nil })
+	if err := failing.Fix(nil); err == nil {
+		t.Fatal("Fix reported no error although the add failed")
+	}
+	if deps, _ := inner.DepList(row.ID, "down"); len(deps) != 1 || deps[0].DependsOnID != "discovered-from:"+origin.ID {
+		t.Fatalf("deps after a failed add = %+v; want the literal kept", deps)
+	}
+	check := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return inner, nil })
+	for i := 0; i < 3; i++ {
+		if err := check.Fix(nil); err != nil {
+			t.Fatalf("Fix %d: %v", i, err)
+		}
+	}
+	if deps, _ := inner.DepList(row.ID, "down"); len(deps) != 1 || deps[0].DependsOnID != origin.ID || deps[0].Type != "discovered-from" {
+		t.Fatalf("deps after --fix = %+v; want one discovered-from edge", deps)
+	}
+}
+
+// TestDanglingBlockingEdgesFixOnRealBd runs both rewrite cases on a real
+// bd/Dolt work store: a plain literal becomes a discovered-from edge, and a
+// literal beside a real blocks edge is removed with the blocks edge kept.
+func TestDanglingBlockingEdgesFixOnRealBd(t *testing.T) {
+	cityPath := t.TempDir()
+	sessionSplitRoutes(t, cityPath)
+	work := splittest.NewNativeWorkStore(t, "ga")
+	origin, _ := work.Create(beads.Bead{Title: "origin", Type: "task"})
+	plain, _ := work.Create(beads.Bead{Title: "plain literal row", Type: "task"})
+	both, _ := work.Create(beads.Bead{Title: "literal and real blocks", Type: "task"})
+	for _, e := range [][3]string{
+		{plain.ID, "discovered-from:" + origin.ID, "blocks"},
+		{both.ID, origin.ID, "blocks"},
+		{both.ID, "discovered-from:" + origin.ID, "blocks"},
+	} {
+		if err := work.DepAdd(e[0], e[1], e[2]); err != nil {
+			t.Fatalf("seed %v: %v", e, err)
+		}
+	}
+	check := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return work, nil })
+	for i := 0; i < 2; i++ {
+		if err := check.Fix(nil); err != nil {
+			t.Fatalf("Fix %d: %v", i, err)
+		}
+	}
+	if deps, _ := work.DepList(plain.ID, "down"); len(deps) != 1 || deps[0].DependsOnID != origin.ID || deps[0].Type != "discovered-from" {
+		t.Fatalf("plain row deps = %+v; want one discovered-from edge to %s", deps, origin.ID)
+	}
+	if deps, _ := work.DepList(both.ID, "down"); len(deps) != 1 || deps[0].DependsOnID != origin.ID || deps[0].Type != "blocks" {
+		t.Fatalf("both row deps = %+v; want only the real blocks edge to %s", deps, origin.ID)
+	}
+}
+
+// TestDanglingBlockingEdgesHonorsRuntimeSuspension is the maintainer-city
+// shape: a rig suspended at RUNTIME (the suspension state) whose city.toml
+// says it is not suspended. Its store is not read and its ids are undecided.
+func TestDanglingBlockingEdgesHonorsRuntimeSuspension(t *testing.T) {
+	cityPath := t.TempDir()
+	sessionSplitRoutes(t, cityPath)
+	yes := true
+	if err := suspensionstate.SetRigSuspended(fsys.OSFS{}, cityPath, "rg", &yes); err != nil {
+		t.Fatal(err)
+	}
+	work := beads.NewMemStore()
+	row, _ := work.Create(beads.Bead{Title: "row", Type: "task"})
+	if err := work.DepAdd(row.ID, "rg-77", "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	opened := false
+	cfg := &config.City{Rigs: []config.Rig{{Name: "rg", Path: "rigs/rg", Prefix: "rg"}}}
+	check := newDanglingBlockingEdgesCheck(cfg, cityPath, func(p string) (beads.Store, error) {
+		if p == "rigs/rg" {
+			opened = true
+		}
+		return work, nil
+	})
+	if edges, _ := check.collect(); len(edges) != 0 || opened {
+		t.Fatalf("edges = %+v, rig store opened = %v; want the runtime-suspended rig unread and rg-77 undecided", edges, opened)
+	}
+	if err := check.Fix(nil); err != nil {
+		t.Fatal(err)
+	}
+	if deps, _ := work.DepList(row.ID, "down"); len(deps) != 1 {
+		t.Fatalf("deps after --fix = %+v; the edge into the suspended rig was touched", deps)
+	}
+}
+
+// batchReadFailing fails the batched id read the scan resolves targets with.
+type batchReadFailing struct{ beads.Store }
+
+func (s batchReadFailing) List(q beads.ListQuery) ([]beads.Bead, error) {
+	if len(q.IDs) > 0 {
+		return nil, errors.New("injected: batch read failed")
+	}
+	return s.Store.List(q)
+}
+
+// TestDanglingBlockingEdgesReportsNothingWhenABatchReadFails: a store whose
+// blocker read fails may hold any target, so the scan reports no dangling
+// edge, says what it skipped, and --fix touches nothing.
+func TestDanglingBlockingEdgesReportsNothingWhenABatchReadFails(t *testing.T) {
+	cityPath := t.TempDir()
+	sessionSplitRoutes(t, cityPath)
+	work := beads.NewMemStore()
+	row, _ := work.Create(beads.Bead{Title: "row", Type: "task"})
+	if err := work.DepAdd(row.ID, "discovered-from:gc-404", "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	check := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return batchReadFailing{work}, nil })
+	edges, skipped := check.collect()
+	if len(edges) != 0 || len(skipped) == 0 {
+		t.Fatalf("edges = %+v, skipped = %v; want nothing reported and the failure named", edges, skipped)
+	}
+	if err := check.Fix(nil); err == nil {
+		t.Fatal("Fix succeeded although a store's blocker read failed")
+	}
+	if deps, _ := work.DepList(row.ID, "down"); len(deps) != 1 {
+		t.Fatalf("deps after --fix = %+v; want nothing touched", deps)
+	}
+}
+
+// TestDanglingBlockingEdgesLeavesALiteralWhoseIDAnUnreadRigMayHold: a
+// "discovered-from:<id>" literal whose <id> is in a suspended rig's namespace
+// is the operator's, never removed or rewritten.
+func TestDanglingBlockingEdgesLeavesALiteralWhoseIDAnUnreadRigMayHold(t *testing.T) {
+	cityPath := t.TempDir()
+	sessionSplitRoutes(t, cityPath)
+	work := beads.NewMemStore()
+	row, _ := work.Create(beads.Bead{Title: "row", Type: "task"})
+	if err := work.DepAdd(row.ID, "discovered-from:rg-77", "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{Rigs: []config.Rig{{Name: "rg", Path: "rigs/rg", Prefix: "rg", Suspended: true}}}
+	check := newDanglingBlockingEdgesCheck(cfg, cityPath, func(string) (beads.Store, error) { return work, nil })
+	if err := check.Fix(nil); err != nil {
+		t.Fatal(err)
+	}
+	if deps, _ := work.DepList(row.ID, "down"); len(deps) != 1 || deps[0].DependsOnID != "discovered-from:rg-77" {
+		t.Fatalf("deps after --fix = %+v; want the literal left for the operator", deps)
+	}
+}
+
+// TestDanglingBlockingEdgesNeverRewritesABlockingLiteral: a "blocks:<id>"
+// literal is not a typed edge to rewrite — rewriting it would make the row
+// wait on something it did not wait on. It is removed as any dangling edge.
+func TestDanglingBlockingEdgesNeverRewritesABlockingLiteral(t *testing.T) {
+	cityPath := t.TempDir()
+	sessionSplitRoutes(t, cityPath)
+	work := beads.NewMemStore()
+	other, _ := work.Create(beads.Bead{Title: "other", Type: "task"})
+	row, _ := work.Create(beads.Bead{Title: "row", Type: "task"})
+	if err := work.DepAdd(row.ID, "blocks:"+other.ID, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	check := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return work, nil })
+	if err := check.Fix(nil); err != nil {
+		t.Fatal(err)
+	}
+	if deps, _ := work.DepList(row.ID, "down"); len(deps) != 0 {
+		t.Fatalf("deps after --fix = %+v; want the blocking literal removed, not rewritten into a blocks edge", deps)
+	}
+}
+
+// TestInUnreadNamespaceMatchesWholeNamespaces pins both directions: a
+// hyphenated rig prefix owns its own ids and not its parent prefix's.
+func TestInUnreadNamespaceMatchesWholeNamespaces(t *testing.T) {
+	unread := []string{"gc-ops"}
+	if !inUnreadNamespace("gc-ops-12", unread) || !inUnreadNamespace("GC-OPS-12", unread) {
+		t.Error("gc-ops-12 is in the gc-ops namespace")
+	}
+	if inUnreadNamespace("gc-12", unread) || inUnreadNamespace("gc-opsx-1", unread) {
+		t.Error("gc-12 and gc-opsx-1 are not in the gc-ops namespace")
+	}
+}
+
+// TestDanglingBlockingEdgesFixReChecksTheRowBeforeWriting: the fix re-reads
+// the row right before it writes. If an agent added a real blocks edge to the
+// literal's id after the scan, the fix only removes the literal (it never
+// retypes that edge); if the literal is already gone, it writes nothing.
+func TestDanglingBlockingEdgesFixReChecksTheRowBeforeWriting(t *testing.T) {
+	for name, mk := range rewriteStores(t) {
+		t.Run(name, func(t *testing.T) {
+			cityPath := t.TempDir()
+			sessionSplitRoutes(t, cityPath)
+			work := mk()
+			origin, _ := work.Create(beads.Bead{Title: "origin", Type: "task"})
+			raced, _ := work.Create(beads.Bead{Title: "an agent adds a real blocks edge", Type: "task"})
+			gone, _ := work.Create(beads.Bead{Title: "an agent removes the literal", Type: "task"})
+			for _, id := range []string{raced.ID, gone.ID} {
+				if err := work.DepAdd(id, "discovered-from:"+origin.ID, "blocks"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			check := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return work, nil })
+			edges, skipped := check.collect()
+			if len(skipped) != 0 || len(edges) != 2 {
+				t.Fatalf("edges = %+v, skipped = %v", edges, skipped)
+			}
+			// The rows change between the scan and the fix.
+			if err := work.DepAdd(raced.ID, origin.ID, "blocks"); err != nil {
+				t.Fatal(err)
+			}
+			if err := work.DepRemove(gone.ID, "discovered-from:"+origin.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range edges {
+				if err := fixDanglingEdge(e); err != nil {
+					t.Fatalf("fix %s: %v", e.rowID, err)
+				}
+			}
+			if deps, _ := work.DepList(raced.ID, "down"); len(deps) != 1 || deps[0].DependsOnID != origin.ID || deps[0].Type != "blocks" {
+				t.Fatalf("%s deps = %+v; want only the real blocks edge the agent added", raced.ID, deps)
+			}
+			if deps, _ := work.DepList(gone.ID, "down"); len(deps) != 0 {
+				t.Fatalf("%s deps = %+v; want nothing written for a literal already gone", gone.ID, deps)
+			}
+		})
 	}
 }

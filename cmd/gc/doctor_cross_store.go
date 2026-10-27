@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -368,22 +369,70 @@ func (c *danglingBlockingEdgesCheck) Fix(*doctor.CheckContext) error {
 		// dangling: act on nothing.
 		return fmt.Errorf("dangling-blocking-edges: not fixing while %d scope(s) could not be read: %s", len(skipped), strings.Join(skipped, "; "))
 	}
+	var errs []error
 	for _, e := range edges {
-		switch e.action {
-		case danglingOperator:
+		if e.action == danglingOperator {
 			continue
-		case danglingRewrite:
-			if err := e.store.DepRemove(e.rowID, e.target); err != nil {
-				return fmt.Errorf("%s row %s: removing malformed edge %q: %w", e.label, e.rowID, e.target, err)
-			}
-			if err := e.store.DepAdd(e.rowID, e.realID, e.depType); err != nil {
-				return fmt.Errorf("%s row %s: writing the %s edge to %s: %w", e.label, e.rowID, e.depType, e.realID, err)
-			}
-		default:
-			if err := e.store.DepRemove(e.rowID, e.target); err != nil {
-				return fmt.Errorf("%s row %s: removing dangling edge to %s: %w", e.label, e.rowID, e.target, err)
+		}
+		if err := fixDanglingEdge(e); err != nil {
+			// One row's failure does not abandon the others.
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// fixDanglingEdge applies one edge's fix, re-reading the row's edges right
+// before it writes (an agent may have changed them since the scan).
+//
+// A rewrite never retypes an edge the row already has: on SQLite and the
+// in-memory stores adding an edge to a target the row already points at
+// RETYPES that edge in place, which would turn a real blocks edge into a
+// discovered-from one and let the row stop waiting on an open blocker (and on
+// bd the add fails). So when the row already has any edge to the real id, the
+// literal is only removed. Otherwise the typed edge is ADDED FIRST — carrying
+// the literal edge's payload where the store can say what it is — and the
+// literal is removed only once the add succeeded, so a failed add loses
+// nothing. (A creator is not carried: the store interface does not expose it.)
+func fixDanglingEdge(e danglingEdge) error {
+	deps, err := e.store.DepList(e.rowID, "down")
+	if err != nil {
+		return fmt.Errorf("%s row %s: re-reading edges before the fix: %w", e.label, e.rowID, err)
+	}
+	literalPresent, realPresent := false, false
+	for _, d := range deps {
+		switch d.DependsOnID {
+		case e.target:
+			literalPresent = literalPresent || beads.IsReadyBlockingDependencyType(d.Type)
+		case e.realID:
+			if e.realID != "" {
+				realPresent = true
 			}
 		}
 	}
+	if !literalPresent {
+		return nil
+	}
+	if e.action == danglingRewrite && !realPresent {
+		if err := addTypedEdgeLike(e); err != nil {
+			return fmt.Errorf("%s row %s: writing the %s edge to %s (the literal %q is kept): %w", e.label, e.rowID, e.depType, e.realID, e.target, err)
+		}
+	}
+	if err := e.store.DepRemove(e.rowID, e.target); err != nil {
+		return fmt.Errorf("%s row %s: removing edge %q: %w", e.label, e.rowID, e.target, err)
+	}
 	return nil
+}
+
+// addTypedEdgeLike writes the rewrite's typed edge, with the literal edge's
+// payload when the store can read and write one.
+func addTypedEdgeLike(e danglingEdge) error {
+	reader, canRead := e.store.(beads.DepMetadataReader)
+	writer, canWrite := e.store.(beads.DepMetadataWriter)
+	if canRead && canWrite {
+		if payload, carries, err := reader.DepMetadata(e.rowID, e.target); err == nil && carries {
+			return writer.DepAddWithMetadata(e.rowID, e.realID, e.depType, payload)
+		}
+	}
+	return e.store.DepAdd(e.rowID, e.realID, e.depType)
 }
