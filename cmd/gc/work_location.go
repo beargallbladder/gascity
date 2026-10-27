@@ -87,8 +87,11 @@ func workLegsFromCensus(cityPath string, cfg *config.City, work cityWorkLeg, rig
 
 // workLegs is the controller's leg set for one tick, over the store it
 // registers as the city's work leg (registerResidencyRoutes).
+//
+// It reads the published config snapshot rather than cr.cfg, so the wisp GC's
+// work-arm lane, which runs off the tick, can take its legs from here too.
 func (cr *CityRuntime) workLegs() WorkLegs {
-	return workLegsFromCensus(cr.cityPath, cr.cfg, cityWorkLegOf(cr.cityWorkStore()), cr.rigBeadStores()) // residency:allow — the census frame; workLegsFromCensus plans the legs (storeref.Plan)
+	return workLegsFromCensus(cr.cityPath, cr.serviceConfigSnapshot(), cityWorkLegOf(cr.cityWorkStore()), cr.rigBeadStores()) // residency:allow — the census frame; workLegsFromCensus plans the legs (storeref.Plan)
 }
 
 // suspendedRigs names the open rigs this leg set leaves out because they are
@@ -102,11 +105,12 @@ func (l WorkLegs) suspendedRigs() []string { return l.suspended }
 func (l WorkLegs) storeForRef(ref string) (beads.Store, bool, bool) {
 	ref = strings.TrimSpace(ref)
 	rig, ok := storeref.ScopeRigContext(ref)
-	if !ok || storeref.IsClassRef(ref) {
+	if !ok {
 		return nil, false, false
 	}
 	if rig == "" {
-		// Only THIS city's ref names the city work store.
+		// Only THIS city's ref names the city work store; a class binding
+		// ref ("class:<token>") is city-scoped too, and fails this check.
 		if l.cityName == "" || ref != "city:"+l.cityName {
 			return nil, false, false
 		}
@@ -166,11 +170,16 @@ func (cr *CityRuntime) strandedClaimAlerter() *strandedClaimAlerts {
 
 // each visits every leg's store in plan order.
 func (l WorkLegs) each(visit func(beads.Store)) {
+	l.eachLeg(func(_ string, store beads.Store) { visit(store) })
+}
+
+// eachLeg visits every leg's store ref and store in plan order.
+func (l WorkLegs) eachLeg(visit func(ref string, store beads.Store)) {
 	if l.unusable() != nil {
 		return
 	}
 	storeref.EachLeg(l.plan, func(leg storeref.Leg, _ storeref.Role, _ storeref.ErrPolicy) { // residency:allow — enumerates the plan's own legs
-		visit(leg.Store)
+		visit(string(leg.Ref), leg.Store)
 	})
 }
 

@@ -104,7 +104,7 @@ func TestWispGCWorkArmBackingCallsPerPass(t *testing.T) {
 				calls.Store(0)
 				withCloseAbandonedEnforced(t, func() {
 					withCloseAbandonedTTL(t, 5*time.Minute, func() {
-						if _, err := gc.pass(legs, e.graphStore(), time.Hour, now); err != nil {
+						if _, err := gc.pass(context.Background(), legs, e.graphStore(), time.Hour, now); err != nil {
 							t.Logf("pass: %v", err)
 						}
 					})
@@ -125,11 +125,18 @@ func TestWispGCWorkArmBackingCallsPerPass(t *testing.T) {
 					t.Errorf("a dry-run pass made %d bd calls over %d leg(s); it must only list", c, n)
 				}
 			}
-			// One budget per pass across all legs: the enforced cost must not
-			// grow with the leg count beyond the listing.
-			for _, c := range enforced {
-				if c > int64(4*n)+60 {
-					t.Errorf("an enforced pass made %d bd calls over %d leg(s): the walk budget is not shared", c, n)
+			// One budget per pass across all legs, and batched reads. A pass
+			// lists the legs it visits (3 calls each) and walks at most 5
+			// closures of a root and one child. Each walk costs 8 calls: the
+			// gc.root_bead_id member list (2), one batched children read per
+			// level (2 + 1), the live strand guard on the root (2) and the
+			// delete (1); the roots' live rows come from one prefetch. The
+			// ceilings below hold that, so disabling the prefetch (+1 per walk)
+			// or the batched level walk (per-node reads) fails them.
+			ceiling := map[int]int64{1: 46, 7: 58}[n]
+			for i, c := range enforced[1:] {
+				if c > ceiling {
+					t.Errorf("enforced pass %d made %d bd calls over %d leg(s), want at most %d", i+2, c, n, ceiling)
 				}
 			}
 		})

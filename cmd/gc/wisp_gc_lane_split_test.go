@@ -46,7 +46,7 @@ func runLane(t *testing.T, gc *workMoleculeGC, legs WorkLegs, graph beads.Store,
 	log.SetFlags(0)
 	defer func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
 	withCloseAbandonedTTL(t, 5*time.Minute, func() {
-		if _, err := gc.pass(legs, graph, time.Hour, now); err != nil {
+		if _, err := gc.pass(context.Background(), legs, graph, time.Hour, now); err != nil {
 			t.Logf("pass: %v", err)
 		}
 	})

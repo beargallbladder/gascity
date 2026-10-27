@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log"
 	"strings"
@@ -370,9 +371,10 @@ func TestWispGCHolderGuardLeavesARootOpenWhileARigIsSuspended(t *testing.T) {
 // unreadableLegs is a leg set that cannot be read (a refused city).
 type unreadableLegs struct{}
 
-func (unreadableLegs) each(func(beads.Store))  {}
-func (unreadableLegs) unusable() error         { return errNoWorkStore }
-func (unreadableLegs) suspendedRigs() []string { return nil }
+func (unreadableLegs) each(func(beads.Store))            {}
+func (unreadableLegs) unusable() error                   { return errNoWorkStore }
+func (unreadableLegs) suspendedRigs() []string           { return nil }
+func (unreadableLegs) eachLeg(func(string, beads.Store)) {}
 func (unreadableLegs) storeForRef(string) (beads.Store, bool, bool) {
 	return nil, false, false
 }
@@ -476,7 +478,7 @@ func newTestGC() *testGC {
 
 func (g *testGC) pass(legs wispGCLegs, graph beads.Store, now time.Time) error {
 	_, err := g.wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, now)
-	_, werr := g.work.pass(legs, graph, time.Hour, now)
+	_, werr := g.work.pass(context.Background(), legs, graph, time.Hour, now)
 	return errors.Join(err, werr)
 }
 

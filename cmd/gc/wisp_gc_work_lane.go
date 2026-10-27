@@ -44,14 +44,21 @@ var wispGCWorkArmWallBudget = 5 * time.Second
 type workMoleculeGC struct {
 	mu    sync.Mutex
 	notes wispGCNotes
-	// legCursor is the leg position the next pass starts at.
+	// legCursor is the leg position the next pass starts at. It advances by
+	// one EVERY pass, so a leg whose work outlasts the budget cannot pin the
+	// lane: every leg is the first leg once every len(legs) passes.
 	legCursor int
-	// rootCursor is, per leg position and list, the last root id walked.
+	// rootCursor is, per leg (keyed by its store ref) and arm, the last root
+	// id walked, so a leg resumes where its last visit stopped.
 	rootCursor map[string]string
+	// purgeFirst is, per leg, which arm goes first on its next visit: the
+	// arms alternate, and the close arm leaves one walk for the purge, so a
+	// leg full of busy idle molecules cannot starve its purge.
+	purgeFirst map[string]bool
 }
 
 func newWorkMoleculeGC() *workMoleculeGC {
-	return &workMoleculeGC{rootCursor: make(map[string]string)}
+	return &workMoleculeGC{rootCursor: make(map[string]string), purgeFirst: make(map[string]bool)}
 }
 
 const (
@@ -59,12 +66,29 @@ const (
 	workArmPurgeMemo = "work-purge"
 )
 
+// workArmLeg is one work leg the arm sweeps, named by its store ref.
+type workArmLeg struct {
+	ref   string
+	store beads.Store
+}
+
 // pass runs one work-arm pass over legs (every leg but the graph store),
 // purging closed roots past ttl. It returns how many closures it purged.
 //
 // Dry-run (GC_WISP_GC_WORK_MOLECULES unset) only LISTS and counts: no subtree
 // or closure is walked, and one summary line is logged.
-func (w *workMoleculeGC) pass(legs wispGCLegs, graph beads.Store, ttl time.Duration, now time.Time) (int, error) {
+//
+// The pass stops starting work as soon as ctx is done or the wall-clock budget
+// is spent: no leg is listed and no root walked past either. A bd call already
+// in flight is not interrupted (the controller's stores are not
+// context-bound), so a stop waits at most for that one call.
+//
+// Throughput: at maintainer-city latency (~0.75 s per bd call) a closure walk
+// and delete is about 6 calls, ~4.5 s, and the listing of each leg 3 calls, so
+// a 5 s pass purges about one closure: roughly 6 closures an hour city-wide at
+// the 10-minute wisp-GC cadence. That is the backstop rate for a backlog; the
+// reactive autoclose and the graph arm do the routine work.
+func (w *workMoleculeGC) pass(ctx context.Context, legs wispGCLegs, graph beads.Store, ttl time.Duration, now time.Time) (int, error) {
 	if legs == nil || legs.unusable() != nil || ttl <= 0 {
 		return 0, nil
 	}
@@ -73,34 +97,50 @@ func (w *workMoleculeGC) pass(legs wispGCLegs, graph beads.Store, ttl time.Durat
 	if w.rootCursor == nil {
 		w.rootCursor = make(map[string]string)
 	}
-	var stores []beads.Store
-	legs.each(func(work beads.Store) {
-		if work != nil && !sameBeadStore(work, graph) {
-			stores = append(stores, work)
+	if w.purgeFirst == nil {
+		w.purgeFirst = make(map[string]bool)
+	}
+	var ls []workArmLeg
+	legs.eachLeg(func(ref string, store beads.Store) {
+		if store != nil && !sameBeadStore(store, graph) {
+			ls = append(ls, workArmLeg{ref: ref, store: store})
 		}
 	})
-	if len(stores) == 0 {
+	if len(ls) == 0 {
 		return 0, nil
 	}
 	enforce := workMoleculesEnforced()
 	cutoff := now.Add(-ttl)
-	budget := &wispGCBudget{walks: wispGCWorkArmWalkBudget, deadline: time.Now().Add(wispGCWorkArmWallBudget)}
+	budget := &wispGCBudget{ctx: ctx, walks: wispGCWorkArmWalkBudget, deadline: time.Now().Add(wispGCWorkArmWallBudget)}
+	start := w.legCursor % len(ls)
+	w.legCursor = (start + 1) % len(ls)
 
-	purged, idle, expired, walked := 0, 0, 0, 0
+	purged, idle, expired, walked, listed := 0, 0, 0, 0, 0
+	complete := true
 	presentOpen, presentClosed := map[string]bool{}, map[string]bool{}
 	var errs error
-	start := w.legCursor % len(stores)
-	next := start
-	for i := 0; i < len(stores); i++ {
-		pos := (start + i) % len(stores)
-		work := stores[pos]
-		open, err := enumerateWorkClassMoleculeRoots(work, "open", "in_progress")
-		if err != nil {
-			errs = errors.Join(errs, fmt.Errorf("listing open work-class molecule roots: %w", err))
+	for i := 0; i < len(ls); i++ {
+		if budget.stopped() || (enforce && budget.exhausted()) {
+			// Out of time, stopping, or out of walks: the remaining legs are
+			// not listed (a listing is bd calls too). The leg cursor already
+			// moved, so they come first on a later pass.
+			complete = false
+			break
 		}
-		closed, cerr := enumerateWorkClassMoleculeRoots(work, "closed")
+		l := ls[(start+i)%len(ls)]
+		open, err := enumerateWorkClassMoleculeRoots(l.store, "open", "in_progress")
+		if err != nil {
+			errs = errors.Join(errs, fmt.Errorf("listing open work-class molecule roots on %s: %w", l.ref, err))
+		}
+		closed, cerr := enumerateWorkClassMoleculeRoots(l.store, "closed")
 		if cerr != nil {
-			errs = errors.Join(errs, fmt.Errorf("listing closed work-class molecule roots: %w", cerr))
+			errs = errors.Join(errs, fmt.Errorf("listing closed work-class molecule roots on %s: %w", l.ref, cerr))
+		}
+		listed++
+		if err != nil || cerr != nil {
+			// A leg whose listing failed reports no roots; pruning against it
+			// would drop its memos. Nothing is pruned this pass.
+			complete = false
 		}
 		for _, r := range open {
 			presentOpen[r.ID] = true
@@ -117,13 +157,22 @@ func (w *workMoleculeGC) pass(legs wispGCLegs, graph beads.Store, ttl time.Durat
 			}
 			continue
 		}
-		if budget.exhausted() {
-			continue
-		}
-		closeKey, purgeKey := fmt.Sprintf("%d/close", pos), fmt.Sprintf("%d/purge", pos)
-		if err == nil {
-			holders := wispGCHolders{graph: graph, own: work}
-			closeErr := closeAbandonedRootCandidatesMode(work, rotateAfter(open, w.rootCursor[closeKey]), holders, now, abandonedCloseMode{
+		closeKey, purgeKey := l.ref+"\x00close", l.ref+"\x00purge"
+		closeWalked := map[string]bool{}
+		runClose := func(reserve int) {
+			if err != nil {
+				return
+			}
+			budget.reserve = reserve
+			defer func() { budget.reserve = 0 }()
+			var candidates []beads.Bead
+			for _, r := range rotateAfter(open, w.rootCursor[closeKey]) {
+				if !closeWalked[r.ID] {
+					candidates = append(candidates, r)
+				}
+			}
+			holders := wispGCHolders{graph: graph, own: l.store}
+			errs = errors.Join(errs, closeAbandonedRootCandidatesMode(l.store, candidates, holders, now, abandonedCloseMode{
 				enforce:    closeAbandonedEnforced(),
 				dryRunHint: fmt.Sprintf("set %s=1 to enforce", closeAbandonedEnv),
 				label:      "work-class molecule root",
@@ -131,12 +180,14 @@ func (w *workMoleculeGC) pass(legs wispGCLegs, graph beads.Store, ttl time.Durat
 				notes:      &w.notes,
 				memo:       &w.notes,
 				memoArm:    workArmCloseMemo,
-				onWalk:     func(id string) { w.rootCursor[closeKey] = id; walked++ },
-			})
-			errs = errors.Join(errs, closeErr)
+				onWalk:     func(id string) { w.rootCursor[closeKey] = id; closeWalked[id] = true; walked++ },
+			}))
 		}
-		if cerr == nil {
-			n, perr := purgeExpiredBeadClosuresWith(work, rotateAfter(closed, w.rootCursor[purgeKey]), closurePurgeOpts{
+		runPurge := func() {
+			if cerr != nil {
+				return
+			}
+			n, perr := purgeExpiredBeadClosuresWith(l.store, rotateAfter(closed, w.rootCursor[purgeKey]), closurePurgeOpts{
 				cutoff:       cutoff,
 				batchCap:     wispGCClosurePurgeBatchCap,
 				budget:       budget,
@@ -151,23 +202,29 @@ func (w *workMoleculeGC) pass(legs wispGCLegs, graph beads.Store, ttl time.Durat
 			purged += n
 			errs = errors.Join(errs, perr)
 		}
-		if budget.exhausted() {
-			// Resume on this leg next pass, where its cursors stopped.
-			next = pos
+		if w.purgeFirst[l.ref] {
+			runPurge()
+			runClose(0)
 		} else {
-			next = (pos + 1) % len(stores)
+			// The close goes first but leaves one walk for the purge; a walk
+			// the purge did not need goes back to the close.
+			runClose(1)
+			runPurge()
+			runClose(0)
 		}
+		w.purgeFirst[l.ref] = !w.purgeFirst[l.ref]
 	}
-	w.legCursor = next
-	w.notes.pruneRefusals(workArmCloseMemo, presentOpen)
-	w.notes.pruneRefusals(workArmPurgeMemo, presentClosed)
+	if complete {
+		w.notes.pruneRefusals(workArmCloseMemo, presentOpen)
+		w.notes.pruneRefusals(workArmPurgeMemo, presentClosed)
+	}
 	w.notes.endPass()
 	if !enforce && (idle > 0 || expired > 0) {
-		log.Printf("wisp gc: work arm (dry-run; set %s=1 to enforce): %d open work-class molecule root(s) idle past %s, %d closed root(s) past retention; subtrees and closures not inspected",
-			workMoleculesEnv, idle, wispGCCloseAbandonedTTL, expired)
+		log.Printf("wisp gc: work arm (dry-run; set %s=1 to enforce): %d open work-class molecule root(s) idle past %s, %d closed root(s) past retention on %d of %d leg(s); subtrees and closures not inspected",
+			workMoleculesEnv, idle, wispGCCloseAbandonedTTL, expired, listed, len(ls))
 	}
 	if enforce && (walked > 0 || purged > 0) {
-		log.Printf("wisp gc: work arm walked %d root(s) across %d leg(s), purged %d closure(s)", walked, len(stores), purged)
+		log.Printf("wisp gc: work arm walked %d root(s) across %d of %d leg(s), purged %d closure(s)", walked, listed, len(ls), purged)
 	}
 	return purged, errs
 }
@@ -278,8 +335,8 @@ func (cr *CityRuntime) runWorkGCLanePass(ctx context.Context, now time.Time) {
 	}
 	lane := cr.workGCLaneOf()
 	graph := resolveGraphStore(cr.storageRoutes, cr.cityBeadStore(), cfg, cr.cityPath, cr.rec)
-	legs := workLegsFromCensus(cr.cityPath, cfg, cityWorkLegOf(cr.cityWorkStore()), cr.rigBeadStores()) // residency:allow — the census frame; workLegsFromCensus plans the legs (storeref.Plan)
-	purged, err := lane.gc.pass(legs, graph, ttl, now)
+	legs := cr.workLegs()
+	purged, err := lane.gc.pass(ctx, legs, graph, ttl, now)
 	if err != nil {
 		for _, line := range strings.Split(err.Error(), "\n") {
 			if line != "" {

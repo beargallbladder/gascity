@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -202,6 +203,8 @@ type wispGC interface {
 // expired.
 type wispGCLegs interface {
 	each(visit func(beads.Store))
+	// eachLeg is each with every leg's store ref, its stable identity.
+	eachLeg(visit func(ref string, store beads.Store))
 	// unusable is why the leg set answers nothing (a refused city). A holder
 	// guard that cannot read its legs fails closed.
 	unusable() error
@@ -325,10 +328,9 @@ func (m *memoryWispGC) runGC(legs wispGCLegs, graphStore beads.GraphStore, sessi
 		purged += orphanReaped
 		deleteErr = errors.Join(deleteErr, orphanErr)
 
-		// The work-class molecule roots the legs hold (see wispGCLegs): the
-		// same close-then-collect pass, over v1 poured molecule roots only. A
-		// work ledger holds no other root this GC owns, and nothing else on it
-		// is ever enumerated, so a plain work bead is never touched.
+		// Forget refusals of closed roots no longer listed (purged, or deleted
+		// elsewhere). The work-class roots on the work legs are the work arm's,
+		// on its own lane (wisp_gc_work_lane.go), not this pass's.
 		m.notes.pruneRefusals("graph", rootIDSet(entries))
 		m.notes.endPass()
 	}
@@ -1758,23 +1760,41 @@ func rootIDSet(roots []beads.Bead) map[string]bool {
 type wispGCBudget struct {
 	walks    int
 	deadline time.Time
+	// ctx stops the pass: no walk starts once it is done.
+	ctx context.Context
+	// reserve is how many walks take leaves untouched (an arm that must
+	// leave room for another).
+	reserve int
 }
 
-// take spends one walk, or reports that the pass is out of budget.
+// take spends one walk, or reports that the pass may not start another: out
+// of walks (beyond the reserve), past the deadline, or stopping.
 func (b *wispGCBudget) take() bool {
 	if b == nil {
 		return true
 	}
-	if b.walks <= 0 || (!b.deadline.IsZero() && !time.Now().Before(b.deadline)) {
+	if b.walks <= b.reserve || b.stopped() {
 		return false
 	}
 	b.walks--
 	return true
 }
 
+// stopped reports whether the pass must stop starting work: its ctx is done
+// or its wall-clock deadline has passed.
+func (b *wispGCBudget) stopped() bool {
+	if b == nil {
+		return false
+	}
+	if b.ctx != nil && b.ctx.Err() != nil {
+		return true
+	}
+	return !b.deadline.IsZero() && !time.Now().Before(b.deadline)
+}
+
 // exhausted reports whether the pass has no walk left.
 func (b *wispGCBudget) exhausted() bool {
-	return b != nil && (b.walks <= 0 || (!b.deadline.IsZero() && !time.Now().Before(b.deadline)))
+	return b != nil && (b.walks <= 0 || b.stopped())
 }
 
 // prefetchLiveRoots reads, in one batched read of the live backing, the rows of
