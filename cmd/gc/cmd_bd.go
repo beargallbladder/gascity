@@ -70,7 +70,7 @@ func (w *headLimitedWriter) String() string { return string(w.buf) }
 func newBdCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bd [bd-args...]",
-		Short: "Run bd in the correct rig directory",
+		Short: "Run a bd command in the correct rig directory",
 		Long: `Run a bd command routed to the correct rig directory.
 
 When beads belong to a rig (not the city root), bd must run from the
@@ -126,8 +126,8 @@ conditionally resets an in-progress assignment only when the bead still has
 that assignee.
 
 gc bd forces BD_EXPORT_AUTO=false to prevent bd's git auto-export hook
-from wedging the wrapper after printing command output. If you need
-auto-export behavior, invoke bd directly.`,
+from wedging the wrapper after printing command output. To write a JSONL
+snapshot, run "gc bd export".`,
 		Example: `  gc bd --rig my-project list
   gc bd --rig my-project create "New task"
   gc bd show my-project-abc          # auto-detects rig from bead prefix
@@ -616,7 +616,7 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	})
 	if classGuard.refusal != "" {
 		fmt.Fprintf(stderr, "%s\n", classGuard.refusal) //nolint:errcheck // best-effort stderr
-		recordBdSplitRefusal(cityPath, target.ScopeRoot, bdArgs, classGuard, stderr)
+		recordBdSplitRefusal(cityPath, target.ScopeRoot, bdArgs, classGuard)
 		return 1
 	}
 	if classGuard.cleanup != nil {

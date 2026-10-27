@@ -13,6 +13,8 @@ func init() {
 	// gc bd runs in any gc process, an agent's included: its refusal event
 	// is recorded where the refusal happens.
 	events.RegisterAuthorship(bdSplitRefusalEvent, events.AuthorWorker)
+	// So is the vouch-used event: any gc bd call may consult the vouch.
+	events.RegisterAuthorship(bdVouchUsedEvent, events.AuthorWorker)
 	// The un-inventoried-bd finding is recorded by a starting controller.
 	events.RegisterAuthorship(bdUninventoriedEvent, events.AuthorController)
 }
