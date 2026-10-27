@@ -12,6 +12,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/dispatch"
 	"github.com/gastownhall/gascity/internal/events"
+	"github.com/gastownhall/gascity/internal/storeref"
 )
 
 // The cross-store gate lane: the controller half of how a drain item waits for
@@ -176,7 +177,7 @@ func crossStoreBlockerResolver(binding, city beads.Store, cfg *config.City, rigs
 				continue
 			}
 			if prefix := strings.ToLower(strings.Trim(rig.EffectivePrefix(), "-")); prefix != "" {
-				suspendedPrefixes = append(suspendedPrefixes, prefix+"-")
+				suspendedPrefixes = append(suspendedPrefixes, prefix)
 			}
 		}
 	}
@@ -206,7 +207,9 @@ func crossStoreBlockerResolver(binding, city beads.Store, cfg *config.City, rigs
 		undecided := make(map[string]bool)
 		for _, id := range ids {
 			for _, prefix := range suspendedPrefixes {
-				if strings.ToLower(beads.BdIDPrefix(id)) == prefix {
+				// Whole-namespace match, so a hyphenated rig prefix such as
+				// "gc-ops" owns "gc-ops-12" and not "gc-12".
+				if storeref.IDInNamespace(strings.ToLower(id), prefix) { // residency:allow — decides only whether a suspended rig might hold id; reads nothing
 					undecided[id] = true
 				}
 			}

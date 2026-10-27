@@ -3056,7 +3056,7 @@ func TestReleaseCrossStoreGatesKeepsAGateWhoseBlockerNoStoreHolds(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateID, err := ensureCrossStoreGate(graph, control, "gc-404")
+	gateID, err := ensureCrossStoreGate(graph, control, "gc-404", true)
 	if err != nil || gateID == "" {
 		t.Fatalf("ensureCrossStoreGate = %q, %v", gateID, err)
 	}
@@ -3488,5 +3488,80 @@ func TestProcessDrainHoldsItsItemAgainWhenAReleasedBlockerReopens(t *testing.T) 
 	}
 	if runnable() {
 		t.Fatalf("blocker %s is open again but the item is runnable: the released gate stayed released", blocker.ID)
+	}
+}
+
+// TestProcessDrainDoesNotFlapAClosedCrossRigBlocker: the drain's residency
+// frame (its work store and the binding) is narrower than the release pass's
+// resolver (every serving rig). A closed cross-rig blocker — rg-77, or
+// external:rg-77 — is released by the pass; the drain, which cannot find it,
+// must leave the gate released rather than reopen it, or the item flips
+// runnable and held every tick and an agent can claim in each runnable window.
+func TestProcessDrainDoesNotFlapAClosedCrossRigBlocker(t *testing.T) {
+	for _, target := range []string{"rg-77", "external:rg-77"} {
+		t.Run(target, func(t *testing.T) {
+			formulatest.EnableV2ForTest(t)
+			dir := t.TempDir()
+			writeDrainItemFormula(t, dir)
+			work := beads.NewMemStore()
+			rig := beads.NewMemStore()
+			rig.HonorExplicitIDs = true
+			if _, err := rig.Create(beads.Bead{ID: "rg-77", Title: "rig blocker", Type: "task"}); err != nil {
+				t.Fatal(err)
+			}
+			var graph beads.Store
+			drain, memberIDs := seedSplitClassDrainWorkflowIn(t, work, false, func(_ []beads.Bead) beads.Store {
+				store, err := beads.OpenSQLiteStore(t.TempDir(), beads.WithSQLiteStoreIDPrefix("gcg"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = store.(interface{ CloseStore() error }).CloseStore() })
+				graph = store
+				return store
+			})
+			mustDepAdd(t, work, memberIDs[0], target, "blocks")
+			opts := ProcessOptions{FormulaSearchPaths: []string{dir}, MemberStores: []beads.Store{work}}
+			if _, err := ProcessControl(graph, drain, opts); err != nil && !errors.Is(err, ErrControlPending) {
+				t.Fatal(err)
+			}
+			manifest := mustDrainManifest(t, mustGetBead(t, graph, drain.ID))
+			runnable := func() bool {
+				t.Helper()
+				ready, err := graph.Ready()
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids := map[string]bool{}
+				for _, b := range ready {
+					ids[b.ID] = true
+				}
+				for _, id := range itemWorkflowBeadIDs(t, graph, manifest.Rows[0].ItemRootID) {
+					if ids[id] {
+						return true
+					}
+				}
+				return false
+			}
+			if runnable() {
+				t.Fatal("the item runs while its cross-rig blocker is open")
+			}
+			if err := rig.Close("rg-77"); err != nil {
+				t.Fatal(err)
+			}
+			for tick := 0; tick < 4; tick++ {
+				if _, err := ReleaseCrossStoreGates(graph, storesResolver(work, rig)); err != nil {
+					t.Fatal(err)
+				}
+				if !runnable() {
+					t.Fatalf("tick %d: the item is held after the release pass, though rg-77 is closed", tick)
+				}
+				if _, err := ProcessControl(graph, mustGetBead(t, graph, drain.ID), opts); err != nil && !errors.Is(err, ErrControlPending) {
+					t.Fatal(err)
+				}
+				if !runnable() {
+					t.Fatalf("tick %d: the drain re-held the item behind a gate whose closed blocker it simply cannot see", tick)
+				}
+			}
+		})
 	}
 }

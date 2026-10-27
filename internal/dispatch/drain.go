@@ -807,10 +807,17 @@ const (
 	// for exactly the same reason.
 	drainBlockerSatisfied
 
-	// drainBlockerUnprojectable: the blocker is not co-resident and is still an
-	// open constraint (or resolves nowhere, which blocks too). No edge can name
-	// it, so the item waits behind a cross-store gate instead.
+	// drainBlockerUnprojectable: the blocker is not co-resident and the drain
+	// found it still OPEN. No edge can name it, so the item waits behind a
+	// cross-store gate instead.
 	drainBlockerUnprojectable
+
+	// drainBlockerUnresolved: the blocker is not co-resident and the drain's
+	// own residency frame does not find it at all. That frame is narrower than
+	// the release pass's (it does not read every serving rig), so "not found
+	// here" is not "open": the item still waits behind a gate, but a gate the
+	// release pass already released is left released.
+	drainBlockerUnresolved
 )
 
 // classifyDrainBlocker decides whether an out-of-manifest blocker can be
@@ -855,9 +862,10 @@ func classifyDrainBlocker(store beads.Store, blockerID string, opts ProcessOptio
 		return drainBlockerUnclassified, err
 	}
 	if !found {
-		// Resolvable nowhere: the source member's own edge already dangles.
-		// Report it rather than copying the dangle into another store.
-		return drainBlockerUnprojectable, nil
+		// Not resolvable from here: a dangling edge, or a blocker in a store
+		// this frame does not read (another rig). The release pass, which reads
+		// every serving store, decides.
+		return drainBlockerUnresolved, nil
 	}
 	if convoycore.IsTerminalStatus(owner.Bead.Status) {
 		return drainBlockerSatisfied, nil
@@ -934,12 +942,13 @@ func drainProjectedBlockerIDs(store beads.Store, control beads.Bead, memberID st
 			projection.BlockerIDs = append(projection.BlockerIDs, blockerID)
 		case drainBlockerSatisfied:
 			opts.tracef("drain: member %s blocker %s is already terminal and lives outside the item workflow's store; not projecting an edge that would constrain nothing", memberID, blockerID)
-		case drainBlockerUnprojectable:
+		case drainBlockerUnprojectable, drainBlockerUnresolved:
 			// The item waits for the blocker through a gate in its own store,
 			// never through an edge naming an id that store cannot hold
-			// (cross_store_gate.go). "" means this drain's gate for the blocker
-			// was already released: the blocker closed.
-			gateID, err := ensureCrossStoreGate(store, control, blockerID)
+			// (cross_store_gate.go). "" means no gate holds the item: the
+			// release pass released it and this pass did not find the blocker
+			// open, or an operator overrode it.
+			gateID, err := ensureCrossStoreGate(store, control, blockerID, residence == drainBlockerUnprojectable)
 			if err != nil {
 				return drainBlockerProjection{}, fmt.Errorf("gating member %s on blocker %s: %w", memberID, blockerID, err)
 			}

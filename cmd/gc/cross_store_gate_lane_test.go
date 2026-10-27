@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
@@ -232,7 +233,12 @@ func TestCrossStoreGateLaneReportsAnUnresolvedControlOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The anchor is the persisted time the gates were first found unresolved:
+	// pin it in the past, so it cannot be mistaken for the emission time.
+	anchorAt := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	restore := dispatch.PinCrossStoreGateClockForTest(func() time.Time { return anchorAt })
 	c.cr.releaseCrossStoreGates()
+	restore()
 	c.cr.releaseCrossStoreGates()
 	var stalled []events.Event
 	for _, evt := range c.rec.Events {
@@ -252,7 +258,10 @@ func TestCrossStoreGateLaneReportsAnUnresolvedControlOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	anchor := mustBeadMeta(t, c.binding, gate.ID, beadmeta.CrossStoreGateUnresolvedAtMetadataKey)
-	if payload.BeadID != control || payload.ErrorClass != "pending" || payload.Attempts != 2 || payload.FirstSeen == "" || payload.FirstSeen != anchor {
+	if anchor != anchorAt.Format(time.RFC3339) {
+		t.Fatalf("persisted anchor = %q, want the pinned %q", anchor, anchorAt.Format(time.RFC3339))
+	}
+	if payload.BeadID != control || payload.ErrorClass != "pending" || payload.Attempts != 2 || payload.FirstSeen != anchor {
 		t.Fatalf("payload = %+v; want control %s, pending, 2 gates, first_seen the persisted anchor %q", payload, control, anchor)
 	}
 	for _, id := range []string{gate.ID, second.ID} {
@@ -299,5 +308,24 @@ func TestCrossStoreGateLaneReadsNothingOnASingleStoreCity(t *testing.T) {
 	cr.releaseCrossStoreGates()
 	if work.reads() != 0 {
 		t.Fatalf("the gate pass issued %d read(s) on a single-store city, want 0", work.reads())
+	}
+}
+
+// TestCrossStoreBlockerResolverMatchesASuspendedRigsNamespaceWhole: a
+// suspended rig whose prefix is hyphenated ("gc-ops") makes its own ids
+// undecided and leaves the city's "gc-" ids alone — both directions.
+func TestCrossStoreBlockerResolverMatchesASuspendedRigsNamespaceWhole(t *testing.T) {
+	cfg := &config.City{Rigs: []config.Rig{{Name: "ops", Path: "rigs/ops", Prefix: "gc-ops"}}}
+	resolve := crossStoreBlockerResolver(beads.NewMemStore(), beads.NewMemStore(), cfg,
+		map[string]beads.Store{"ops": beads.NewMemStore()}, map[string]bool{"rigs/ops": true})
+	_, undecided, err := resolve([]string{"gc-ops-12", "gc-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !undecided["gc-ops-12"] {
+		t.Error("gc-ops-12 is in suspended rig ops (prefix gc-ops) but reads as decided")
+	}
+	if undecided["gc-12"] {
+		t.Error("gc-12 is not in rig ops's namespace but reads as undecided")
 	}
 }
