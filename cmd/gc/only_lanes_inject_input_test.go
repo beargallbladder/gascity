@@ -8,20 +8,35 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // laneInjectMethods are the calls that type input into a runtime or act on
-// its turn: content (Nudge, NudgeNow, SendKeys, Message), interrupt
-// (Interrupt, InterruptAs, InterruptTurn, StopTurn, StopTurnIf,
-// StopTurnWith) and respond (Respond, RespondFenced).
+// its turn, matched by name on any receiver or package: content, interrupt
+// and respond, with their fenced forms (NudgeFenced, StopTurnFenced, ...)
+// and package-level helpers (runtime.NudgeWithContext,
+// session.InterruptTurnOn, ...). They leave out session.Manager.Send,
+// whose name mail.Provider.Send shares (laneInjectSites).
 var laneInjectMethods = map[string]bool{
-	"Nudge": true, "NudgeNow": true, "SendKeys": true, "Message": true,
-	"Interrupt": true, "InterruptAs": true, "InterruptTurn": true,
-	"StopTurn": true, "StopTurnIf": true, "StopTurnWith": true,
-	"Respond": true, "RespondFenced": true,
+	// Content.
+	"Nudge": true, "NudgeNow": true, "NudgeFenced": true, "Message": true,
+	"SendKeys": true, "SendKeysFenced": true, "FencedKeys": true,
+	"Submit": true, "SendImmediate": true, "SendLiveOnly": true, "SendImmediateLiveOnly": true,
+	"TryWaitIdleNudge": true, "TryWaitIdleNudgeLiveOnly": true,
+	"NudgeWithContext": true, "NudgeWithReceipt": true, "NudgeWithDeliveryKey": true, "SendKeysWithContext": true,
+	// Interrupt.
+	"Interrupt": true, "InterruptAs": true, "InterruptFenced": true, "InterruptWithContext": true,
+	"InterruptTurn": true, "InterruptTurnOn": true,
+	"StopTurn": true, "StopTurnFenced": true, "StopTurnIf": true, "StopTurnWith": true,
+	// Respond.
+	"Respond": true, "RespondFenced": true, "RespondFencedVia": true,
 }
+
+// laneInjectSessionPath is the session package's import path: its *Manager
+// types input (Submit, StopTurn, Respond, ...).
+const laneInjectSessionPath = "github.com/gastownhall/gascity/internal/session"
 
 // laneInjectDirs are the directories the lint scans, relative to the
 // repository root, and the prefix their sites carry: cmd/gc's sites are
@@ -197,23 +212,46 @@ func TestLaneInjectSitesSeesEveryShape(t *testing.T) {
 		{"a method's call", `func (h *host) f(sp runtime.Provider) { _ = sp.SendKeys("x") }`, []string{"zz.go:host.f"}},
 		{"a package-level func literal", `var f = func(sp runtime.Provider) error { return sp.Nudge("x", nil) }`, []string{"zz.go:var f"}},
 		{"a method value", `func f(sp runtime.Provider) error { n := sp.Nudge; return n("x", nil) }`, []string{"zz.go:f"}},
-		{"a method value of a handle passed on", `func f(h worker.Handle) { run(h.NudgeNow) }`, []string{"zz.go:f"}},
+		{"a method value of a handle passed on", `func f(h worker.Handle) { run(h.Nudge) }`, []string{"zz.go:f"}},
 		{"a package-level method value", `var sp runtime.Provider
 var n = sp.Nudge`, []string{"zz.go:var n"}},
 		{"a method expression", `var n = runtime.Provider.Nudge`, []string{"zz.go:var n"}},
-		{"a message call", `func f(h worker.Handle) { _, _ = h.Message(ctx, req) }`, []string{"zz.go:f"}},
+		{"a message call", `func f(h worker.Handle) { _, _ = h.Message(ctx, by, req) }`, []string{"zz.go:f"}},
+		{"a fenced nudge", `func f(fp runtime.FencedInputProvider) error { return fp.NudgeFenced(ctx, "x", content, n) }`, []string{"zz.go:f"}},
+		{"fenced keys", `func f(fp runtime.FencedInputProvider) error { return fp.SendKeysFenced(ctx, "x", fence, "Enter") }`, []string{"zz.go:f"}},
+		{"a fenced key sequence", `func f(c runtime.Carrier) error { return c.FencedKeys(ctx, "x", fence, body) }`, []string{"zz.go:f"}},
+		{"a submit", `func f(m *session.Manager) { _, _ = m.Submit(ctx, by, id, msg, resume, hints, intent) }`, []string{"zz.go:f"}},
+		{"an immediate send", `func f(m *session.Manager) { _, _ = m.SendImmediate(ctx, by, id, msg, resume, hints) }`, []string{"zz.go:f"}},
+		{"a live-only send", `func f(m *session.Manager) { _, _ = m.SendLiveOnly(ctx, id, msg, procs) }`, []string{"zz.go:f"}},
+		{"an immediate live-only send", `func f(m *session.Manager) { _, _ = m.SendImmediateLiveOnly(ctx, id, msg, procs) }`, []string{"zz.go:f"}},
+		{"a wait-idle nudge", `func f(m *session.Manager) { _, _ = m.TryWaitIdleNudge(ctx, by, id, src, msg, resume, hints) }`, []string{"zz.go:f"}},
+		{"a live-only wait-idle nudge", `func f(m *session.Manager) { _, _ = m.TryWaitIdleNudgeLiveOnly(ctx, id, src, msg, procs) }`, []string{"zz.go:f"}},
+		{"a nudge helper", `func f(sp runtime.Provider) error { return runtime.NudgeWithContext(ctx, sp, "x", content, false) }`, []string{"zz.go:f"}},
+		{"a receipted nudge helper", `func f(sp runtime.Provider) { _, _ = runtime.NudgeWithReceipt(ctx, sp, "x", content, false) }`, []string{"zz.go:f"}},
+		{"a keyed nudge helper", `func f(sp runtime.Provider) error { return runtime.NudgeWithDeliveryKey(ctx, sp, "x", content) }`, []string{"zz.go:f"}},
+		{"a keys helper", `func f(sp runtime.Provider) error { return runtime.SendKeysWithContext(ctx, sp, "x", "Enter") }`, []string{"zz.go:f"}},
 		{"an interrupt call", `func f(h worker.Handle) error { return h.Interrupt(ctx, req) }`, []string{"zz.go:f"}},
 		{"an actor's interrupt call", `func f(h worker.Handle) { _, _ = h.InterruptAs(ctx, by, req) }`, []string{"zz.go:f"}},
-		{"a protocol turn interrupt", `func (s *srv) f(m *session.Manager) { _ = m.InterruptTurn(ctx, id, turn) }`, []string{"zz.go:srv.f"}},
+		{"a fenced interrupt", `func f(fp runtime.FencedInputProvider) error { return fp.InterruptFenced(ctx, "x", fence) }`, []string{"zz.go:f"}},
+		{"an interrupt helper", `func f(sp runtime.Provider) error { return runtime.InterruptWithContext(ctx, sp, "x") }`, []string{"zz.go:f"}},
+		{"a protocol turn interrupt", `func (s *srv) f(m *session.Manager) { _, _, _ = m.InterruptTurn(ctx, id, turnID, restart) }`, []string{"zz.go:srv.f"}},
+		{"a turn interrupt helper", `func f(tf runtime.TurnFenceProvider) { _, _ = session.InterruptTurnOn(ctx, tf, "x", turnID) }`, []string{"zz.go:f"}},
 		{"a stop of a turn", `func f(m *session.Manager) error { return m.StopTurn(id) }`, []string{"zz.go:f"}},
+		{"a fenced stop", `func f(m *session.Manager) error { return m.StopTurnFenced(ctx, id, fence) }`, []string{"zz.go:f"}},
 		{"a checked stop", `func f(m *session.Manager) error { return m.StopTurnIf(ctx, id, still) }`, []string{"zz.go:f"}},
 		{"a shaped stop", `func f(m *session.Manager) { _, _ = m.StopTurnWith(ctx, id, opts) }`, []string{"zz.go:f"}},
 		{"a respond", `func f(h worker.Handle) error { return h.Respond(ctx, r) }`, []string{"zz.go:f"}},
 		{"a fenced respond", `func f(fp runtime.FencedInteractionProvider) error { return fp.RespondFenced(ctx, "x", fence, r) }`, []string{"zz.go:f"}},
+		{"a fenced respond helper", `func f(sp runtime.Provider) error { return runtime.RespondFencedVia(ctx, sp, "x", fence, r) }`, []string{"zz.go:f"}},
 		{"a message method value", `func f(h worker.Handle) { run(h.Message) }`, []string{"zz.go:f"}},
 		{"an interrupt method value", `func f(sp runtime.Provider) { run(sp.Interrupt) }`, []string{"zz.go:f"}},
 		{"a respond method value", `func f(h worker.Handle) { run(h.Respond) }`, []string{"zz.go:f"}},
-		{"a stop method expression", `var stop = worker.Handle.StopTurn`, []string{"zz.go:var stop"}},
+		{"a manager's stop method value", `import "github.com/gastownhall/gascity/internal/session"
+func f(m *session.Manager) { run(m.StopTurn) }`, []string{"zz.go:f"}},
+		{"a stop method expression under a renamed import", `import sessionpkg "github.com/gastownhall/gascity/internal/session"
+var stop = (*sessionpkg.Manager).StopTurn`, []string{"zz.go:var stop"}},
+		{"another package's Manager", `import "example.com/other/session"
+func f(m *session.Manager) { run(m.StopTurn) }`, nil},
 		{"a message field read", `func f(e *event) string { return e.Message }`, nil},
 		{"a config field read", `func f(a *config.Agent) string { return strings.TrimSpace(a.Nudge) }`, nil},
 		{"a field write", `func f(cfg *runtime.Config, s string) { cfg.Nudge = s }`, nil},
@@ -244,17 +282,22 @@ var n = sp.Nudge`, []string{"zz.go:var n"}},
 // site types input when it calls one of laneInjectMethods on anything, or
 // refers to one of those methods without calling it (a method
 // value or method expression, which can be called later) on an operand the
-// declaration types as a runtime.Provider or worker.Handle (laneInjectTyped):
-// the scan has no type checker, so an uncalled .Nudge on an operand of
-// another type reads as a field, as config.Agent.Nudge is.
+// declaration types as a runtime.Provider, a worker.Handle or a
+// *session.Manager (laneInjectTyped): the scan has no type checker, so an
+// uncalled .Nudge on an operand of another type reads as a field, as
+// config.Agent.Nudge is.
 //
 // Without a type checker the scan cannot type every operand, so a method
 // value taken without a call is missed when its operand is a field chain
 // (e.deps.sp.Nudge) or a variable declared from a call's result
-// (sp := h.SessionProvider(); n := sp.Nudge). Calling such a value later
-// (n(...)) names no injecting method either. Review catches those; a
-// go/types or nogo analyzer would close the gap.
+// (sp := h.SessionProvider(); n := sp.Nudge), and so is a package-level
+// helper taken as a value (n := runtime.NudgeWithContext). Calling such a
+// value later (n(...)) names no injecting method either. A call is matched
+// by name alone, so laneInjectMethods leaves out session.Manager.Send,
+// whose name mail.Provider.Send shares. Review catches those; a go/types or
+// nogo analyzer would close the gap.
 func laneInjectSites(fset *token.FileSet, name string, file *ast.File) []laneInjectSite {
+	sess := laneInjectSessionName(file)
 	var out []laneInjectSite
 	for _, decl := range file.Decls {
 		var site string
@@ -278,24 +321,42 @@ func laneInjectSites(fset *token.FileSet, name string, file *ast.File) []laneInj
 				for i, n := range vs.Names {
 					names[i] = n.Name
 				}
-				out = append(out, laneInjectScan(fset, name+":var "+strings.Join(names, ","), vs, laneInjectTypedPkg(file))...)
+				out = append(out, laneInjectScan(fset, name+":var "+strings.Join(names, ","), vs, laneInjectTypedPkg(file, sess), sess)...)
 			}
 			continue
 		default:
 			continue
 		}
-		typed := laneInjectTypedPkg(file)
-		for k := range laneInjectTypedIn(body) {
+		typed := laneInjectTypedPkg(file, sess)
+		for k := range laneInjectTypedIn(body, sess) {
 			typed[k] = true
 		}
-		out = append(out, laneInjectScan(fset, site, body, typed)...)
+		out = append(out, laneInjectScan(fset, site, body, typed, sess)...)
 	}
 	return out
 }
 
+// laneInjectSessionName is the name file refers to the session package by:
+// its import's name (the scanned files use session, sessionpkg and
+// sessions), session for an unnamed import, "" when file does not import
+// it.
+func laneInjectSessionName(file *ast.File) string {
+	for _, imp := range file.Imports {
+		if path, err := strconv.Unquote(imp.Path.Value); err != nil || path != laneInjectSessionPath {
+			continue
+		}
+		if imp.Name != nil {
+			return imp.Name.Name
+		}
+		return "session"
+	}
+	return ""
+}
+
 // laneInjectScan is laneInjectSites over one declaration's node, its sites
-// named site, with typed the identifiers it types as a provider or handle.
-func laneInjectScan(fset *token.FileSet, site string, node ast.Node, typed map[string]bool) []laneInjectSite {
+// named site, with typed the identifiers it types as a provider, handle or
+// manager and sess the file's name for the session package.
+func laneInjectScan(fset *token.FileSet, site string, node ast.Node, typed map[string]bool, sess string) []laneInjectSite {
 	var out []laneInjectSite
 	called := map[*ast.SelectorExpr]bool{}
 	ast.Inspect(node, func(n ast.Node) bool {
@@ -306,7 +367,7 @@ func laneInjectScan(fset *token.FileSet, site string, node ast.Node, typed map[s
 				out = append(out, laneInjectSite{site: site, pos: fset.Position(x.Pos()), what: "calls ." + sel.Sel.Name + "("})
 			}
 		case *ast.SelectorExpr:
-			if called[x] || !laneInjectMethods[x.Sel.Name] || !laneInjectTyped(x.X, typed) {
+			if called[x] || !laneInjectMethods[x.Sel.Name] || !laneInjectTyped(x.X, typed, sess) {
 				return true
 			}
 			out = append(out, laneInjectSite{site: site, pos: fset.Position(x.Pos()), what: "takes ." + x.Sel.Name + " as a value"})
@@ -318,47 +379,57 @@ func laneInjectScan(fset *token.FileSet, site string, node ast.Node, typed map[s
 
 // laneInjectTyped reports whether operand is, by its declaration, a
 // runtime.Provider or worker.Handle (or a type of either package whose name
-// ends in Provider or Handle): an identifier typed so in typed, or the type
-// itself, as in a method expression.
-func laneInjectTyped(operand ast.Expr, typed map[string]bool) bool {
+// ends in Provider or Handle) or a *session.Manager: an identifier typed so
+// in typed, or the type itself, as in a method expression. sess is the
+// file's name for the session package.
+func laneInjectTyped(operand ast.Expr, typed map[string]bool, sess string) bool {
 	switch x := operand.(type) {
 	case *ast.Ident:
 		return typed[x.Name]
 	case *ast.ParenExpr:
-		return laneInjectTyped(x.X, typed)
+		return laneInjectTyped(x.X, typed, sess)
 	case *ast.StarExpr:
-		return laneInjectTyped(x.X, typed)
+		return laneInjectTyped(x.X, typed, sess)
 	case *ast.SelectorExpr:
-		return laneInjectTypeExpr(x)
+		return laneInjectTypeExpr(x, sess)
 	}
 	return false
 }
 
 // laneInjectTypeExpr reports whether typ names a provider or handle type of
-// the runtime or worker package.
-func laneInjectTypeExpr(typ ast.Expr) bool {
+// the runtime or worker package, which every scanned file imports under its
+// own name, or the Manager of the session package, which a file may rename:
+// sess is the file's name for it (laneInjectSessionName).
+func laneInjectTypeExpr(typ ast.Expr, sess string) bool {
 	switch x := typ.(type) {
 	case *ast.StarExpr:
-		return laneInjectTypeExpr(x.X)
+		return laneInjectTypeExpr(x.X, sess)
 	case *ast.SelectorExpr:
 		pkg, ok := x.X.(*ast.Ident)
-		return ok && (pkg.Name == "runtime" || pkg.Name == "worker") &&
+		if !ok {
+			return false
+		}
+		if pkg.Name == sess {
+			return x.Sel.Name == "Manager"
+		}
+		return (pkg.Name == "runtime" || pkg.Name == "worker") &&
 			(strings.HasSuffix(x.Sel.Name, "Provider") || strings.HasSuffix(x.Sel.Name, "Handle"))
 	}
 	return false
 }
 
-// laneInjectTypedIn are the identifiers node declares with a provider or
-// handle type: receivers, parameters, results and var declarations,
-// including those of nested func literals.
-func laneInjectTypedIn(node ast.Node) map[string]bool {
+// laneInjectTypedIn are the identifiers node declares with a provider,
+// handle or manager type (sess as in laneInjectTypeExpr): receivers,
+// parameters, results and var declarations, including those of nested func
+// literals.
+func laneInjectTypedIn(node ast.Node, sess string) map[string]bool {
 	typed := map[string]bool{}
 	addFields := func(fl *ast.FieldList) {
 		if fl == nil {
 			return
 		}
 		for _, f := range fl.List {
-			if laneInjectTypeExpr(f.Type) {
+			if laneInjectTypeExpr(f.Type, sess) {
 				for _, n := range f.Names {
 					typed[n.Name] = true
 				}
@@ -373,7 +444,7 @@ func laneInjectTypedIn(node ast.Node) map[string]bool {
 			addFields(x.Params)
 			addFields(x.Results)
 		case *ast.ValueSpec:
-			if x.Type != nil && laneInjectTypeExpr(x.Type) {
+			if x.Type != nil && laneInjectTypeExpr(x.Type, sess) {
 				for _, n := range x.Names {
 					typed[n.Name] = true
 				}
@@ -385,13 +456,13 @@ func laneInjectTypedIn(node ast.Node) map[string]bool {
 }
 
 // laneInjectTypedPkg are the package-level identifiers file declares with a
-// provider or handle type, and those its package-level func literals'
-// signatures declare.
-func laneInjectTypedPkg(file *ast.File) map[string]bool {
+// provider, handle or manager type (sess as in laneInjectTypeExpr), and
+// those its package-level func literals' signatures declare.
+func laneInjectTypedPkg(file *ast.File, sess string) map[string]bool {
 	typed := map[string]bool{}
 	for _, decl := range file.Decls {
 		if d, ok := decl.(*ast.GenDecl); ok && d.Tok == token.VAR {
-			for k := range laneInjectTypedIn(d) {
+			for k := range laneInjectTypedIn(d, sess) {
 				typed[k] = true
 			}
 		}
