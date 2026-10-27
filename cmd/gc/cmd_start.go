@@ -1213,6 +1213,7 @@ func runStartWarmup(cityPath string, cfg *config.City, controllerLock *os.File, 
 		SkipManagedDoltCheck: managedDoltOpsCheckSkip(warmupCityPath, cfg, nil),
 		SkipRigDoltChecks:    skipRigDoltChecks,
 		SkipStorePreflight:   true,
+		Warmup:               true,
 	})
 	warmupOpts := warmup.WarmupOpts{
 		Checks: warmupChecks,

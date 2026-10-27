@@ -215,9 +215,21 @@ type bdHelpRunner func(ctx context.Context, path []string) (string, error)
 // bdTrustOpts selects how much of the cache and vouch a resolution may use.
 type bdTrustOpts struct {
 	// forceWalk ignores the cache and the vouch: `gc storage vouch-bd` and
-	// the doctor's re-check of a vouched binary walk for real.
+	// gc doctor walk for real.
 	forceWalk bool
+	// cacheOnly answers from the cache alone and never walks or hashes the
+	// binary; a binary with no cached verdict is errBdVerdictPending. gc
+	// start's warm-up uses it.
+	cacheOnly bool
 }
+
+// errBdVerdictPending is a cache-only resolution of a binary gc has not
+// judged yet: the first gc bd call (or gc doctor) will walk it.
+var errBdVerdictPending = errors.New("no verdict yet for this bd binary; the first gc bd call or gc doctor walks it")
+
+// bdVouchUsedOnce rate-limits gc_bd.vouch_used to once per binary per
+// process, cache hits included.
+var bdVouchUsedOnce sync.Map
 
 // bdBuildInfoCheck verifies that the binary is a Go build of bd's cmd/bd
 // with the cobra and pflag the matched inventory was dumped with (a mise or
@@ -288,14 +300,12 @@ func resolveBdInventory(cityPath, bdPath string, opts bdTrustOpts) (bdTrustVerdi
 	case errors.Is(err, errBdTrustCacheBusy):
 		return bdTrustVerdict{}, err
 	case err != nil:
-		cached = false // read-only .gc: walk uncached
+		// A read-only .gc: the cache is still read, only never written.
+		cached = false
 	default:
 		defer unlock()
 	}
-	var cache bdTrustCache
-	if cached {
-		cache = loadBdTrustCache(cityPath)
-	}
+	cache := loadBdTrustCache(cityPath)
 	now := time.Now()
 	same := func(e bdTrustCacheEntry) bool { return e.bdBinaryID == id && e.InventorySet == set }
 	if !opts.forceWalk {
@@ -314,8 +324,14 @@ func resolveBdInventory(cityPath, bdPath string, opts bdTrustOpts) (bdTrustVerdi
 			}
 			v := e.bdTrustVerdict
 			v.Source = "cache"
+			if v.Vouched {
+				recordBdVouchUsed(cityPath, id.Path, v.SHA256, v.Inventory)
+			}
 			return v, nil
 		}
+	}
+	if opts.cacheOnly {
+		return bdTrustVerdict{}, errBdVerdictPending
 	}
 	record := func(e bdTrustCacheEntry) {
 		if !cached {
@@ -337,7 +353,7 @@ func resolveBdInventory(cityPath, bdPath string, opts bdTrustOpts) (bdTrustVerdi
 		return bdTrustVerdict{}, err
 	}
 	if !opts.forceWalk {
-		if vouch, ok := findBdVouch(cityPath, id.Path, sum); ok {
+		if vouch, ok := findBdVouch(cityPath, id.Path, sum, set); ok {
 			inv := bdflags.InventoryByName(vouch.Inventory)
 			v := bdTrustVerdict{Inventory: vouch.Inventory, SHA256: sum, Vouched: true}
 			if err := bdBuildInfoCheck(id.Path, inv); err != nil {
@@ -409,12 +425,31 @@ const bdDiffDetailCap = 1200
 // bd never sees the caller's TMPDIR.
 func bdWalkScratchDir(cityPath string) (string, error) {
 	base := filepath.Join(cityPath, ".gc", "cache", "tmp")
+	removeStaleBdWalkDirs(base)
 	if err := os.MkdirAll(base, 0o755); err == nil {
 		if dir, err := os.MkdirTemp(base, "bd-walk-"); err == nil {
 			return dir, nil
 		}
 	}
 	return os.MkdirTemp("", "gc-bd-walk-")
+}
+
+// removeStaleBdWalkDirs removes walk scratch dirs a killed gc left behind:
+// any bd-walk-* older than the longest a walk can take.
+func removeStaleBdWalkDirs(base string) {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-2 * bdWalkDeadline)
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "bd-walk-") {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(filepath.Join(base, e.Name()))
+		}
+	}
 }
 
 // walkBdHelpTree walks the binary's --help tree under one total deadline,
@@ -532,13 +567,18 @@ func bdInventoryForScope(cityPath string, _ *config.City, target execStoreTarget
 	return inv, nil
 }
 
-// bdVouchUsedEvent is recorded whenever the city's vouch file,
+// bdVouchUsedEvent is recorded the first time a gc process admits a binary
+// on the city's vouch file (whether from the vouch itself or from the cached
+// verdict it produced), once per binary per process. The vouch file,
 // not a walk, admits a bd binary. The vouch is the owner's convenience, not a
 // security boundary (anyone who can write .gc can write it), so its
 // use is visible.
 const bdVouchUsedEvent = "gc_bd.vouch_used"
 
 func recordBdVouchUsed(cityPath, bdPath, sum, inventory string) {
+	if _, seen := bdVouchUsedOnce.LoadOrStore(bdPath+"\x00"+sum, true); seen {
+		return
+	}
 	payload, err := json.Marshal(map[string]string{"binary": bdPath, "sha256": sum, "inventory": inventory})
 	if err != nil {
 		return

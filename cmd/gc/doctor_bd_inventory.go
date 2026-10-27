@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -20,16 +21,34 @@ import (
 //
 // It has no fix: the remedy for a bd that matches nothing is a pinned bd
 // build. `gc storage vouch-bd` records a vouch for a binary that does match
-// (so gc bd skips the walk), and this check re-walks every vouched binary.
+// (so gc bd skips the walk).
+//
+// gc doctor walks each distinct binary once per run, so neither a forged
+// vouch nor a forged cache row survives it; a walked verdict that differs
+// from what the cache or vouch claimed is reported. In gc start's warm-up
+// (cacheOnly) it walks nothing: it reports cached verdicts, and a binary
+// with none is "pending", not a failure.
 type bdInventoryCheck struct {
-	cityPath string
-	cfg      *config.City
+	cityPath  string
+	cfg       *config.City
+	cacheOnly bool
+	// cachedOnce resolves as gc bd does (cache, vouch, a walk on a miss)
+	// instead of walking every binary: the controller-start check.
+	cachedOnce bool
 	// resolve is resolveBdInventory, injectable for tests.
 	resolve func(cityPath, bdPath string, opts bdTrustOpts) (bdTrustVerdict, error)
 }
 
 func newBdInventoryCheck(cityPath string, cfg *config.City) *bdInventoryCheck {
 	return &bdInventoryCheck{cityPath: cityPath, cfg: cfg, resolve: resolveBdInventory}
+}
+
+// newWarmupBdInventoryCheck is the check gc start's warm-up runs: from the
+// cache only.
+func newWarmupBdInventoryCheck(cityPath string, cfg *config.City) *bdInventoryCheck {
+	c := newBdInventoryCheck(cityPath, cfg)
+	c.cacheOnly = true
+	return c
 }
 
 func (c *bdInventoryCheck) Name() string                     { return "bd-command-inventory" }
@@ -55,7 +74,7 @@ func (c *bdInventoryCheck) Run(_ *doctor.CheckContext) *doctor.CheckResult {
 		r.Message = "single-store city: gc bd forwards every command, whatever the bd build"
 		return r
 	}
-	var bad, warn []string
+	var bad, warn, pending []string
 	if _, err := loadBdVouches(c.cityPath); err != nil {
 		warn = append(warn, fmt.Sprintf("the vouch file is ignored: %v (gc storage vouch-bd rewrites it)", err))
 	}
@@ -79,18 +98,31 @@ func (c *bdInventoryCheck) Run(_ *doctor.CheckContext) *doctor.CheckResult {
 			continue
 		}
 		seen[key] = true
-		v, err := c.resolve(c.cityPath, bdPath, bdTrustOpts{})
-		if err == nil && v.Vouched {
-			// The vouch admitted it without a walk; the doctor walks it.
-			walked, werr := c.resolve(c.cityPath, bdPath, bdTrustOpts{forceWalk: true})
+		if c.cacheOnly {
+			v, err := c.resolve(c.cityPath, bdPath, bdTrustOpts{cacheOnly: true})
 			switch {
-			case werr != nil:
-				bad = append(bad, fmt.Sprintf("%s: %s is vouched for as %s, and re-walking it failed: %v", target.ScopeRoot, bdPath, v.Inventory, werr))
-				continue
-			case walked.Inventory != v.Inventory:
-				bad = append(bad, fmt.Sprintf("%s: %s is vouched for as %s, but its command tree matches %s: %s", target.ScopeRoot, bdPath, v.Inventory, orNone(walked.Inventory), strings.Join(walked.Diffs, "; ")))
-				continue
+			case errors.Is(err, errBdVerdictPending):
+				pending = append(pending, bdPath)
+			case err != nil:
+				bad = append(bad, fmt.Sprintf("%s: %v", target.ScopeRoot, err))
+			case v.Inventory == "":
+				bad = append(bad, fmt.Sprintf("%s: %s (sha256 %s) matches no pinned gc bd inventory: %s", target.ScopeRoot, bdPath, shortSHA(v.SHA256), strings.Join(v.Diffs, "; ")))
 			}
+			continue
+		}
+		// What the cache or a vouch claims, then (in gc doctor) a real walk.
+		claimed, claimErr := c.resolve(c.cityPath, bdPath, bdTrustOpts{})
+		v, err := claimed, claimErr
+		if !c.cachedOnce {
+			v, err = c.resolve(c.cityPath, bdPath, bdTrustOpts{forceWalk: true})
+		}
+		if claimErr == nil && err == nil && claimed.Inventory != "" && claimed.Inventory != v.Inventory {
+			how := "cached"
+			if claimed.Vouched {
+				how = "vouched for"
+			}
+			bad = append(bad, fmt.Sprintf("%s: %s was %s as %s, but its command tree matches %s: %s", target.ScopeRoot, bdPath, how, orNone(claimed.Inventory), orNone(v.Inventory), strings.Join(v.Diffs, "; ")))
+			continue
 		}
 		switch {
 		case err != nil:
@@ -116,6 +148,9 @@ func (c *bdInventoryCheck) Run(_ *doctor.CheckContext) *doctor.CheckResult {
 	}
 	r.Status = doctor.StatusOK
 	r.Message = "every scope's bd matches a pinned gc bd inventory"
+	if len(pending) > 0 {
+		r.Message = fmt.Sprintf("pending: no verdict yet for %s (the first gc bd call or gc doctor walks it)", strings.Join(pending, ", "))
+	}
 	return r
 }
 
@@ -171,7 +206,9 @@ func warnBdInventoryAtControllerStart(cityPath string, cfg *config.City, rec eve
 	}
 	go func() {
 		defer func() { _ = recover() }() // best-effort: never take the controller down
-		if ev := bdInventoryStartFinding(newBdInventoryCheck(cityPath, cfg)); ev != nil {
+		check := newBdInventoryCheck(cityPath, cfg)
+		check.cachedOnce = true
+		if ev := bdInventoryStartFinding(check); ev != nil {
 			rec.Record(*ev)
 		}
 	}()

@@ -196,7 +196,7 @@ func TestBdTrustVouchAndShaCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	binID, _ := statBdBinary(bin)
-	if err := writeBdVouch(c.city, bdVouch{BinaryPath: binID.Path, SHA256: sum, Inventory: oss.Name}); err != nil {
+	if err := writeBdVouch(c.city, bdVouch{BinaryPath: binID.Path, SHA256: sum, Inventory: oss.Name, InventorySet: bdflags.InventorySetFingerprint()}); err != nil {
 		t.Fatal(err)
 	}
 	v, err := resolveBdInventory(c.city, bin, bdTrustOpts{})
@@ -593,11 +593,11 @@ func TestBdInventoryDoctorRewalksVouchedBinaries(t *testing.T) {
 	sum, _ := fileSHA256(bin)
 	// A vouch someone wrote by hand for a binary that does not match.
 	binID, _ := statBdBinary(bin)
-	if err := writeBdVouch(c.city, bdVouch{BinaryPath: binID.Path, SHA256: sum, Inventory: enterprise.Name}); err != nil {
+	if err := writeBdVouch(c.city, bdVouch{BinaryPath: binID.Path, SHA256: sum, Inventory: enterprise.Name, InventorySet: bdflags.InventorySetFingerprint()}); err != nil {
 		t.Fatal(err)
 	}
 	r := newBdInventoryCheck(c.city, cfg).Run(&doctor.CheckContext{CityPath: c.city})
-	if r.Status != doctor.StatusError || !strings.Contains(strings.Join(r.Details, "\n"), "is vouched for as "+enterprise.Name+", but its command tree matches no pinned inventory") {
+	if r.Status != doctor.StatusError || !strings.Contains(strings.Join(r.Details, "\n"), "was vouched for as "+enterprise.Name+", but its command tree matches no pinned inventory") {
 		t.Fatalf("a vouched binary whose tree does not match: %+v", r)
 	}
 

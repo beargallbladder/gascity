@@ -1014,6 +1014,7 @@ go_test(
         "bd_env_proxied_test.go",
         "bd_env_test.go",
         "bd_gc_binary_pin_test.go",
+        "bd_inventory_trust_round5_test.go",
         "bd_inventory_trust_test.go",
         "bd_mistyped_metadata_test.go",
         "bd_passthrough_bench_test.go",

@@ -28,11 +28,15 @@ import (
 
 // bdVouch is one vouched binary.
 type bdVouch struct {
-	BinaryPath string    `json:"binary_path"`
-	SHA256     string    `json:"sha256"`
-	Inventory  string    `json:"inventory"`
-	WrittenAt  time.Time `json:"written_at"`
-	WrittenBy  string    `json:"written_by"`
+	BinaryPath string `json:"binary_path"`
+	SHA256     string `json:"sha256"`
+	Inventory  string `json:"inventory"`
+	// InventorySet is the embedded inventory set the walk matched against
+	// (bdflags.InventorySetFingerprint); a gc whose set differs ignores the
+	// vouch and re-judges the binary.
+	InventorySet string    `json:"inventory_set"`
+	WrittenAt    time.Time `json:"written_at"`
+	WrittenBy    string    `json:"written_by"`
 }
 
 type bdVouchFile struct {
@@ -61,20 +65,26 @@ func loadBdVouches(cityPath string) ([]bdVouch, error) {
 	return f.Vouches, nil
 }
 
-// findBdVouch returns the vouch for exactly this binary — its resolved path
-// and its sha256 — whose inventory this gc embeds.
-func findBdVouch(cityPath, binaryPath, sum string) (bdVouch, bool) {
+// findBdVouch returns the vouch for this binary — its resolved path and its
+// bytes (sha256) — written under this gc's inventory set.
+func findBdVouch(cityPath, binaryPath, sum, set string) (bdVouch, bool) {
 	vouches, _ := loadBdVouches(cityPath)
 	for _, v := range vouches {
-		if v.BinaryPath == binaryPath && v.SHA256 == sum && bdflags.InventoryByName(v.Inventory) != nil {
+		if v.BinaryPath == binaryPath && v.SHA256 == sum && v.InventorySet == set && bdflags.InventoryByName(v.Inventory) != nil {
 			return v, true
 		}
 	}
 	return bdVouch{}, false
 }
 
-// writeBdVouch records v, replacing any vouch for the same binary path.
+// writeBdVouch records v, replacing any vouch for the same binary path,
+// under the verdict cache's lock.
 func writeBdVouch(cityPath string, v bdVouch) error {
+	unlock, err := lockBdTrustCache(cityPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	vouches, err := loadBdVouches(cityPath)
 	if err != nil {
 		vouches = nil // a malformed file is replaced, not merged
@@ -116,7 +126,7 @@ func vouchBdForScope(cityPath string, target execStoreTarget) (bdVouch, error) {
 	if v.Inventory == "" {
 		return bdVouch{}, fmt.Errorf("refusing to vouch for %s: its command tree matches no pinned gc bd inventory:\n  %s", id.Path, strings.Join(v.Diffs, "\n  "))
 	}
-	vouch := bdVouch{BinaryPath: id.Path, SHA256: v.SHA256, Inventory: v.Inventory, WrittenAt: time.Now().UTC(), WrittenBy: eventActor()}
+	vouch := bdVouch{BinaryPath: id.Path, SHA256: v.SHA256, Inventory: v.Inventory, InventorySet: bdflags.InventorySetFingerprint(), WrittenAt: time.Now().UTC(), WrittenBy: eventActor()}
 	if err := writeBdVouch(cityPath, vouch); err != nil {
 		return bdVouch{}, err
 	}
@@ -136,14 +146,16 @@ func newStorageVouchBdCmd(surface storageCommandSurface, stdout, stderr io.Write
 		Long: `On a split city, gc bd judges commands only for a bd binary whose command
 tree matches a pinned gc bd inventory. It walks each new binary's --help tree
 once and caches the verdict. This command walks the city's bd (or a rig's, with
---rig) for real and, only if the tree matches, records a vouch for that exact
-binary (by sha256) in .gc/bd-inventory-vouch.json, so gc bd admits it without
+--rig) for real and, only if the tree matches, records a vouch for that binary
+by path and bytes (sha256) in .gc/bd-inventory-vouch.json, so gc bd admits it without
 walking it again. A binary whose tree matches no inventory is refused and
 nothing is written. city.toml is never edited.
 
 The vouch is a convenience, not a security boundary: gc doctor re-walks
-vouched binaries and reports a mismatch, and every admission by a vouch
-records a gc_bd.vouch_used event.`,
+binaries and reports a mismatch, and the first admission by a vouch in each
+gc process records a gc_bd.vouch_used event. A gc whose pinned inventories
+differ from the ones the vouch was written under ignores it and walks the
+binary again.`,
 		RunE: func(*cobra.Command, []string) error {
 			request, err := resolveStorageOperatorRequest()
 			if err != nil {
