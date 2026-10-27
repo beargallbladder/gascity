@@ -89,7 +89,8 @@ type StorageConfig struct {
 	// command tree that exact binary has. `gc doctor --fix` writes it after a
 	// structural walk of the binary matches the inventory; gc bd then trusts
 	// that binary without walking it. A binary with any other sha256 is
-	// walked and matched as usual.
+	// walked and matched as usual. A malformed value is ignored (gc doctor
+	// warns); it never fails the config load.
 	GCBdInventory string `toml:"gc_bd_inventory,omitempty"`
 }
 
@@ -306,11 +307,8 @@ func ValidateStorageConfig(cfg *City) error {
 	if cfg == nil || cfg.Storage == nil {
 		return nil
 	}
-	if v := cfg.Storage.GCBdInventory; strings.TrimSpace(v) != "" {
-		if _, _, ok := ParseGCBdInventory(v); !ok {
-			return fmt.Errorf("storage.gc_bd_inventory %q: want \"<inventory-id>@sha256:<64 lowercase hex>\" (gc doctor --fix writes it)", v)
-		}
-	}
+	// A malformed gc_bd_inventory is not an error: the vouch is a
+	// convenience, so gc ignores it and gc doctor warns (bd-command-inventory).
 	storage := cfg.Storage
 	for _, class := range storageConfigClassOrder() {
 		binding := storage.Classes.BindingFor(class)
