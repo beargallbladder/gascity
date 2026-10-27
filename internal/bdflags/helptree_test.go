@@ -2,6 +2,7 @@ package bdflags
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -112,6 +113,33 @@ func TestInventoryProvenanceMatchesGoMod(t *testing.T) {
 		}
 		if p.CobraVersion != cobraV || p.PflagVersion != pflagV {
 			t.Errorf("%s was built with cobra %s / pflag %s; gc's mirror uses cobra %s / pflag %s", inv.Name, p.CobraVersion, p.PflagVersion, cobraV, pflagV)
+		}
+	}
+}
+
+// TestEmbeddedInventoriesMatchTheirJSON: the binary embeds each inventory
+// gzipped; the gzipped copy must decompress to the reviewed JSON beside it,
+// and every JSON must have its embedded copy.
+func TestEmbeddedInventoriesMatchTheirJSON(t *testing.T) {
+	names, err := filepath.Glob(filepath.Join("inventory", "*.json"))
+	if err != nil || len(names) == 0 {
+		t.Fatalf("no inventory JSON found (%v)", err)
+	}
+	if len(names) != len(Inventories()) {
+		t.Errorf("%d inventory JSON files, %d embedded inventories", len(names), len(Inventories()))
+	}
+	for _, name := range names {
+		want, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := readGzipInventory(path.Join("inventory", filepath.Base(name)+".gz"))
+		if err != nil {
+			t.Errorf("%s has no embedded gzipped copy: %v (run gzip -n -9 -c %s > %s.gz)", name, err, name, name)
+			continue
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s.gz does not decompress to %s; regenerate it with gzip -n -9 -c %s > %s.gz", name, name, name, name)
 		}
 	}
 }

@@ -1,9 +1,11 @@
 package bdflags
 
 import (
+	"compress/gzip"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"path"
 	"sort"
 	"strings"
@@ -22,7 +24,12 @@ import (
 // same cobra and pflag versions bd uses (v1.10.2 / v1.0.10) resolve the command
 // and parse its flags, so the command gc judges is the command bd runs.
 
-//go:embed inventory/*.json
+// The binary embeds each inventory gzipped (gzip -n -9 of the reviewed
+// inventory/<name>.json, which generate.sh writes beside it;
+// TestEmbeddedInventoriesMatchTheirJSON keeps the two equal). Uncompressed
+// they would add about half a megabyte to gc.
+//
+//go:embed inventory/*.json.gz
 var inventoryFS embed.FS
 
 // InventoryFlag is one flag as bd's cobra tree declares it.
@@ -96,12 +103,15 @@ func Inventories() []*Inventory {
 			return
 		}
 		for _, e := range entries {
-			data, err := inventoryFS.ReadFile(path.Join("inventory", e.Name()))
+			if !strings.HasSuffix(e.Name(), ".json.gz") {
+				continue
+			}
+			data, err := readGzipInventory(path.Join("inventory", e.Name()))
 			if err != nil {
-				inventoriesErr = err
+				inventoriesErr = fmt.Errorf("%s: %w", e.Name(), err)
 				return
 			}
-			inv, err := ParseInventory(strings.TrimSuffix(e.Name(), ".json"), data)
+			inv, err := ParseInventory(strings.TrimSuffix(e.Name(), ".json.gz"), data)
 			if err != nil {
 				inventoriesErr = fmt.Errorf("%s: %w", e.Name(), err)
 				return
@@ -114,6 +124,21 @@ func Inventories() []*Inventory {
 		panic("bdflags: pinned bd inventories: " + inventoriesErr.Error())
 	}
 	return inventories
+}
+
+// readGzipInventory returns the decompressed bytes of an embedded inventory.
+func readGzipInventory(name string) ([]byte, error) {
+	f, err := inventoryFS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close() //nolint:errcheck // embedded read
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close() //nolint:errcheck // embedded read
+	return io.ReadAll(zr)
 }
 
 // ParseInventory decodes one inventory dump (the JSON generate.sh writes).

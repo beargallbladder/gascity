@@ -30,7 +30,9 @@ for spec in "$@"; do
   commit="$(git -C "$repo" rev-parse "$ref^{commit}")"
   (cd "$tmp" && GC_BD_INVENTORY_DUMP="$out_dir/$name.json" GC_BD_INVENTORY_COMMIT="$commit" GC_BD_INVENTORY_TAGS="$tags" \
     go run -tags "$tags" ./cmd/bd </dev/null)
-  echo "wrote $out_dir/$name.json"
+  # The binary embeds the gzipped copy; the JSON is what reviewers diff.
+  gzip -n -9 -c "$out_dir/$name.json" >"$out_dir/$name.json.gz"
+  echo "wrote $out_dir/$name.json and $name.json.gz"
   rm -rf "$tmp"
   trap - EXIT
 done
