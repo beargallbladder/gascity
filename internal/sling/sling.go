@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1449,7 +1450,7 @@ func materializeCompiledSlingFormula(ctx context.Context, recipe *formula.Recipe
 		SlingTracef("instantiate decorate-error formula=%s err=%v", formulaName, err)
 		return nil, err
 	}
-	privatizeAttachedRootOnlyWisp(recipe, sourceBeadID)
+	privatizeAttachedRootOnlyWisp(recipe, sourceBeadID, deps.StoreRef)
 	var replacedRootID string
 	if graphWorkflow {
 		if err := closeFailedGraphV2Roots(graphStore, recipe); err != nil {
@@ -1695,8 +1696,16 @@ func existingGraphV2Root(store beads.Store, recipe *formula.Recipe) (*molecule.R
 // checks, and on any city it hid the wisp from the wisp GC's root scan.
 // Readers that treat a gc.kind=wisp bead as executable all exclude the
 // molecule type (see beads.IsMoleculeType), so the type alone keeps it private.
-func privatizeAttachedRootOnlyWisp(recipe *formula.Recipe, sourceBeadID string) {
-	if recipe == nil || !recipe.RootOnly || strings.TrimSpace(sourceBeadID) == "" || len(recipe.Steps) == 0 {
+//
+// It also records the one source the root is attached to
+// (gc.source_bead_id, and gc.source_store_ref when the sling knows its
+// store). The source's molecule_id is the forward pointer; this is the back
+// pointer, which lets the wisp GC's holder guard ask that one source instead
+// of scanning every store — and refuse only when that source's own rig is
+// suspended, not whenever any rig is.
+func privatizeAttachedRootOnlyWisp(recipe *formula.Recipe, sourceBeadID, sourceStoreRef string) {
+	sourceBeadID = strings.TrimSpace(sourceBeadID)
+	if recipe == nil || !recipe.RootOnly || sourceBeadID == "" || len(recipe.Steps) == 0 {
 		return
 	}
 	root := &recipe.Steps[0]
@@ -1704,6 +1713,12 @@ func privatizeAttachedRootOnlyWisp(recipe *formula.Recipe, sourceBeadID string) 
 		return
 	}
 	root.Type = "molecule"
+	meta := maps.Clone(root.Metadata)
+	meta[beadmeta.SourceBeadIDMetadataKey] = sourceBeadID
+	if ref := strings.TrimSpace(sourceStoreRef); ref != "" {
+		meta[beadmeta.SourceStoreRefMetadataKey] = ref
+	}
+	root.Metadata = meta
 }
 
 // ShouldPromoteWorkflowLaunchStatus reports whether a bead's status should

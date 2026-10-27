@@ -444,3 +444,26 @@ func TestSplitSlingDifferentOnFormulaBurnsUnassignedAndRefusesAssigned(t *testin
 		})
 	})
 }
+
+// Review should-fix 2(b): the attached root-only wisp records the one source
+// it is attached to, so the wisp GC can ask that source rather than refuse on
+// any rig's suspension.
+func TestAttachedRootOnlyWispRecordsItsSource(t *testing.T) {
+	forEachSlingTopology(t, func(t *testing.T, env splitAttachEnv) {
+		src := env.source(t, "")
+		res, err := env.sling(t, src.ID, splitAttachVaporA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := env.graph.Get(res.WispRootID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := root.Metadata[beadmeta.SourceBeadIDMetadataKey]; got != src.ID {
+			t.Errorf("attached root %s gc.source_bead_id=%q, want %q", root.ID, got, src.ID)
+		}
+		if got := root.Metadata[beadmeta.SourceStoreRefMetadataKey]; got != env.deps.StoreRef {
+			t.Errorf("attached root %s gc.source_store_ref=%q, want %q", root.ID, got, env.deps.StoreRef)
+		}
+	})
+}
