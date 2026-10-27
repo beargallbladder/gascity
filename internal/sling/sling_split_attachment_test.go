@@ -610,3 +610,67 @@ func TestBurnGuardEdges(t *testing.T) {
 		}
 	})
 }
+
+// failOnceSubtreeStore fails the FIRST subtree read of one root only: the
+// guard's read fails, and a later read (the burn's own) would succeed, as with
+// a transient store error.
+type failOnceSubtreeStore struct {
+	beads.Store
+	rootID string
+	failed *bool
+}
+
+func (s failOnceSubtreeStore) ListByMetadata(filters map[string]string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	if filters[beadmeta.RootBeadIDMetadataKey] == s.rootID && !*s.failed {
+		*s.failed = true
+		return nil, errors.New("transient: store unavailable")
+	}
+	return s.Store.ListByMetadata(filters, limit, opts...)
+}
+
+// An attachment whose subtree the guard could not read is never burned, at
+// either guard site (single and batch), even when the burn's own read would
+// succeed: the guard's failed read is what must stop it, not the burn
+// failing too.
+func TestBurnGuardNeverBurnsAnUnreadableSubtree(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("batch=%v", batch), func(t *testing.T) {
+			work := beads.NewMemStore()
+			root, err := work.Create(beads.Bead{Title: "attached molecule", Type: "molecule"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			step, err := work.Create(beads.Bead{Title: "step", Type: "step", ParentID: root.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ip := "in_progress"
+			if err := work.Update(step.ID, beads.UpdateOpts{Status: &ip}); err != nil {
+				t.Fatal(err)
+			}
+			src, err := work.Create(beads.Bead{Title: "unassigned source", Type: "task", Metadata: map[string]string{beadmeta.MoleculeIDMetadataKey: root.ID}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			failed := false
+			store := failOnceSubtreeStore{Store: work, rootID: root.ID, failed: &failed}
+			var result SlingResult
+			if batch {
+				err = checkBatchNoMoleculeChildren(store, []beads.Bead{src}, singleStoreAttachmentScope(store), &result, false)
+			} else {
+				err = checkNoMoleculeChildren(store, src.ID, singleStoreAttachmentScope(store), &result, false)
+			}
+			if !failed {
+				t.Fatal("the guard never read the attachment's subtree")
+			}
+			if err == nil {
+				t.Error("the guard passed an attachment whose subtree it could not read")
+			}
+			gotRoot, _ := work.Get(root.ID)
+			gotStep, _ := work.Get(step.ID)
+			if gotRoot.Status == "closed" || gotStep.Status == "closed" || len(result.AutoBurned) != 0 {
+				t.Errorf("an attachment whose subtree could not be read was burned (root %s, step %s, burned %v)", gotRoot.Status, gotStep.Status, result.AutoBurned)
+			}
+		})
+	}
+}
