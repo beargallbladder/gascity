@@ -107,8 +107,8 @@ func (h *hookCity) claimOps() hookClaimOps {
 	ops.EmitExecutionStepStarted = func(step beads.Bead, dir string, env []string, assignee string) {
 		emitExecutionStepStarted(h.recorder(), step, dir, env, assignee)
 	}
-	ops.EnqueueContinuationNudge = func(assignee string) {
-		continuationNudgeEnqueueAt(h.path, assignee)
+	ops.EnqueueContinuationNudge = func(assignee, rootID string) {
+		continuationNudgeEnqueueAt(h.path, assignee, rootID)
 	}
 	ops.RecordWorkStarted = func(sessionID string, fence hookStartedFence, key hookStartedKey, via string) (hookStartedResult, error) {
 		return recordWorkStartedVia(h.sessionFront, sessionID, fence, key, via)

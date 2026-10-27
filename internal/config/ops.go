@@ -78,9 +78,12 @@ type OpsConfig struct {
 	// message ops too (interrupt_now as a deliver-now unit, which never
 	// restarts the session), answer 202 once the op is committed, and emit
 	// the request's result after a 5 s settle window (queued while the op
-	// still waits); extmsg member notices are lane notices. gc session
-	// submit's local fallback, mail --notify, sling --nudge and wait nudges
-	// keep their legacy delivery in this build.
+	// still waits); extmsg member notices are lane notices. For sessions a
+	// lane host can type into, gc session submit's local fallback proposes
+	// the op the API would, and mail --notify, sling --nudge and the
+	// hook-claim continuation propose lane notices (a mail notice is
+	// withdrawn once its mail is read or archived). Wait nudges keep their
+	// legacy delivery in this build.
 	// Listing interrupt switches the API's POST
 	// /v0/city/{cityName}/session/{id}/stop and run cancel onto the lane:
 	// each proposes an interrupt op the controller's lane host runs, and

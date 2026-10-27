@@ -22,6 +22,7 @@ import (
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/graphroute"
 	"github.com/gastownhall/gascity/internal/graphv2"
+	"github.com/gastownhall/gascity/internal/opjournal"
 	"github.com/gastownhall/gascity/internal/reconcilekey"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
@@ -960,7 +961,7 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier, stdout, stderr
 		return dryRunSingle(opts, deps, querier, stdout, stderr)
 	}
 	if result.NudgeAgent != nil {
-		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, stdout, stderr)
+		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, result.BeadID, stdout, stderr)
 	}
 	return 0
 }
@@ -1044,7 +1045,7 @@ func doSlingBatchWithJSON(opts slingOpts, deps slingDeps, querier BeadChildQueri
 		return dryRunSingle(opts, deps, querier, humanStdout, stderr)
 	}
 	if result.NudgeAgent != nil {
-		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, humanStdout, stderr)
+		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, result.BeadID, humanStdout, stderr)
 	}
 	// Success only (never dry-run or error): surface a dashboard deep link
 	// when one resolves. Resolution failure degrades silently to no link.
@@ -1535,7 +1536,7 @@ func checkBeadState(q BeadQuerier, beadID string, a config.Agent) beadCheckResul
 // running, pokes the controller to trigger an immediate reconciler tick
 // so WakeWork can wake the session without waiting for the next patrol.
 func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
-	sp runtime.Provider, store beads.Store, stdout, stderr io.Writer,
+	sp runtime.Provider, store beads.Store, beadID string, stdout, stderr io.Writer,
 ) {
 	st := cfg.Workspace.SessionTemplate
 
@@ -1561,7 +1562,7 @@ func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 				}
 				member := resolvePoolNudgeMember(cfg, a, ref.qualifiedInstance)
 				target := buildSlingNudgeTarget(member, cityName, cityPath, cfg, sessStore, ref.sessionName)
-				deliverSlingNudge(target, sp, rawStore, cityPath, stdout, stderr)
+				deliverSlingNudge(target, sp, rawStore, cityPath, beadID, stdout, stderr)
 				return true
 			}
 			return false
@@ -1594,7 +1595,7 @@ func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 	sessStore := cliSessionStore(store, cfg, cityPath)
 	sn := lookupSessionNameOrLegacy(sessStore, cityName, a.QualifiedName(), st)
 	target := buildSlingNudgeTarget(*a, cityName, cityPath, cfg, sessStore, sn)
-	deliverSlingNudge(target, sp, store, cityPath, stdout, stderr)
+	deliverSlingNudge(target, sp, store, cityPath, beadID, stdout, stderr)
 }
 
 // resolvePoolNudgeMember resolves the config identity to nudge for a live pool
@@ -1684,13 +1685,42 @@ func buildSlingNudgeTarget(agent config.Agent, cityName, cityPath string, cfg *c
 	})
 }
 
+// slingNoticePrincipal is the principal of a sling notice on the
+// conversation lane; its label is sling.
+const slingNoticePrincipal = "gc:sling"
+
+// slingNudgeText is the notice gc sling --nudge sends.
+const slingNudgeText = "Work slung. Check your hook."
+
 // deliverSlingNudge nudges a running target, or queues the nudge for an asleep
 // one and pokes the controller to wake it. On a worker site it queues nothing,
 // since the box's nudge queue is a local file the remote controller never
 // reads, and records the session's wake instead (requestWorkerSiteNudgeWake);
-// its notice says whether it recorded one.
-func deliverSlingNudge(target nudgeTarget, sp runtime.Provider, store beads.Store, cityPath string, stdout, stderr io.Writer) {
-	const msg = "Work slung. Check your hook."
+// its notice says whether it recorded one. When [ops] authoritative lists
+// message and a lane serves the target's session, the nudge is a lane notice
+// from gc:sling, keyed sling:<bead id> (minted with no bead), which the
+// controller's lane host delivers, waking the session if needed.
+func deliverSlingNudge(target nudgeTarget, sp runtime.Provider, store beads.Store, cityPath, beadID string, stdout, stderr io.Writer) {
+	const msg = slingNudgeText
+	if !onWorkerSite(target.cityPath) {
+		key := ""
+		if beadID != "" {
+			key = "sling:" + beadID
+		}
+		prod, err := cliLaneProduce(context.Background(), cliLaneProduction{
+			target: target, store: store, sp: sp,
+			req: cliLaneNotice(slingNoticePrincipal, key, beadID, msg, opjournal.WakeIfNeeded),
+		})
+		switch {
+		case !prod.handled:
+		case err != nil:
+			fmt.Fprintf(stderr, "warning: bead routed but nudge failed: %v\n", err) //nolint:errcheck // best-effort
+			return
+		default:
+			fmt.Fprintf(stdout, "Queued nudge for %s in the conversation lane\n", target.agent.QualifiedName()) //nolint:errcheck // best-effort
+			return
+		}
+	}
 	if onWorkerSite(target.cityPath) {
 		outcome, err := requestWorkerSiteNudgeWake(target, store)
 		fmt.Fprintf(stderr, "gc sling: %s\n", workerSiteNudgeNotice(outcome)) //nolint:errcheck // best-effort

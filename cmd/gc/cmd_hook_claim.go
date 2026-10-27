@@ -17,11 +17,14 @@ import (
 	"github.com/gastownhall/gascity/internal/agent"
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/convoy"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/executionevent"
 	"github.com/gastownhall/gascity/internal/git"
 	"github.com/gastownhall/gascity/internal/molecule"
+	"github.com/gastownhall/gascity/internal/opjournal"
+	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
 )
 
@@ -402,8 +405,9 @@ type (
 	// toAssignee.
 	hookClaimRestampFunc func(context.Context, string, []string, string, string, string) (bool, error)
 	// hookEnqueueContinuationNudgeFunc enqueues the claiming session's
-	// hook-claim-continuation nudge, keyed by the claim assignee.
-	hookEnqueueContinuationNudgeFunc func(assignee string)
+	// hook-claim-continuation nudge, keyed by the claim assignee, for the
+	// workflow root it claimed.
+	hookEnqueueContinuationNudgeFunc func(assignee, rootID string)
 	hookRecordWorkStartedFunc        func(sessionID string, fence hookStartedFence, key hookStartedKey, via string) (hookStartedResult, error)
 	hookForgetWorkStartedFunc        func(sessionID string, key hookStartedKey) error
 	hookReadWorkStartedFunc          func(sessionID string) (string, error)
@@ -1621,7 +1625,7 @@ func writeHookClaimWorkResultForBead(result hookClaimJSONResult, bead beads.Bead
 	// len(assigned) conjunct is what scopes this: the nudge only ever reaches a
 	// session that now owns pinned sibling work.
 	if len(assigned) > 0 && bead.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindWorkflow {
-		ops.EnqueueContinuationNudge(opts.Assignee)
+		ops.EnqueueContinuationNudge(opts.Assignee, bead.ID)
 	}
 	return 0
 }
@@ -3864,17 +3868,29 @@ func emitClaimReclaimedStale(rec events.Recorder, beadID, previousOwner, newAssi
 // queue is a local file the remote controller never reads, and the claimed
 // work is on the ledger either way.
 // See writeHookClaimWorkResultForBead for the call site.
-func hookContinuationNudgeEnqueue(assignee string) {
+func hookContinuationNudgeEnqueue(assignee, rootID string) {
 	cityPath, err := resolveCity()
 	if err != nil {
 		return
 	}
-	continuationNudgeEnqueueAt(cityPath, assignee)
+	continuationNudgeEnqueueAt(cityPath, assignee, rootID)
 }
 
+// hookClaimContinuationPrincipal is the principal of a hook-claim
+// continuation notice on the conversation lane; its label is
+// hook-claim-continuation.
+const hookClaimContinuationPrincipal = "gc:hook-claim-continuation"
+
+// hookClaimContinuationText is the continuation notice's text.
+const hookClaimContinuationText = "Work slung. Check your hook."
+
 // continuationNudgeEnqueueAt is hookContinuationNudgeEnqueue for an
-// already-resolved city.
-func continuationNudgeEnqueueAt(cityPath, assignee string) {
+// already-resolved city. When [ops] authoritative lists message and a lane
+// serves the claiming session, the nudge is a lane notice from
+// gc:hook-claim-continuation instead, keyed hook-claim:<root id> with the
+// root as its causation, scoped to the session's generation and delivered
+// only while it runs (live_only), as the queue item was.
+func continuationNudgeEnqueueAt(cityPath, assignee, rootID string) {
 	if onWorkerSite(cityPath) {
 		return
 	}
@@ -3911,16 +3927,46 @@ func continuationNudgeEnqueueAt(cityPath, assignee string) {
 			target = withNudgeTargetFence(sessStore, target)
 		}
 	}
+	if opened != nil && rootID != "" && cliLaneExecutesMessage(cfg) {
+		// Best-effort, as the queue item is: a provider that does not open,
+		// or a proposal that fails, leaves the queue path below.
+		if continuationLaneNoticeIn(cityPath, cfg, target, opened, rootID) {
+			return
+		}
+	}
 	// The assignee is the right queue key: delivery
 	// (queuedNudgeClaimableForTarget and the supervisor dispatcher) matches
 	// item.Agent against nudgeTarget.queueKeys, which carries the alias,
 	// session ID, agent identity, and session name for the session.
-	item := newQueuedNudgeWithOptions(assignee, "Work slung. Check your hook.", "hook-claim-continuation", time.Now(), queuedNudgeOptionsFromTarget(target))
+	item := newQueuedNudgeWithOptions(assignee, hookClaimContinuationText, "hook-claim-continuation", time.Now(), queuedNudgeOptionsFromTarget(target))
 	if err := enqueueQueuedNudgeWithStore(cityPath, store, item); err != nil {
 		return
 	}
 	maybeStartNudgePoller(target)
 	_ = pokeController(cityPath)
+}
+
+// continuationLaneNoticeIn is continuationLaneNotice under the city's session
+// provider; a provider that does not open proposes nothing.
+func continuationLaneNoticeIn(cityPath string, cfg *config.City, target nudgeTarget, store beads.Store, rootID string) bool {
+	sp, err := newSessionProviderForCity(cfg, cityPath)
+	if err != nil {
+		return false
+	}
+	return continuationLaneNotice(target, store, sp, rootID)
+}
+
+// continuationLaneNotice proposes the hook-claim continuation for rootID as a
+// lane notice to target's session (continuationNudgeEnqueueAt), and reports
+// whether it did; false leaves the legacy queue path, nothing written, or
+// after a proposal that failed.
+func continuationLaneNotice(target nudgeTarget, store beads.Store, sp runtime.Provider, rootID string) bool {
+	prod, err := cliLaneProduce(context.Background(), cliLaneProduction{
+		target: target, store: store, sp: sp,
+		req:           cliLaneNotice(hookClaimContinuationPrincipal, "hook-claim:"+rootID, rootID, hookClaimContinuationText, opjournal.WakeLiveOnly),
+		sessionScoped: true,
+	})
+	return prod.handled && err == nil
 }
 
 func hookListContinuationWithBdStore(_ context.Context, dir string, env []string, rootID, group string) ([]beads.Bead, error) {

@@ -1958,8 +1958,25 @@ func mailNotifyOpKey(messageID string) string {
 // at the boundary (DES-O0API §3.1).
 var mailNotifyOpPolicy = opjournal.Policy{Message: opjournal.MessagePolicy{When: opjournal.WhenBoundary, Wake: opjournal.WakeIfNeeded, Role: opjournal.RoleNotice}}
 
+// mailNoticePrincipal is the principal of a mail notice on the
+// conversation lane; its label is mail.
+const mailNoticePrincipal = "gc:mail"
+
+// mailNoticeLaneKey is a lane mail notice's client key: mail:<message id>,
+// or "" for a notice with no message, whose key is minted.
+func mailNoticeLaneKey(messageID string) string {
+	if messageID == "" {
+		return ""
+	}
+	return mailNotifyOpKey(messageID)
+}
+
 // sendMailNotifyWithOp tells target it has mail from sender, and returns the
-// id of the op that records the notice, "" when none does. On a worker site
+// id of the op that records the notice, "" when none does. When [ops]
+// authoritative lists message and a lane serves the target's session, the
+// notice is a lane notice from gc:mail, keyed mail:<message id> with the
+// message as its causation, which the controller's lane host delivers and
+// a read or archive of the message withdraws (mail_notice_withdraw.go). On a worker site
 // it records only the recipient's wake (requestWorkerSiteNudgeWake), the one
 // notice a box can leave, and no op, and returns
 // errWorkerSiteNotifyNotDelivered when it recorded no wake. Elsewhere the
@@ -1983,6 +2000,12 @@ func sendMailNotifyWithOp(target nudgeTarget, store beads.Store, sp runtime.Prov
 		return "", nil
 	}
 	msg := mailNotifyText(sender)
+	if prod, err := cliLaneProduce(context.Background(), cliLaneProduction{
+		target: target, store: store, sp: sp,
+		req: cliLaneNotice(mailNoticePrincipal, mailNoticeLaneKey(messageID), messageID, msg, opjournal.WakeIfNeeded),
+	}); prod.handled {
+		return prod.op.ID, err
+	}
 	op, start := startMailNotifyOp(target, store, msg, messageID)
 	switch start {
 	case cliOpRefused:

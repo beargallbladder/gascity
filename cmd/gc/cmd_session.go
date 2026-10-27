@@ -2858,7 +2858,21 @@ func cmdSessionSubmit(args []string, intent session.SubmitIntent, key string, js
 		asOperator: true, acceptsAPIOp: true, cfgErr: gateErr,
 		asJSON: jsonOutput, stdout: stdout, stderr: stderr,
 	})
-	if op.recording() && key == "" {
+	// With message listed the submit is a lane op on either path: the API
+	// proposes it, and the local fallback proposes the same op (the same key,
+	// minted here when --key is empty, the operator principal and
+	// api.LaneMessageOpPolicy), so it finds the API's op.
+	laneOn := cliLaneExecutesMessage(gateCfg)
+	laneKey, laneMinted := key, false
+	if laneOn && laneKey == "" {
+		minted, err := legacyop.MintKey()
+		if err != nil {
+			fmt.Fprintf(stderr, "gc session submit: %v\n", cliLaneUnavailable(err)) //nolint:errcheck // best-effort stderr
+			return 1
+		}
+		laneKey, laneMinted = minted, true
+	}
+	if !laneOn && op.recording() && key == "" {
 		minted, err := legacyop.MintKey()
 		if err != nil {
 			fmt.Fprintf(stderr, "gc session submit: warning: minting an op key: %v; the API call carries none\n", err) //nolint:errcheck // best-effort stderr
@@ -2868,9 +2882,13 @@ func cmdSessionSubmit(args []string, intent session.SubmitIntent, key string, js
 
 	if c := apiClient(cityPath); c != nil {
 		// The key is the API's Idempotency-Key only while the gate records,
-		// as --key is ignored when it is off.
+		// as --key is ignored when it is off, or while the lane executes
+		// message.
 		apiKey := ""
-		if op.recording() {
+		switch {
+		case laneOn:
+			apiKey = laneKey
+		case op.recording():
 			apiKey = op.requestKey()
 		}
 		resp, err := c.SubmitSessionWithKey(target, message, intent, apiKey)
@@ -2911,7 +2929,7 @@ func cmdSessionSubmit(args []string, intent session.SubmitIntent, key string, js
 	// store for relocation-safety.
 	sessStore := cliSessionStore(store, cfg, cityPath)
 	op.sessStore = sessStore
-	if !op.preflight() {
+	if !laneOn && !op.preflight() {
 		return 1
 	}
 
@@ -2919,6 +2937,20 @@ func cmdSessionSubmit(args []string, intent session.SubmitIntent, key string, js
 	if err != nil {
 		fmt.Fprintf(stderr, "gc session submit: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
+	}
+	if laneOn {
+		if code, handled := submitSessionLane(sessionSubmitLane{
+			cityPath: cityPath, cfg: cfg, store: store, sessionID: sessionID, target: target,
+			message: message, intent: intent, key: laneKey, minted: laneMinted,
+			asJSON: jsonOutput, stdout: stdout, stderr: stderr,
+		}); handled {
+			return code
+		}
+		// No lane serves the session: the legacy path, under the content
+		// gate.
+		if !op.preflight() {
+			return 1
+		}
 	}
 
 	op.req.conversation = sessionID

@@ -79,7 +79,7 @@ func buildContinuationNudgeOps(candidates []beads.Bead, siblingIDs []string, enq
 			return nil
 		},
 		DrainAck: func(io.Writer) error { return nil },
-		EnqueueContinuationNudge: func(assignee string) {
+		EnqueueContinuationNudge: func(assignee, _ string) {
 			*enqueued = append(*enqueued, assignee)
 		},
 	}
@@ -292,7 +292,7 @@ func TestHookContinuationNudgeEnqueueClosesOnlyOpenedHandle(t *testing.T) {
 			}
 			t.Cleanup(func() { startNudgePoller = prevPoller })
 
-			hookContinuationNudgeEnqueue(assignee)
+			hookContinuationNudgeEnqueue(assignee, "")
 
 			state, err := nudgequeue.LoadState(cityDir)
 			if err != nil {
