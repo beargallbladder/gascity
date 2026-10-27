@@ -17,7 +17,7 @@ import (
 var bdSplitKnownRefusedShipped = map[string]string{
 	"backup restore": "the split-city restore path in journal-corruption-recovery.md",
 	"backup restore /path/to/city/.dolt-backup/X --force": "the split-city restore path in journal-corruption-recovery.md",
-	"init --db X":        "the corruption runbook's re-init: on a split city, stop the city and run bd init directly in the scope",
+	"init --db X":        "the corruption runbook's re-init: on a split city it follows the split-city procedure in docs/runbooks/split-storage-classes.md",
 	"mol pour":           "prose in the gastown mayor prompt; gc sling / gc formula cook",
 	"create --root-bead": "an invalid flag in gascity-packs build-basic/decompose.md: bd rejects it on every city",
 	"list --root X":      "an invalid flag in gascity-packs superpowers confirm-spec-approval.md: bd rejects it on every city",
@@ -25,8 +25,10 @@ var bdSplitKnownRefusedShipped = map[string]string{
 }
 
 // TestGcBdShippedInvocationsAreAllowedOnSplit runs every gc bd invocation
-// scanned from the shipped packs, prompts and formulas (gascity's own,
-// gascity-packs, the workflows repo) through the split-city guard on both
+// scanned from the shipped packs, prompts, formulas and scripts (gascity's
+// own, gascity-packs, the workflows repo — its Python argv builders read by
+// AST — and the maintainer city's own orders, prompts and rig packs) through
+// the split-city guard on both
 // pinned bd builds. Each must be allowed, or be knowingly refused with a
 // documented alternative. The list is pinned in
 // testdata/gc_bd_shipped_invocations.jsonl; regenerate it with
@@ -37,10 +39,6 @@ func TestGcBdShippedInvocationsAreAllowedOnSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close() //nolint:errcheck // test read
-	versions := map[string]string{
-		"bd-1.3.2":                         "bd version 1.3.2 (dev)\n",
-		"bd-1.3.0-enterprise-77612097cec0": bdEnterpriseVersionLine,
-	}
 	seenRefused := map[string]bool{}
 	n := 0
 	sc := bufio.NewScanner(f)
@@ -58,8 +56,8 @@ func TestGcBdShippedInvocationsAreAllowedOnSplit(t *testing.T) {
 			deps := splitTestDeps(strings.NewReader(""), func(id string) (beads.Bead, bdReadResult) {
 				return beads.Bead{ID: id, Type: "task"}, bdReadFound
 			})
-			version := versions[inv.Name]
-			deps.version = func() (string, error) { return version, nil }
+			pinned := inv
+			deps.inventory = func() (*bdflags.Inventory, error) { return pinned, nil }
 			g := bdClassFlipGuard(splitGuardTestCity(), t.TempDir(), row.Argv, deps)
 			refused := g.refusal != "" && !strings.Contains(g.refusal, "read") // a missing input file in this test
 			if _, known := bdSplitKnownRefusedShipped[key]; known {
