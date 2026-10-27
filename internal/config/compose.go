@@ -1266,6 +1266,9 @@ func mergeStorageConfig(base, fragment *City, fragMeta toml.MetaData, fragPath s
 			base.Storage.Classes.setBinding(class, fragment.Storage.Classes.BindingFor(class))
 		}
 	}
+	if fragMeta.IsDefined("storage", "gc_bd_inventory") {
+		base.Storage.GCBdInventory = fragment.Storage.GCBdInventory
+	}
 
 	names := sortedStorageBindingNames(fragment.Storage.Bindings)
 	for _, name := range names {
