@@ -980,3 +980,40 @@ func TestInterruptTurnFailedRestartStartIsRestartNotStarted(t *testing.T) {
 		t.Fatalf("calls = %v, running %v; want the runtime stopped once and not started", callMethods(sp.SnapshotCalls()), sp.IsRunning(info.SessionName))
 	}
 }
+
+// A session-scoped stop whose waits read nothing showing the session busy
+// (every read failed or was indeterminate: runtime.ErrWaitUnobserved, or a
+// runtime that could not answer) is no ground for a restart: it has no turn
+// identity to check, so only a busy reading can show the turn still running
+// (SESSION-RUNTIME-026). The runtime is left running and the error wraps
+// ErrInterruptOutcomeUnknown and runtime.ErrRuntimeUnavailable, not
+// runtime.ErrTurnNotEnded.
+func TestStopTurnWithRestartWithheldWhenTheWaitsReadNothing(t *testing.T) {
+	for name, waitErr := range map[string]error{
+		"the idle wait read nothing":     fmt.Errorf("agent not idle before timeout: %w", runtime.ErrWaitUnobserved),
+		"the idle wait could not answer": fmt.Errorf("capturing the pane: %w", runtime.ErrRuntimeUnavailable),
+	} {
+		t.Run(name, func(t *testing.T) {
+			mgr, sp, info, _ := newFencedStopSession(t, "claude", nil, runtime.TurnInterruptKeystroke)
+			sp.WaitForIdleErrors[info.SessionName] = waitErr
+			report, err := mgr.StopTurnWith(context.Background(), info.ID, StopTurnOptions{Restart: stopTurnRestart(mgr, info, ActorController)})
+			if report.Restarted || !errors.Is(err, ErrInterruptOutcomeUnknown) || !errors.Is(err, runtime.ErrRuntimeUnavailable) || errors.Is(err, runtime.ErrTurnNotEnded) {
+				t.Fatalf("StopTurnWith(restart, waits read nothing) = %+v, %v; want ErrInterruptOutcomeUnknown and ErrRuntimeUnavailable, and no restart", report, err)
+			}
+			if n := countMethod(sp.SnapshotCalls(), "Stop") + countMethod(sp.SnapshotCalls(), "Start"); n != 0 || !sp.IsRunning(info.SessionName) {
+				t.Fatalf("calls = %v, running %v; want the runtime left running", callMethods(sp.SnapshotCalls()), sp.IsRunning(info.SessionName))
+			}
+		})
+	}
+}
+
+// A wait that saw the session busy and timed out (the bare timeout, no
+// runtime.ErrWaitUnobserved) is the evidence a session-scoped restart needs.
+func TestStopTurnWithRestartsWhenTheWaitSawABusySession(t *testing.T) {
+	mgr, sp, info, _ := newFencedStopSession(t, "claude", nil, runtime.TurnInterruptKeystroke)
+	sp.WaitForIdleErrors[info.SessionName] = errors.New("agent not idle before timeout")
+	report, err := mgr.StopTurnWith(context.Background(), info.ID, StopTurnOptions{Restart: stopTurnRestart(mgr, info, ActorController)})
+	if err != nil || !report.Restarted {
+		t.Fatalf("StopTurnWith(restart, busy at the timeout) = %+v, %v; want a restart, nil", report, err)
+	}
+}

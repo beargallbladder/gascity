@@ -61,7 +61,9 @@ type StopTurnOptions struct {
 	// turn it names left Current or the check could not tell, and whatever
 	// runs then may be another turn, which a restart would kill; and so does
 	// one whose Settle saw nothing showing the turn still running
-	// (TurnEndUnreadError), since that cannot tell either. A restart once
+	// (TurnEndUnreadError), or, without Settle, whose own waits read nothing
+	// showing the session busy (runtime.ErrWaitUnobserved, or a runtime
+	// that could not answer), since that cannot tell either. A restart once
 	// decided runs apart from ctx, within stopTurnRestartBound. As with
 	// Still, whether the runtime runs is a fresh liveness read's
 	// (StopTurnWith).
@@ -264,8 +266,13 @@ func (m *Manager) waitForInterruptSettleLocked(ctx context.Context, b beads.Bead
 // check refused the keystroke sequence's follow-up interrupt (refusal), so
 // the turn it names left Current, or the check could not tell, and whatever
 // runs now may be another turn, the ended one's successor, which a restart
-// would kill; or nothing showed the turn still running (waitErr is a
-// TurnEndUnreadError: no read of it answered), which cannot tell either.
+// would kill; or nothing showed the turn still running, which cannot tell
+// either: waitErr is a TurnEndUnreadError (no read of it answered), or, on
+// a session-scoped stop, which has no turn identity to read, the stop's own
+// waits read nothing showing the session busy (they wrap
+// runtime.ErrWaitUnobserved or runtime.ErrRuntimeUnavailable). On the
+// turn-scoped path Settle has already replaced waitErr with a text-only
+// error, so the latter rule cannot fire there.
 // Nothing more is sent, the runtime is left as it is, and whether the
 // interrupt ended the turn is unknown: the error wraps
 // ErrInterruptOutcomeUnknown and runtime.ErrRuntimeUnavailable, not
@@ -277,7 +284,8 @@ func restartWithheld(ctx context.Context, what string, refusal, waitErr error) e
 	if refusal != nil {
 		return fmt.Errorf("%s: the check refused the follow-up interrupt (%s), so another turn may run now, not restarting it: %w: %w (%s)", what, refusal.Error(), ErrInterruptOutcomeUnknown, runtime.ErrRuntimeUnavailable, waitErr.Error())
 	}
-	if errors.As(waitErr, new(*turnEndUnreadError)) {
+	if errors.As(waitErr, new(*turnEndUnreadError)) ||
+		errors.Is(waitErr, runtime.ErrWaitUnobserved) || errors.Is(waitErr, runtime.ErrRuntimeUnavailable) {
 		return fmt.Errorf("%s: nothing showed its interrupted turn still running, not restarting it: %w: %w (%s)", what, ErrInterruptOutcomeUnknown, runtime.ErrRuntimeUnavailable, waitErr.Error())
 	}
 	return nil

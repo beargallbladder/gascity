@@ -956,7 +956,9 @@ func turnInterruptResult(id string, err error) error {
 // its text. That is session.TurnNotEndedError once something showed the turn
 // still running, a read naming it current or a family wait that failed for a
 // cause other than a runtime that could not answer
-// (runtime.ErrRuntimeUnavailable), and session.TurnEndUnreadError otherwise,
+// (runtime.ErrRuntimeUnavailable) or a wait that read nothing showing the
+// session busy (runtime.ErrWaitUnobserved), and session.TurnEndUnreadError
+// otherwise,
 // which a restart on failure does not restart: whether the interrupt ended
 // the turn is unknown. A failed read is never taken as the end, nor as the
 // turn running. It runs under the session mutation lock (the stop's
@@ -973,7 +975,7 @@ func (h *SessionHandle) awaitTurnEnd(ctx context.Context, name, turn string, dea
 		defer cancel()
 		return h.lockedCurrentTurn(readCtx)
 	}
-	running := cause != nil && !errors.Is(cause, runtime.ErrRuntimeUnavailable)
+	running := cause != nil && !errors.Is(cause, runtime.ErrRuntimeUnavailable) && !errors.Is(cause, runtime.ErrWaitUnobserved)
 	notEnded := func(last error) error {
 		if running {
 			return sessionpkg.TurnNotEndedError(what, last)
