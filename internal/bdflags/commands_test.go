@@ -74,7 +74,7 @@ func TestParseArgsMatchesPflag(t *testing.T) {
 
 // TestInventoriesAreWellFormed checks each pinned inventory: a root, every
 // path's parent present, aliases naming real commands, flag types pflag
-// knows, and the build matched by InventoryFor.
+// knows, and lookup by id.
 func TestInventoriesAreWellFormed(t *testing.T) {
 	known := map[string]bool{"bool": true, "string": true, "int": true, "int64": true, "float64": true, "duration": true, "stringSlice": true, "stringArray": true}
 	if len(Inventories()) < 2 {
@@ -104,23 +104,7 @@ func TestInventoriesAreWellFormed(t *testing.T) {
 			}
 		}
 	}
-	for line, want := range map[string]string{
-		"bd version 1.3.2 (dev)\n":   "bd-1.3.2",
-		"bd version 1.3.2 (9f2e1a7)": "bd-1.3.2",
-		"bd version 1.3.0 (Enterprise dev, Observer unknown; 77612097cec0: enterprise@77612097cec0)": "bd-1.3.0-enterprise-77612097cec0",
-	} {
-		inv, err := InventoryFor(line)
-		if err != nil || inv.Name != want {
-			t.Errorf("InventoryFor(%q) = %v, %v; want %s", line, inv, err, want)
-		}
-	}
-	for _, line := range []string{
-		"bd version 1.3.3 (dev)", "bd version 1.1.0 (3ecbf5b)",
-		"bd version 1.3.0 (Enterprise dev, Observer unknown; 0123456789ab: enterprise@0123456789ab)",
-		"bd version 1.3.2 (Enterprise dev; 77612097cec0)", "", "garbage",
-	} {
-		if inv, err := InventoryFor(line); err == nil {
-			t.Errorf("InventoryFor(%q) = %s, want a refusal", line, inv.Name)
-		}
+	if InventoryByName("bd-1.3.2") == nil || InventoryByName("bd-1.3.0-enterprise-77612097cec0") == nil || InventoryByName("nope") != nil {
+		t.Error("InventoryByName does not find the pinned inventories by id")
 	}
 }

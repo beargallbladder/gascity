@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -34,6 +33,11 @@ type InventoryFlag struct {
 	Default     string `json:"default"`
 	NoOptDefVal string `json:"no_opt_def_val,omitempty"`
 	Hidden      bool   `json:"hidden,omitempty"`
+	// Usage is the flag's help text, which help renders (a backticked word
+	// in it names the value).
+	Usage string `json:"usage,omitempty"`
+	// ShorthandDeprecated hides the shorthand from help.
+	ShorthandDeprecated bool `json:"shorthand_deprecated,omitempty"`
 }
 
 // TakesValue reports whether the flag consumes a value when spelled without
@@ -45,36 +49,36 @@ type InventoryCommand struct {
 	Path               string          `json:"path"`
 	Aliases            []string        `json:"aliases,omitempty"`
 	Hidden             bool            `json:"hidden,omitempty"`
+	Deprecated         bool            `json:"deprecated,omitempty"`
 	Runnable           bool            `json:"runnable"`
 	DisableFlagParsing bool            `json:"disable_flag_parsing,omitempty"`
 	Local              []InventoryFlag `json:"local,omitempty"`
 	Persistent         []InventoryFlag `json:"persistent,omitempty"`
 }
 
+// InventoryProvenance records where an inventory came from: the bd source
+// commit and build tags it was dumped with, and the Go, cobra and pflag
+// versions bd was built with. gc's mirror resolves argv with its own cobra and
+// pflag, so those must be the same versions (TestInventoryCobraPflagMatchGoMod).
+type InventoryProvenance struct {
+	Commit       string `json:"commit"`
+	BuildTags    string `json:"build_tags"`
+	GoVersion    string `json:"go_version"`
+	CobraVersion string `json:"cobra_version"`
+	PflagVersion string `json:"pflag_version"`
+}
+
 // Inventory is one pinned bd build's command tree.
 type Inventory struct {
-	// Name is the inventory file's base name ("bd-1.3.2").
-	Name     string             `json:"-"`
-	Version  string             `json:"version"`
-	Build    string             `json:"build"`
-	Commands []InventoryCommand `json:"commands"`
+	// Name is the inventory file's base name ("bd-1.3.2"), the id a city
+	// vouches for.
+	Name       string              `json:"-"`
+	Version    string              `json:"version"`
+	Build      string              `json:"build"`
+	Provenance InventoryProvenance `json:"provenance"`
+	Commands   []InventoryCommand  `json:"commands"`
 
 	byPath map[string]*InventoryCommand
-}
-
-// inventoryMatch says which `bd version` output an inventory answers for.
-type inventoryMatch struct {
-	version    string
-	enterprise bool
-	// commit, when set, must appear in the version line (an Enterprise build
-	// keeps its version string across commits that change its flags).
-	commit string
-}
-
-// inventoryMatches pins each inventory file to the bd builds it describes.
-var inventoryMatches = map[string]inventoryMatch{
-	"bd-1.3.2":                         {version: "1.3.2"},
-	"bd-1.3.0-enterprise-77612097cec0": {version: "1.3.0", enterprise: true, commit: "77612097cec0"},
 }
 
 var (
@@ -97,15 +101,10 @@ func Inventories() []*Inventory {
 				inventoriesErr = err
 				return
 			}
-			inv := &Inventory{}
-			if err := json.Unmarshal(data, inv); err != nil {
+			inv, err := ParseInventory(strings.TrimSuffix(e.Name(), ".json"), data)
+			if err != nil {
 				inventoriesErr = fmt.Errorf("%s: %w", e.Name(), err)
 				return
-			}
-			inv.Name = strings.TrimSuffix(e.Name(), ".json")
-			inv.byPath = map[string]*InventoryCommand{}
-			for i := range inv.Commands {
-				inv.byPath[inv.Commands[i].Path] = &inv.Commands[i]
 			}
 			inventories = append(inventories, inv)
 		}
@@ -117,35 +116,32 @@ func Inventories() []*Inventory {
 	return inventories
 }
 
-// bdVersionLineRE matches `bd version <version> (<build>)`.
-var bdVersionLineRE = regexp.MustCompile(`(?m)^bd version (\S+)(?: \((.*)\))?`)
+// ParseInventory decodes one inventory dump (the JSON generate.sh writes).
+// Tests use it to build synthetic inventories.
+func ParseInventory(name string, data []byte) (*Inventory, error) {
+	inv := &Inventory{}
+	if err := json.Unmarshal(data, inv); err != nil {
+		return nil, err
+	}
+	inv.Name = name
+	inv.byPath = map[string]*InventoryCommand{}
+	for i := range inv.Commands {
+		inv.byPath[inv.Commands[i].Path] = &inv.Commands[i]
+	}
+	if inv.byPath[""] == nil {
+		return nil, fmt.Errorf("inventory %s has no root command", name)
+	}
+	return inv, nil
+}
 
-// InventoryFor returns the pinned inventory for the bd whose `bd version`
-// output is versionOutput, or an error naming the builds gc is pinned to. A bd
-// newer (or older, or differently built) than every pinned inventory has
-// commands and flags gc has not vetted, so a split city refuses gc bd there.
-func InventoryFor(versionOutput string) (*Inventory, error) {
-	m := bdVersionLineRE.FindStringSubmatch(versionOutput)
-	if m == nil {
-		return nil, fmt.Errorf("cannot read bd's version from %q", strings.TrimSpace(versionOutput))
-	}
-	version, build := m[1], m[2]
-	enterprise := strings.Contains(build, "Enterprise")
+// InventoryByName returns the pinned inventory with that id, or nil.
+func InventoryByName(name string) *Inventory {
 	for _, inv := range Inventories() {
-		want, ok := inventoryMatches[inv.Name]
-		if !ok || want.version != version || want.enterprise != enterprise {
-			continue
+		if inv.Name == name {
+			return inv
 		}
-		if want.commit != "" && !strings.Contains(build, want.commit) {
-			continue
-		}
-		return inv, nil
 	}
-	var pinned []string
-	for _, inv := range Inventories() {
-		pinned = append(pinned, inv.Name)
-	}
-	return nil, fmt.Errorf("bd %s (%s) is not a build gc's split-city allowlist is pinned to (%s)", version, build, strings.Join(pinned, ", "))
+	return nil
 }
 
 // Command returns the command at path, or nil.
@@ -311,6 +307,9 @@ func (inv *Inventory) buildCobra() (*cobra.Command, map[*cobra.Command]string) {
 			SilenceErrors:      true,
 			SilenceUsage:       true,
 		}
+		if ic.Deprecated {
+			c.Deprecated = "deprecated"
+		}
 		if ic.Runnable {
 			c.Run = func(*cobra.Command, []string) {}
 		}
@@ -364,4 +363,9 @@ func addMirrorFlag(fs *pflag.FlagSet, f InventoryFlag) {
 	pf := fs.Lookup(f.Name)
 	pf.NoOptDefVal = f.NoOptDefVal
 	pf.Hidden = f.Hidden
+	pf.Usage = f.Usage
+	pf.DefValue = f.Default
+	if f.ShorthandDeprecated {
+		pf.ShorthandDeprecated = "deprecated"
+	}
 }

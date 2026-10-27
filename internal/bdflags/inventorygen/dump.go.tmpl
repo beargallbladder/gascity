@@ -6,6 +6,8 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 
@@ -20,22 +22,35 @@ type gcInventoryFlag struct {
 	Default     string `json:"default"`
 	NoOptDefVal string `json:"no_opt_def_val,omitempty"`
 	Hidden      bool   `json:"hidden,omitempty"`
+	Usage       string `json:"usage,omitempty"`
+	// ShorthandDeprecated hides the shorthand from help.
+	ShorthandDeprecated bool `json:"shorthand_deprecated,omitempty"`
 }
 
 type gcInventoryCommand struct {
 	Path               string            `json:"path"`
 	Aliases            []string          `json:"aliases,omitempty"`
 	Hidden             bool              `json:"hidden,omitempty"`
+	Deprecated         bool              `json:"deprecated,omitempty"`
 	Runnable           bool              `json:"runnable"`
 	DisableFlagParsing bool              `json:"disable_flag_parsing,omitempty"`
 	Local              []gcInventoryFlag `json:"local,omitempty"`
 	Persistent         []gcInventoryFlag `json:"persistent,omitempty"`
 }
 
+type gcInventoryProvenance struct {
+	Commit       string `json:"commit"`
+	BuildTags    string `json:"build_tags"`
+	GoVersion    string `json:"go_version"`
+	CobraVersion string `json:"cobra_version"`
+	PflagVersion string `json:"pflag_version"`
+}
+
 type gcInventory struct {
-	Version  string               `json:"version"`
-	Build    string               `json:"build"`
-	Commands []gcInventoryCommand `json:"commands"`
+	Version    string                 `json:"version"`
+	Build      string                 `json:"build"`
+	Provenance gcInventoryProvenance  `json:"provenance"`
+	Commands   []gcInventoryCommand   `json:"commands"`
 }
 
 func gcInventoryFlags(fs *pflag.FlagSet) []gcInventoryFlag {
@@ -44,6 +59,7 @@ func gcInventoryFlags(fs *pflag.FlagSet) []gcInventoryFlag {
 		out = append(out, gcInventoryFlag{
 			Name: f.Name, Shorthand: f.Shorthand, Type: f.Value.Type(),
 			Default: f.DefValue, NoOptDefVal: f.NoOptDefVal, Hidden: f.Hidden,
+			Usage: f.Usage, ShorthandDeprecated: f.ShorthandDeprecated != "",
 		})
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -60,6 +76,21 @@ func init() {
 	registerHelpAllFlag()
 	rootCmd.InitDefaultCompletionCmd()
 	inv := gcInventory{Version: Version, Build: Build}
+	inv.Provenance = gcInventoryProvenance{
+		Commit:    os.Getenv("GC_BD_INVENTORY_COMMIT"),
+		BuildTags: os.Getenv("GC_BD_INVENTORY_TAGS"),
+		GoVersion: runtime.Version(),
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, dep := range info.Deps {
+			switch dep.Path {
+			case "github.com/spf13/cobra":
+				inv.Provenance.CobraVersion = dep.Version
+			case "github.com/spf13/pflag":
+				inv.Provenance.PflagVersion = dep.Version
+			}
+		}
+	}
 	var walk func(c *cobra.Command, path []string)
 	walk = func(c *cobra.Command, path []string) {
 		c.InitDefaultHelpFlag()
@@ -67,7 +98,7 @@ func init() {
 			c.InitDefaultVersionFlag()
 		}
 		inv.Commands = append(inv.Commands, gcInventoryCommand{
-			Path: strings.Join(path, " "), Aliases: c.Aliases, Hidden: c.Hidden,
+			Path: strings.Join(path, " "), Aliases: c.Aliases, Hidden: c.Hidden, Deprecated: c.Deprecated != "",
 			Runnable: c.Runnable(), DisableFlagParsing: c.DisableFlagParsing,
 			Local:      gcInventoryFlags(c.LocalNonPersistentFlags()),
 			Persistent: gcInventoryFlags(c.PersistentFlags()),

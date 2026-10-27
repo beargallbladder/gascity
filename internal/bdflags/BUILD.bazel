@@ -6,6 +6,7 @@ go_library(
         "bdargs.go",
         "bdflags.go",
         "commands.go",
+        "helptree.go",
         "inventory.go",
         "scan.go",
         "verbs.go",
@@ -30,12 +31,13 @@ go_test(
         "bdflags_test.go",
         "commands_test.go",
         "freshness_test.go",
+        "helptree_test.go",
         "inventory_test.go",
         "testenv_import_test.go",
         "update_force_test.go",
         "verbs_test.go",
     ],
-    data = select({
+    data = ["//:go.mod"] + select({
         "//:gotags_integration": [
             "@bd_bin_v1_3_2//:bd",
         ],

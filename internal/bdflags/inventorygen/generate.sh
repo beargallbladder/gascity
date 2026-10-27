@@ -27,7 +27,9 @@ for spec in "$@"; do
   trap 'rm -rf "$tmp"' EXIT
   git -C "$repo" archive "$ref" | tar -x -C "$tmp"
   cp "$here/dump.go.tmpl" "$tmp/cmd/bd/zz_gc_inventory_dump.go"
-  (cd "$tmp" && GC_BD_INVENTORY_DUMP="$out_dir/$name.json" go run -tags "$tags" ./cmd/bd </dev/null)
+  commit="$(git -C "$repo" rev-parse "$ref^{commit}")"
+  (cd "$tmp" && GC_BD_INVENTORY_DUMP="$out_dir/$name.json" GC_BD_INVENTORY_COMMIT="$commit" GC_BD_INVENTORY_TAGS="$tags" \
+    go run -tags "$tags" ./cmd/bd </dev/null)
   echo "wrote $out_dir/$name.json"
   rm -rf "$tmp"
   trap - EXIT

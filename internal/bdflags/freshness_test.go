@@ -3,7 +3,7 @@
 package bdflags
 
 import (
-	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -172,94 +172,45 @@ func TestBdTopLevelVerbsCurrent(t *testing.T) {
 	}
 }
 
-// TestBdCommandInventoryCurrent ties the installed bd to its pinned
-// inventory. `bd version` must name a pinned build (InventoryFor), and the
-// installed binary's visible command tree (`bd <path> --help`, recursively)
-// must match that inventory: every path, alias and flag present, and each
-// flag's shape (takes a value, or not) the same. Hidden commands and flags are
-// not in --help; they come from bd's own cobra tree (inventorygen/generate.sh),
-// which is the inventory's source of truth. CI's integration lane runs this
-// against the pinned bd 1.3.2; run it with the Enterprise build on PATH to
-// check that inventory too.
+// TestBdCommandInventoryCurrent applies the trust policy to the installed bd
+// (GC_TEST_BD_BIN, else bd on PATH): a structural walk of its --help tree
+// (WalkHelp) must equal the visible projection of a pinned inventory
+// (MatchHelpTree). CI's integration lane runs it against the pinned bd 1.3.2;
+// run it with GC_TEST_BD_BIN pointing at the Enterprise build to check that
+// inventory. A failure lists the differences: regenerate the inventory with
+// inventorygen/generate.sh and decide every new path, alias and flag in cmd/gc's
+// split-city allowlist.
 func TestBdCommandInventoryCurrent(t *testing.T) {
-	bdPath, err := exec.LookPath("bd")
+	bdPath := strings.TrimSpace(os.Getenv("GC_TEST_BD_BIN"))
+	if bdPath == "" {
+		found, err := exec.LookPath("bd")
+		if err != nil {
+			t.Skip("bd not found (set GC_TEST_BD_BIN or put bd on PATH); skipping the command-tree check")
+		}
+		bdPath = found
+	}
+	home := t.TempDir()
+	tree, err := WalkHelp(func(path []string) (string, error) {
+		cmd := exec.Command(bdPath, append(append([]string(nil), path...), "--help")...)
+		cmd.Dir = home
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}, SkipUnparsedHelp, 8)
 	if err != nil {
-		t.Skip("bd not found in PATH; skipping command-inventory freshness check")
+		t.Fatal(err)
 	}
-	versionOut, _ := exec.Command(bdPath, "version").CombinedOutput()
-	inv, err := InventoryFor(string(versionOut))
-	if err != nil {
-		t.Fatalf("the installed bd has no pinned inventory: %v\nRegenerate internal/bdflags/inventory with inventorygen/generate.sh for this build.", err)
+	inv, diffs := MatchHelpTree(tree)
+	if inv != nil {
+		t.Logf("%s matches %s (%d visible commands)", bdPath, inv.Name, len(tree))
+		return
 	}
-	aliases := inv.Aliases()
-	var problems []string
-	var walk func(path []string)
-	walk = func(path []string) {
-		out, _ := exec.Command(bdPath, append(append([]string(nil), path...), "--help")...).CombinedOutput()
-		section := ""
-		key := strings.Join(path, " ")
-		parent := strings.Join(path[:max(0, len(path)-1)], " ")
-		flags := map[string]InventoryFlag{}
-		for _, f := range inv.Flags(key) {
-			flags["--"+f.Name] = f
-		}
-		var subs []string
-		for _, line := range strings.Split(string(out), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(line, " ") && strings.HasSuffix(trimmed, ":") && trimmed != "" {
-				section = strings.TrimSuffix(trimmed, ":")
-				continue
-			}
-			switch {
-			case section == "Aliases" && trimmed != "" && len(path) > 0:
-				for _, a := range strings.Split(trimmed, ",") {
-					a = strings.TrimSpace(a)
-					if a == "" || a == path[len(path)-1] {
-						continue
-					}
-					full := strings.TrimSpace(parent + " " + a)
-					if aliases[full] != key {
-						problems = append(problems, "alias "+full+" → "+key+" missing")
-					}
-				}
-				section = ""
-			case (section == "Flags" || section == "Global Flags") && len(path) > 0:
-				m := flagShapeRE.FindStringSubmatch(line)
-				if m == nil {
-					continue
-				}
-				long := "--" + m[2]
-				f, ok := flags[long]
-				if !ok {
-					problems = append(problems, "flag "+key+" "+long+" missing")
-					continue
-				}
-				takesValue := strings.TrimSpace(m[3]) != "" && !strings.Contains(m[3], "[=")
-				if takesValue != f.TakesValue() {
-					problems = append(problems, fmt.Sprintf("flag %s %s: help says takes-value=%v, inventory says %v (type %s, NoOptDefVal %q)", key, long, takesValue, f.TakesValue(), f.Type, f.NoOptDefVal))
-				}
-			case section == "Available Commands" || (len(path) == 0 && section != "" && section != "Flags" && section != "Global Flags" && section != "Usage" && section != "Examples"):
-				if m := helpVerbRE.FindStringSubmatch(line); m != nil {
-					subs = append(subs, m[1])
-				}
-			}
-		}
-		for _, sub := range subs {
-			child := strings.TrimSpace(key + " " + sub)
-			if inv.Command(child) == nil {
-				problems = append(problems, "path "+child+" missing")
-				continue
-			}
-			if len(path) < 3 {
-				walk(append(append([]string(nil), path...), sub))
-			}
-		}
+	var report []string
+	for name, d := range diffs {
+		report = append(report, name+":\n    "+strings.Join(d, "\n    "))
 	}
-	walk(nil)
-	sort.Strings(problems)
-	if len(problems) > 0 {
-		t.Errorf("the installed bd (%s) disagrees with inventory %s in %d place(s):\n  %s\nRegenerate it with inventorygen/generate.sh, then decide each new path, alias and flag in cmd/gc's split-city allowlist.", strings.TrimSpace(string(versionOut)), inv.Name, len(problems), strings.Join(problems, "\n  "))
-	}
+	sort.Strings(report)
+	t.Errorf("%s matches no pinned inventory:\n  %s", bdPath, strings.Join(report, "\n  "))
 }
 
 // flagShapeRE splits a cobra help flag line into shorthand, name and the
