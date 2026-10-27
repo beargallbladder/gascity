@@ -147,12 +147,14 @@ gc start
 ```
 
 On a **split-store city** (one that serves its infrastructure classes from a
-separate binding), `gc bd backup restore` is refused. gc cannot look inside a
-backup, and a backup taken before the split brings that time's infrastructure
-rows back into the work store all at once. If the backup was taken after the
-split, add `--backup-postdates-split`. gc consumes that flag; bd never sees it.
-If the backup predates the split, restore it into a scratch scope, `bd export`
+separate binding), `gc bd backup restore` is refused, with no override. gc
+cannot verify a backup's age against the split, and a backup taken before the
+split would bring that time's infrastructure rows back into the work store all
+at once. Restore the backup into a scratch scope with bd directly, `bd export`
 it, and import the export with `gc bd import <file> --skip-infra` (Step 4b).
+If you know the backup was taken after the split, stop the city and run
+`bd backup restore` directly in the scope; the next `gc start` checks the work
+store for stranded rows.
 
 No maintenance order ever runs a restore.
 

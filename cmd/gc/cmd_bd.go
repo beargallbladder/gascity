@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -577,14 +576,14 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 			switch {
 			case err == nil:
 				return bead, bdReadFound
+			case errors.Is(err, beads.ErrIDCollision):
+				// bd resolved the id to a different bead: never a not-found.
+				return beads.Bead{}, bdReadCollision
 			case errors.Is(err, beads.ErrNotFound):
 				return beads.Bead{}, bdReadNotFound
 			default:
 				return beads.Bead{}, bdReadFailed
 			}
-		},
-		runBd: func(argv []string) ([]byte, error) {
-			return runBdReadInScope(cityPath, cfg, target, argv)
 		},
 	})
 	if classGuard.refusal != "" {
@@ -817,33 +816,6 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	// only through the city event log, so announce it (bd_close_events.go).
 	announceBdPassthroughCloses(cityPath, guardStore, guardBeads, bdArgs)
 	return 0
-}
-
-// runBdReadInScope runs a bd READ (the class guard's `bd cook <formula>`) the
-// way the passthrough would run the command it guards — the same pinned
-// binary, working directory and routing environment — and returns its stdout.
-func runBdReadInScope(cityPath string, cfg *config.City, target execStoreTarget, argv []string) ([]byte, error) {
-	bdPath, err := resolveBdBinaryForScope(cityPath, target.ScopeRoot)
-	if err != nil {
-		return nil, err
-	}
-	env, err := bdCommandEnv(cityPath, cfg, target)
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.Command(bdPath, argv...)
-	cmd.Dir = target.ScopeRoot
-	cmd.Env = workQueryEnvForDir(env, cmd.Dir)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	start := time.Now()
-	runErr := cmd.Run()
-	exit := 0
-	if runErr != nil {
-		exit = -1
-	}
-	beads.TraceBDCall("go:gc-bd-class-guard", target.ScopeRoot, argv, start, exit, runErr)
-	return stdout.Bytes(), runErr
 }
 
 func parseBdReleaseIfCurrentArgs(args []string) (id, expectedAssignee string, ok bool, err error) {

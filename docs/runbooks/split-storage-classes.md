@@ -229,6 +229,85 @@ On a converged city `source:` reads 0 and `binding:` carries the count. On an
 unconverged city `binding:` reads zero without the database being created to
 learn it.
 
+## gc bd on split cities
+
+On a split city, `gc bd` is an allowlist. bd writes whatever it is told into
+the work store. A bead that lands there with an infrastructure class (a
+`gc:session` label, a `gc.root_bead_id`, a `message` type, and so on) is
+stranded, and every later routed `gc` command refuses until it is repaired.
+So `gc bd` forwards only the commands below, each with a vetted set of flags.
+It parses argv the way bd does, so `--flag=value`, `--flag value`, bool
+`--flag=true|false`, short flags and combined short flags all work. Anything
+else is refused, and nothing is written. The refusal names the command and
+the `gc` alternative. That covers an unknown verb, an alias not listed here,
+a subcommand, a flag, or a positional shape the guard cannot judge.
+
+Single-store cities are unaffected: there `gc bd` forwards everything
+unchanged.
+
+**Reads:** `show`, `list`, `ready`, `search`, `query`, `count`, `children`,
+`blocked`, `stale`, `status`, `statuses`, `types`, `where`, `info`, `context`,
+`version`, `help`, `human`, `prime`, `history`, `graph`, `export`, `state`,
+`state list`, `comments`, `comments list`, `label list`, `label list-all`,
+`dep list`, `dep tree`, `dep cycles`, `mol current`, `mol show`,
+`mol progress`, `formula list`, `formula show`, `gate list`, `config get`,
+`config list`, `config show`, `backup status`, `dolt status`, `dolt show`, and
+gc's own `release-if-current`.
+
+**Writes that change no field the class depends on:** `close`, `reopen`,
+`delete`, `assign`, `priority`, `note`, `comment`, `comments add`,
+`heartbeat`, `unclaim`, `reclaim`, `defer`, `undefer`, `link`, `dep add`,
+`dep remove`, `dep relate`, `dep unrelate`, `promote`, `duplicate`,
+`supersede`, `purge`, `prune`, `gate create`, `gate resolve`, `gate check`,
+`mol burn`, `backup sync`, `backup init`, `dolt start`, `dolt stop`,
+`dolt push`, `dolt commit`, `config set`, and `init` (only `--prefix`,
+`--non-interactive`, `--skip-hooks`, `--skip-agents`, `--init-if-missing`,
+`--recreate-missing`, and `--db`).
+
+**Writes the class guard judges:**
+
+- `create` and `q`: the new bead's type, labels and metadata are classified.
+- `update`, `label add`, `label remove`, `tag` and `set-state`: the write is
+  judged against the bead its id resolves to. If the id resolves to no bead,
+  to a different bead (a short or partial id), or cannot be read, a write that
+  touches type, labels or metadata is refused.
+- `label propagate`: a class-marker label is refused.
+- `import`: rows of a class the store does not hold are refused, or left out
+  with `--skip-infra`.
+- `batch`: every `create` line is classified.
+- `sql`: only a single plain read is allowed: no comments, no Dolt procedures,
+  no backtick-quoted Dolt names.
+- `mol wisp` and `mol wisp create`: only with `--root-only` (the gastown
+  patrols' shape). That creates a single bead, and gc judges it before bd
+  runs.
+- `cook`: only without `--persist`.
+
+**Aliases forwarded:** `new` (create), `done` (close), `view` (show), `hb`
+(heartbeat), `stats` (status), `dep rm` (dep remove). Every other alias is
+refused, `mol fart` and `protomolecule` included.
+
+**Notable refusals and what to use instead:**
+
+| Refused | Use instead |
+|---|---|
+| `mol pour`, `mol bond`, `mol wisp` without `--root-only`, `cook --persist` | `gc sling <target> <formula>` or `gc formula cook <formula>`, which put every bead in the store that holds its class |
+| `backup restore` | the split-city path in `examples/bd/dolt/docs/journal-corruption-recovery.md` |
+| `dolt pull`, `vc`, `federation`, `sync`, `branch`, `conflicts`, `migrate`, `admin` | stop the city and run bd directly; the next `gc start` checks the work store |
+| `serve` | the gc API, which routes writes by class |
+| `create-form`, `edit` | `gc bd create` / `gc bd update` with flags |
+| the global flags `--db`, `--database`, `--profile`, `--server-url`, `--global` | none: they point bd at a store other than the one gc judged |
+
+There is no override flag. gc cannot verify a backup's age or a merged
+revision's contents against the split, so these commands stay refused.
+
+**Requesting an addition.** The allowlist lives in
+`cmd/gc/bd_split_allowlist.go`. To add a command, open an issue or a PR that
+names the workflow that needs it and says why the command cannot change a
+bead's class, or how a judge would decide it. Add a row and its tests, and
+add it to this section; `TestGcBdSplitAllowlistIsDocumented` checks that this
+section lists every allowlisted command. Until then, run bd directly in the
+scope after checking what it writes.
+
 ## Upgrading a city migrated by gc 1.5.0
 
 gc 1.5.0's migration kept the work store's copies of every bead it moved. A

@@ -87,7 +87,15 @@ func TestGcBdRefusesAClassFlipOnASplitCity(t *testing.T) {
 		{"label add", args("label", "add", "demo-abc", "gc:nudge"), "nudges-class"},
 		{"label add list", args("label", "add", "demo-abc", "triage,gc:session"), "sessions-class"},
 		{"label propagate", args("label", "propagate", "demo-abc", "wisp"), "graph-class"},
-		{"label unknown subcommand", args("label", "set", "demo-abc", "x"), "does not know this label subcommand"},
+		{"label unknown subcommand", args("label", "set", "demo-abc", "x"), "gc bd label: refused on this split city"},
+		// The fake bd answers `show` for ANY id with demo-abc, so a short id
+		// resolves to a different bead: a collision, refused.
+		{"short-id collision", args("update", "demo-ab", "--add-label", "triage,wisp"), "different bead"},
+		{"mol fart", args("mol", "fart", "a", "b"), "alias of mol bond"},
+		{"mol pour", args("mol", "pour", "mol-strand"), "gc sling"},
+		{"mol wisp without --root-only", args("mol", "wisp", "mol-strand"), "without --root-only"},
+		{"cook --persist=true", args("cook", "mol-strand", "--persist=true"), "--persist"},
+		{"backup restore --force=true", args("backup", "restore", "/b", "--force=true"), "journal-corruption-recovery.md"},
 		{"tag", args("tag", "demo-abc", "order-tracking"), "orders-class"},
 		{"set-state gc=session", args("set-state", "demo-abc", "gc=session"), "sessions-class"},
 		{"import a pre-split archive", withFile("archive.jsonl",
@@ -122,7 +130,7 @@ func TestGcBdRefusesAClassFlipOnASplitCity(t *testing.T) {
 			if strings.Contains(res.stderr, "Nothing was written") {
 				t.Fatalf("single-store city refused: %q", res.stderr)
 			}
-			if strings.Contains(res.stderr, "cannot safely verify bead IDs") {
+			if strings.Contains(res.stderr, "cannot safely verify bead IDs") || strings.Contains(res.stderr, "substring collision") {
 				return // the pre-existing exact-ID guard, on both kinds of city
 			}
 			if w := bdParityWrites(res.bd); len(w) != 1 {
@@ -185,7 +193,7 @@ func TestGcBdImportSkipInfraImportsOnlyTheWorkRows(t *testing.T) {
 	if len(w) != 1 || strings.Contains(w[0], "archive.jsonl") || strings.Contains(w[0], "--skip-infra") || !strings.Contains(w[0], "gc-bd-import-work-") {
 		t.Fatalf("bd ran %v, want one import of the work-only copy", w)
 	}
-	for _, want := range []string{"importing 1 work row(s)", "left out 2 infrastructure row(s)", "1 graph", "1 sessions"} {
+	for _, want := range []string{"importing 1 row(s)", "left out 2 row(s)", "1 graph", "1 sessions"} {
 		if !strings.Contains(res.stderr, want) {
 			t.Errorf("notice does not carry %q: %q", want, res.stderr)
 		}

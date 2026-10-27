@@ -27,13 +27,8 @@ func runGuardCases(t *testing.T, cases []guardCase) {
 	t.Helper()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			reads := 0
 			deps := bdClassGuardDeps{
-				read: func(string) (beads.Bead, bdReadResult) {
-					reads++
-					return c.before, c.read
-				},
-				runBd: stubCookRunner,
+				read: func(string) (beads.Bead, bdReadResult) { return c.before, c.read },
 			}
 			g := bdClassFlipGuard(splitGuardTestCity(), t.TempDir(), c.argv, deps)
 			if c.refuse != (g.refusal != "") {
@@ -41,6 +36,9 @@ func runGuardCases(t *testing.T, cases []guardCase) {
 			}
 			if c.refuse && !strings.Contains(g.refusal, c.want) {
 				t.Errorf("refusal does not carry %q: %q", c.want, g.refusal)
+			}
+			if c.refuse && !strings.Contains(g.refusal, "Nothing was written") {
+				t.Errorf("refusal does not say nothing was written: %q", g.refusal)
 			}
 			// The same argv on a single-store city is never refused.
 			if single := bdClassFlipGuard(&config.City{}, t.TempDir(), c.argv, deps); single.refusal != "" {
@@ -52,25 +50,105 @@ func runGuardCases(t *testing.T, cases []guardCase) {
 
 var guardTask = beads.Bead{ID: "demo-1", Type: "task"}
 
-// TestGcBdClassGuardParsesLabelsAsBdDoes is review finding 1. bd parses
-// update's --add-label/-l/--remove-label/--set-labels and create's --labels as
-// ONE CSV record, so a quoted label is the bare label; reading them as a plain
-// comma split let `"wisp"` through. The label VERBS split on plain commas, so
-// there a quoted label really is a different label.
+// TestGcBdSplitRegressionsFromReview are the seven bypasses the #8333
+// re-review reproduced against real bd 1.3.2 and 1.3.0 Enterprise, each now
+// refused by the allowlist.
+func TestGcBdSplitRegressionsFromReview(t *testing.T) {
+	runGuardCases(t, []guardCase{
+		// 1. A short id bd resolves to a different (infra-shaped or
+		// marker-masking) bead: ErrIDCollision is a refusal, never a not-found.
+		{"1 short-id collision", []string{"update", "demo-ab", "--unset-metadata", "gc.synthetic"}, beads.Bead{}, bdReadCollision, true, "resolves \"demo-ab\" to a different bead"},
+		{"1 short-id collision, marker add", []string{"update", "demo-ab", "--add-label", "triage,wisp"}, beads.Bead{}, bdReadCollision, true, "different bead"},
+		// 2. A type change after a failed read: a synthetic convoy carrying
+		// gc.root_bead_id is work only while it stays a convoy.
+		{"2 type change after a failed read", []string{"update", "demo-2", "--type", "task"}, beads.Bead{}, bdReadFailed, true, "could not read"},
+		{"2 type change on an absent bead", []string{"update", "demo-2", "--type", "task"}, beads.Bead{}, bdReadNotFound, true, "no bead"},
+		// 3. An alias bd runs as a refused verb.
+		{"3 mol fart", []string{"mol", "fart", "proto-a", "proto-b"}, beads.Bead{}, bdReadNotFound, true, "alias of mol bond"},
+		{"3 protomolecule pour", []string{"protomolecule", "pour", "f"}, beads.Bead{}, bdReadNotFound, true, "alias of mol"},
+		// 4. Flag values that spell --dry-run, and bools spelled =true: argv is
+		// parsed as pflag parses it, and the verbs are refused regardless.
+		{"4 --assignee --dry-run", []string{"mol", "pour", "f", "--assignee", "--dry-run"}, beads.Bead{}, bdReadNotFound, true, "gc sling"},
+		{"4 --persist=true", []string{"cook", "f", "--persist=true"}, beads.Bead{}, bdReadNotFound, true, "--persist"},
+		{"4 --prefix --dry-run", []string{"cook", "f", "--prefix", "--dry-run", "--persist"}, beads.Bead{}, bdReadNotFound, true, "--persist"},
+		// 5. --var reaching an expansion template's labels: every step is only
+		// instantiated without --root-only, which is refused.
+		{"5 --var into an expansion template", []string{"mol", "wisp", "expanding-formula", "--var", "label=gc:session"}, beads.Bead{}, bdReadNotFound, true, "without --root-only"},
+		{"5 --root-only=false", []string{"mol", "wisp", "expanding-formula", "--root-only=false"}, beads.Bead{}, bdReadNotFound, true, "without --root-only"},
+		// 6. A bulk restore, with a bool spelled =true.
+		{"6 backup restore --force=true", []string{"backup", "restore", "/b", "--force=true"}, beads.Bead{}, bdReadNotFound, true, "journal-corruption-recovery.md"},
+		// 7. A legacy proto's children: pour is refused, and a root-only wisp
+		// of an infra-shaped proto is judged on the proto it clones.
+		{"7 pour a proto", []string{"mol", "pour", "demo-proto"}, beads.Bead{ID: "demo-proto", Type: "molecule"}, bdReadFound, true, "gc sling"},
+		{"7 root-only wisp of an infra proto", []string{"mol", "wisp", "demo-proto", "--root-only"}, beads.Bead{ID: "demo-proto", Type: "molecule", Labels: []string{"gc:wisp"}}, bdReadFound, true, "graph-class"},
+		{"7 root-only wisp of a colliding proto id", []string{"mol", "wisp", "demo-pro", "--root-only"}, beads.Bead{}, bdReadCollision, true, "different bead"},
+	})
+}
+
+// TestGcBdSplitAllowsThePatrolShapes keeps the workflows that depend on the
+// formula verbs working: the gastown patrols' root-only wisp and burn.
+func TestGcBdSplitAllowsThePatrolShapes(t *testing.T) {
+	runGuardCases(t, []guardCase{
+		{"patrol wisp", []string{"mol", "wisp", "mol-refinery-patrol", "--root-only", "--var", "target_branch=main", "--var", "rig_name=r", "--var", "binding_prefix=gt", "--json"}, beads.Bead{}, bdReadNotFound, false, ""},
+		{"patrol wisp, root-only=true", []string{"mol", "wisp", "mol-witness-patrol", "--root-only=true", "--var=binding_prefix="}, beads.Bead{}, bdReadNotFound, false, ""},
+		{"wisp create", []string{"mol", "wisp", "create", "mol-boot-patrol", "--root-only"}, beads.Bead{}, bdReadNotFound, false, ""},
+		{"root-only wisp of a work proto", []string{"mol", "wisp", "demo-proto", "--root-only"}, beads.Bead{ID: "demo-proto", Type: "molecule", Labels: []string{"template"}}, bdReadFound, false, ""},
+		{"burn", []string{"mol", "burn", "tt-wisp-1", "--force"}, beads.Bead{}, bdReadNotFound, false, ""},
+		{"mol current", []string{"mol", "current", "--json"}, beads.Bead{}, bdReadNotFound, false, ""},
+		{"cook prints", []string{"cook", "f", "--prefix", "--dry-run"}, beads.Bead{}, bdReadNotFound, false, ""},
+		{"wisp --dry-run is not vetted", []string{"mol", "wisp", "f", "--root-only", "--dry-run"}, beads.Bead{}, bdReadNotFound, true, "unknown flag: --dry-run"},
+		{"interleaved flag before a subverb", []string{"mol", "wisp", "--root-only", "create", "f"}, beads.Bead{}, bdReadNotFound, true, "directly after"},
+	})
+}
+
+// TestGcBdSplitM7LabelOnlyInfraStep is mutant M7: a formula whose only infra
+// marker is a step LABEL. Every path that would mint that step is refused; the
+// root-only wisp mints only the root, which carries no step labels.
+func TestGcBdSplitM7LabelOnlyInfraStep(t *testing.T) {
+	runGuardCases(t, []guardCase{
+		{"pour", []string{"mol", "pour", "label-only"}, beads.Bead{}, bdReadNotFound, true, "gc sling"},
+		{"wisp", []string{"mol", "wisp", "label-only"}, beads.Bead{}, bdReadNotFound, true, "without --root-only"},
+		{"bond", []string{"mol", "bond", "label-only", "demo-1"}, beads.Bead{}, bdReadNotFound, true, "gc sling"},
+		{"cook --persist", []string{"cook", "label-only", "--persist"}, beads.Bead{}, bdReadNotFound, true, "--persist"},
+		{"root-only wisp", []string{"mol", "wisp", "label-only", "--root-only"}, beads.Bead{}, bdReadNotFound, false, ""},
+	})
+}
+
+// TestGcBdSplitM11LabelAndMetadataOpOrder is mutant M11: bd applies label
+// edits as replace, then add, then remove (issueops.ApplyLabelPatch), and
+// metadata set before unset, so the guard must judge them in that order.
+func TestGcBdSplitM11LabelAndMetadataOpOrder(t *testing.T) {
+	wisp := beads.Bead{ID: "demo-1", Type: "task"}
+	runGuardCases(t, []guardCase{
+		{"add then remove the same label: removed", []string{"update", "demo-1", "--remove-label", "wisp", "--add-label", "wisp"}, wisp, bdReadFound, false, ""},
+		{"replace then add: added", []string{"update", "demo-1", "--add-label", "gc:session", "--set-labels", "triage"}, wisp, bdReadFound, true, "sessions-class"},
+		{"set then unset the same key: unset", []string{"update", "demo-1", "--unset-metadata", "gc.kind", "--set-metadata", "gc.kind=wisp"}, wisp, bdReadFound, false, ""},
+	})
+}
+
+// TestGcBdClassGuardParsesLabelsAsBdDoes: bd parses update's label flags and
+// create's --labels as ONE CSV record, so a quoted label is the bare label.
+// The label VERBS split on plain commas, so there a quoted label really is a
+// different label.
 func TestGcBdClassGuardParsesLabelsAsBdDoes(t *testing.T) {
 	runGuardCases(t, []guardCase{
 		{"quoted wisp", []string{"update", "demo-1", "--add-label", `"wisp"`}, guardTask, bdReadFound, true, "graph-class"},
 		{"quoted second label", []string{"update", "demo-1", "--add-label", `triage,"gc:session"`}, guardTask, bdReadFound, true, "sessions-class"},
 		{"quoted set-labels", []string{"update", "demo-1", "--set-labels", `"gc:nudge"`}, guardTask, bdReadFound, true, "nudges-class"},
 		{"enterprise -l", []string{"update", "demo-1", "-l", "gc:session"}, guardTask, bdReadFound, true, "sessions-class"},
+		{"combined shorthand", []string{"update", "demo-1", "-qtmessage"}, guardTask, bdReadFound, true, "messaging-class"},
 		{"unparseable label list", []string{"update", "demo-1", "--add-label", `a"b`}, guardTask, bdReadFound, true, "not a label list bd can parse"},
 		{"quoted ordinary label", []string{"update", "demo-1", "--add-label", `"triage"`}, guardTask, bdReadFound, false, ""},
 		{"label verb keeps the quotes", []string{"label", "add", "demo-1", `"wisp"`}, guardTask, bdReadFound, false, ""},
+		{"create quoted label", []string{"create", "--title", "x", "--labels", `"gc:session"`}, beads.Bead{}, bdReadNotFound, true, "sessions-class"},
+		{"q quoted label", []string{"q", "x", "-l", `triage,"wisp"`}, beads.Bead{}, bdReadNotFound, true, "graph-class"},
+		{"new alias", []string{"new", "--title", "x", "--type", "message"}, beads.Bead{}, bdReadNotFound, true, "messaging-class"},
+		{"create work bead", []string{"create", "--title", "x", "--labels", `"triage"`}, beads.Bead{}, bdReadNotFound, false, ""},
 	})
 }
 
-// TestGcBdCreateGuardParsesLabelsAsBdDoes is finding 1 on the pre-existing
-// create guard: `--labels '"gc:session"'` used to classify as work.
+// TestGcBdCreateGuardParsesLabelsAsBdDoes is the same on the pre-existing
+// create guard, which runs before the by-id door.
 func TestGcBdCreateGuardParsesLabelsAsBdDoes(t *testing.T) {
 	cfg := splitGuardTestCity()
 	for _, argv := range [][]string{
@@ -79,10 +157,8 @@ func TestGcBdCreateGuardParsesLabelsAsBdDoes(t *testing.T) {
 		{"new", "--title", "x", "--label", `"gc:nudge"`},
 		{"create", "--title", "x", "--labels", `a"b`},
 	} {
-		if msg, refused := bdRelocatedClassCreateRefusal(cfg, t.TempDir(), argv); !refused {
+		if msg, refused := bdRelocatedClassCreateRefusal(cfg, t.TempDir(), argv); !refused || msg == "" {
 			t.Errorf("gc bd %s was not refused", strings.Join(argv, " "))
-		} else if msg == "" {
-			t.Errorf("gc bd %s: empty refusal", strings.Join(argv, " "))
 		}
 	}
 	if _, refused := bdRelocatedClassCreateRefusal(cfg, t.TempDir(), []string{"create", "--title", "x", "--labels", `"triage"`}); refused {
@@ -90,7 +166,7 @@ func TestGcBdCreateGuardParsesLabelsAsBdDoes(t *testing.T) {
 	}
 }
 
-// TestGcBdClassGuardSQLRefusesHiddenWrites is finding 2.
+// TestGcBdClassGuardSQLRefusesHiddenWrites keeps sql to one plain read.
 func TestGcBdClassGuardSQLRefusesHiddenWrites(t *testing.T) {
 	runGuardCases(t, []guardCase{
 		{"comment hides a separator", []string{"sql", "/* ; SELECT 1 */ UPDATE issues SET issue_type='message'"}, beads.Bead{}, bdReadFound, true, "comment"},
@@ -99,129 +175,66 @@ func TestGcBdClassGuardSQLRefusesHiddenWrites(t *testing.T) {
 		{"hash comment", []string{"sql", "SELECT 1 # x"}, beads.Bead{}, bdReadFound, true, "comment"},
 		{"two statements", []string{"sql", "select 1; update issues set issue_type='message'"}, beads.Bead{}, bdReadFound, true, "more than one statement"},
 		{"dolt procedure as a function", []string{"sql", "SELECT DOLT_MERGE('pre-split')"}, beads.Bead{}, bdReadFound, true, "Dolt procedure"},
+		{"backticked dolt procedure", []string{"sql", "SELECT `dolt_merge`('pre-split')"}, beads.Bead{}, bdReadFound, true, "backtick-quoted Dolt"},
+		{"backticked dolt table", []string{"sql", "select * from ` DOLT_branches`"}, beads.Bead{}, bdReadFound, true, "backtick-quoted Dolt"},
 		{"explain wraps a write", []string{"sql", "EXPLAIN UPDATE issues SET issue_type='message'"}, beads.Bead{}, bdReadFound, true, "not a plain SELECT"},
 		{"unknown flag", []string{"sql", "--weird", "select 1"}, beads.Bead{}, bdReadFound, true, "--weird"},
+		{"two queries", []string{"sql", "select 1", "select 2"}, beads.Bead{}, bdReadFound, true, "exactly one query"},
 		{"--csv read", []string{"sql", "--csv", "select id from issues"}, beads.Bead{}, bdReadFound, false, ""},
 		{"--json read, trailing semicolon", []string{"sql", "--json", "SELECT COUNT(*) FROM issues;"}, beads.Bead{}, bdReadFound, false, ""},
-		{"dolt system table read", []string{"sql", "select * from dolt_log"}, beads.Bead{}, bdReadFound, false, ""},
 		{"core pack derived-table read", []string{"sql", "--csv", "SELECT * FROM (\nWITH c AS (SELECT id FROM issues) SELECT COUNT(*) FROM c\n) gc_scope_read"}, beads.Bead{}, bdReadFound, false, ""},
 	})
 }
 
-// TestGcBdClassGuardModelsMetadataNull is finding 3: bd 1.3.2 stores
-// --set-metadata k=null as JSON null (reads back absent), the Enterprise build
-// as the string "null". Clearing gc.synthetic on a synthetic convoy that
-// carries gc.root_bead_id unmasks the graph marker under the first reading.
+// TestGcBdClassGuardModelsMetadataNull: bd 1.3.2 stores --set-metadata k=null
+// as JSON null (reads back absent), the Enterprise build as the string "null".
 func TestGcBdClassGuardModelsMetadataNull(t *testing.T) {
 	convoy := beads.Bead{ID: "demo-2", Type: "convoy", Metadata: map[string]string{"gc.synthetic": "true", "gc.root_bead_id": "gcg-1"}}
 	runGuardCases(t, []guardCase{
 		{"null unmasks the graph marker", []string{"update", "demo-2", "--set-metadata", "gc.synthetic=null"}, convoy, bdReadFound, true, "graph-class"},
 		{"empty unmasks it too", []string{"update", "demo-2", "--set-metadata", "gc.synthetic="}, convoy, bdReadFound, true, "graph-class"},
+		{"type change unmasks it", []string{"update", "demo-2", "--type=task"}, convoy, bdReadFound, true, "graph-class"},
 		{"null of an absent marker", []string{"update", "demo-1", "--set-metadata", "gc.kind=null"}, guardTask, bdReadFound, false, ""},
 	})
 }
 
-// TestGcBdClassGuardJudgesAnUnreadableBead is findings 5 (M24) and 6: a bead
-// the store could not read is still judged, never skipped; one it answers is
-// absent is judged as an empty work bead; and a removal against a bead that
-// could not be read is refused, because only the bead can say what it unmasks.
-func TestGcBdClassGuardJudgesAnUnreadableBead(t *testing.T) {
+// TestGcBdClassGuardJudgesOnlyAResolvedBead: a class-touching write is judged
+// against exactly the bead its id resolves to; absent, colliding or unreadable
+// is a refusal. A write that touches no class field needs no read.
+func TestGcBdClassGuardJudgesOnlyAResolvedBead(t *testing.T) {
 	runGuardCases(t, []guardCase{
-		{"absent bead, marker add", []string{"update", "demo-9", "--add-label", "wisp"}, beads.Bead{}, bdReadNotFound, true, "graph-class"},
-		{"failed read, marker add", []string{"update", "demo-9", "--add-label", "gc:session"}, beads.Bead{}, bdReadFailed, true, "sessions-class"},
-		{"failed read, marker removal", []string{"update", "demo-9", "--remove-label", "gc:session"}, beads.Bead{}, bdReadFailed, true, "could not read"},
-		{"failed read, marker unset", []string{"update", "demo-9", "--unset-metadata", "gc.synthetic"}, beads.Bead{}, bdReadFailed, true, "could not read"},
-		{"failed read, set-labels", []string{"update", "demo-9", "--set-labels", "triage"}, beads.Bead{}, bdReadFailed, true, "could not read"},
-		{"failed read, set-state", []string{"set-state", "demo-9", "patrol=muted"}, beads.Bead{}, bdReadFailed, true, "could not read"},
-		{"absent bead, removal", []string{"update", "demo-9", "--remove-label", "gc:session"}, beads.Bead{}, bdReadNotFound, false, ""},
-		{"failed read, ordinary write", []string{"update", "demo-9", "--add-label", "triage", "--set-metadata", "gc.outcome="}, beads.Bead{}, bdReadFailed, false, ""},
+		{"absent bead", []string{"update", "demo-9", "--add-label", "wisp"}, beads.Bead{}, bdReadNotFound, true, "no bead"},
+		{"failed read", []string{"update", "demo-9", "--remove-label", "gc:session"}, beads.Bead{}, bdReadFailed, true, "could not read"},
+		{"collision", []string{"label", "add", "demo-9", "triage,gc:wait"}, beads.Bead{}, bdReadCollision, true, "different bead"},
+		{"set-state on a failed read", []string{"set-state", "demo-9", "patrol=muted"}, beads.Bead{}, bdReadFailed, true, "could not read"},
+		{"no id", []string{"update", "--add-label", "wisp"}, beads.Bead{}, bdReadFound, true, "name the bead explicitly"},
+		{"class-free write, no read needed", []string{"update", "demo-9", "--status", "in_progress", "--set-metadata", "gc.outcome=pass"}, beads.Bead{}, bdReadFailed, false, ""},
 	})
 }
 
-// TestGcBdClassGuardKnowsTheFleetsFlags is finding 7: an ordinary update
-// spelled with the Enterprise build's flags must not be refused as unknown.
+// TestGcBdClassGuardKnowsTheFleetsFlags: an ordinary update spelled with the
+// Enterprise build's flags is not refused, and the store-redirecting globals
+// are.
 func TestGcBdClassGuardKnowsTheFleetsFlags(t *testing.T) {
 	runGuardCases(t, []guardCase{
 		{"--if-revision", []string{"update", "demo-1", "--if-revision", "7", "--add-label", "triage"}, guardTask, bdReadFound, false, ""},
 		{"--clear-notes", []string{"update", "demo-1", "--clear-notes", "--add-label", "triage"}, guardTask, bdReadFound, false, ""},
-		{"--profile in front", []string{"--profile", "team", "update", "demo-1", "--add-label", "wisp"}, guardTask, bdReadFound, true, "graph-class"},
-		{"--server-url in front", []string{"--server-url", "http://x", "update", "demo-1", "--add-label", "triage"}, guardTask, bdReadFound, false, ""},
+		{"--json in front", []string{"--json", "update", "demo-1", "--add-label", "wisp"}, guardTask, bdReadFound, true, "graph-class"},
+		{"--profile redirects the store", []string{"--profile", "team", "update", "demo-1", "--add-label", "triage"}, guardTask, bdReadFound, true, "--profile"},
+		{"--db redirects the store", []string{"update", "demo-1", "--db", "other", "--add-label", "triage"}, guardTask, bdReadFound, true, "--db"},
+		{"init --db is vetted", []string{"init", "--db", "city", "--prefix", "tt"}, guardTask, bdReadFound, false, ""},
+		{"init --from-jsonl is not", []string{"init", "--from-jsonl"}, guardTask, bdReadFound, true, "--from-jsonl"},
+		{"unknown verb", []string{"frobnicate"}, guardTask, bdReadFound, true, "not a bd command"},
+		{"serve", []string{"serve"}, guardTask, bdReadFound, true, "write API"},
+		{"dolt pull", []string{"dolt", "pull"}, guardTask, bdReadFound, true, "wholesale"},
+		{"vc merge", []string{"vc", "merge", "pre-split"}, guardTask, bdReadFound, true, "wholesale"},
+		{"federation sync", []string{"federation", "sync"}, guardTask, bdReadFound, true, "wholesale"},
+		{"sync", []string{"sync"}, guardTask, bdReadFound, true, "wholesale"},
+		{"backup status", []string{"backup", "status", "--json"}, guardTask, bdReadFound, false, ""},
+		{"backup sync", []string{"backup", "sync", "--json"}, guardTask, bdReadFound, false, ""},
+		{"dep rm alias", []string{"dep", "rm", "demo-1", "demo-2"}, guardTask, bdReadFound, false, ""},
+		{"bare --version", []string{"--version"}, guardTask, bdReadFound, false, ""},
 	})
-}
-
-// TestGcBdClassGuardServeAndBackup is finding 8.
-func TestGcBdClassGuardServeAndBackup(t *testing.T) {
-	runGuardCases(t, []guardCase{
-		{"serve", []string{"serve"}, beads.Bead{}, bdReadFound, true, "write API"},
-		{"backup restore", []string{"backup", "restore", "/b", "--force"}, beads.Bead{}, bdReadFound, true, bdBackupPostdatesSplitFlag},
-		{"backup restore, attested", []string{"backup", "restore", "/b", bdBackupPostdatesSplitFlag}, beads.Bead{}, bdReadFound, false, ""},
-		{"backup status", []string{"backup", "status", "--json"}, beads.Bead{}, bdReadFound, false, ""},
-	})
-	g := bdClassFlipGuard(splitGuardTestCity(), t.TempDir(), []string{"backup", "restore", "/b", bdBackupPostdatesSplitFlag}, bdClassGuardDeps{})
-	if strings.Contains(strings.Join(g.args, " "), bdBackupPostdatesSplitFlag) || g.notice == "" {
-		t.Fatalf("attested restore forwarded %v (notice %q); want gc's flag consumed and a notice", g.args, g.notice)
-	}
-}
-
-// TestGcBdClassGuardClassifiesFormulaSteps is finding 9: bd copies each
-// formula step's type, labels and metadata onto the beads pour/wisp/bond and
-// cook --persist create, so every resolved step is classified first.
-func TestGcBdClassGuardClassifiesFormulaSteps(t *testing.T) {
-	runGuardCases(t, []guardCase{
-		{"pour", []string{"mol", "pour", "infra-formula", "--var", "x=1"}, beads.Bead{}, bdReadNotFound, true, `step "graph"`},
-		{"wisp", []string{"mol", "wisp", "infra-formula", "--root-only"}, beads.Bead{}, bdReadNotFound, true, "graph-class"},
-		{"wisp create", []string{"mol", "wisp", "create", "infra-formula"}, beads.Bead{}, bdReadNotFound, true, "graph-class"},
-		{"bond", []string{"mol", "bond", "work-formula", "infra-formula"}, beads.Bead{}, bdReadNotFound, true, "graph-class"},
-		{"pour --attach", []string{"mol", "pour", "work-formula", "--attach", "infra-formula"}, beads.Bead{}, bdReadNotFound, true, "graph-class"},
-		{"cook --persist", []string{"cook", "infra-formula", "--persist"}, beads.Bead{}, bdReadNotFound, true, "graph-class"},
-		{"unresolvable", []string{"mol", "pour", "nothing-here"}, beads.Bead{}, bdReadNotFound, true, "could not resolve"},
-		{"existing work proto", []string{"mol", "pour", "demo-proto"}, beads.Bead{ID: "demo-proto", Type: "molecule"}, bdReadFound, false, ""},
-		{"existing graph proto", []string{"mol", "pour", "demo-proto"}, beads.Bead{ID: "demo-proto", Type: "molecule", Labels: []string{"gc:wisp"}}, bdReadFound, true, "graph-class"},
-		{"work formula", []string{"mol", "wisp", "work-formula", "--root-only"}, beads.Bead{}, bdReadNotFound, false, ""},
-		{"dry run", []string{"mol", "pour", "infra-formula", "--dry-run"}, beads.Bead{}, bdReadNotFound, false, ""},
-		{"cook without --persist", []string{"cook", "infra-formula"}, beads.Bead{}, bdReadNotFound, false, ""},
-		{"wisp list", []string{"mol", "wisp", "list"}, beads.Bead{}, bdReadNotFound, false, ""},
-	})
-}
-
-// bdFormulaFakeBd is the parity fake bd, plus a `cook` that prints a resolved
-// formula whose one step carries gc.root_bead_id and labels=["gc:session"].
-const bdFormulaFakeBd = `#!/bin/sh
-{
-  printf 'argv=%s\n' "$*"
-  printf -- '--\n'
-} >> "${BD_PARITY_LOG}.$$"
-case "$1" in
-  cook) echo '{"formula":"mol-strand","version":1,"steps":[{"id":"bad","title":"b","metadata":{"gc.root_bead_id":"gcg-1"},"labels":["gc:session"]}]}' ;;
-  show) echo '[]'; exit 3 ;;
-esac
-exit 0
-`
-
-// TestGcBdMolPourRefusesAnInfraShapedFormulaEndToEnd drives finding 9 through
-// doBd with a fake bd: the guard asks bd to cook the formula, sees the step
-// that would be minted as an infrastructure bead, and bd never pours.
-func TestGcBdMolPourRefusesAnInfraShapedFormulaEndToEnd(t *testing.T) {
-	setup := func(t *testing.T, c bdParityCity) []string {
-		if err := os.WriteFile(filepath.Join(c.bin, "bd"), []byte(bdFormulaFakeBd), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return []string{"mol", "pour", "mol-strand"}
-	}
-	res := runBdParityArm(t, false, bdParityOpts{storage: bdSQLRefusalSplitStorage}, setup)
-	if res.code != 1 || !strings.Contains(res.stderr, `step "bad"`) {
-		t.Fatalf("exit %d, stderr=%q; want the formula-step refusal", res.code, res.stderr)
-	}
-	if !strings.Contains(res.bd, "argv=cook mol-strand") {
-		t.Errorf("the guard did not resolve the formula through bd cook; bd log:\n%s", res.bd)
-	}
-	if strings.Contains(res.bd, "argv=mol pour") {
-		t.Fatalf("bd poured despite the refusal; bd log:\n%s", res.bd)
-	}
-	res = runBdParityArm(t, false, bdParityOpts{}, setup)
-	if res.code != 0 || !strings.Contains(res.bd, "argv=mol pour mol-strand") || strings.Contains(res.bd, "argv=cook") {
-		t.Fatalf("single-store: exit %d; want the pour forwarded untouched; bd log:\n%s", res.code, res.bd)
-	}
 }
 
 // TestGcBdImportDryRunReportsAndSkipInfraNamesDependents covers two review
@@ -245,7 +258,7 @@ func TestGcBdImportDryRunReportsAndSkipInfraNamesDependents(t *testing.T) {
 	if g.cleanup != nil {
 		defer g.cleanup()
 	}
-	if g.refusal != "" || !strings.Contains(g.notice, "1 kept work row(s) carry a dependency") || !strings.Contains(g.notice, "demo-1") {
+	if g.refusal != "" || !strings.Contains(g.notice, "1 kept row(s) carry a dependency") || !strings.Contains(g.notice, "demo-1") {
 		t.Fatalf("skip-infra: refusal=%q notice=%q", g.refusal, g.notice)
 	}
 }
@@ -282,14 +295,4 @@ func TestBeadsMetadataCASClassGuardReadsOnlyWhenItMatters(t *testing.T) {
 	if refusal := beadsMetadataCASClassFlipRefusal(store, beadsMetadataCASRequest{beadID: "demo-1", key: "gc.root_bead_id", next: "gcg-1"}, holds); !strings.Contains(refusal, "graph-class") {
 		t.Fatalf("setting a graph marker on an unreadable bead: refusal=%q", refusal)
 	}
-}
-
-// stubCookRunner answers `bd cook <name>` with testFormulaJSON, and fails the
-// way bd does (non-zero, nothing printed) for a name that is not a formula.
-func stubCookRunner(argv []string) ([]byte, error) {
-	out := testFormulaJSON(argv)
-	if out == "" {
-		return nil, errors.New("bd cook: formula not found")
-	}
-	return []byte(out), nil
 }
