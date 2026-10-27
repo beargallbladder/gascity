@@ -564,7 +564,7 @@ func TestBurnGuardEdges(t *testing.T) {
 		if !errors.As(err, &molErr) || len(result.AutoBurned) != 0 {
 			t.Fatalf("burn with an unreadable subtree: err=%v burned=%v, want a refusal", err, result.AutoBurned)
 		}
-		if !strings.Contains(err.Error(), "subtree unreadable") {
+		if !strings.Contains(err.Error(), "subtree could not be read") || strings.Contains(err.Error(), "worker holds "+root.ID) {
 			t.Fatalf("refusal does not say the guard could not read the subtree (it must fail closed on that, not on a failed burn): %v", err)
 		}
 	})
@@ -583,12 +583,27 @@ func TestBurnGuardEdges(t *testing.T) {
 			t.Fatal("the attachment was burned")
 		}
 	})
+	t.Run("batch-unreadable", func(t *testing.T) {
+		work, src, root := mkAttached(t, "")
+		store := listFailingStore{Store: work, rootID: root.ID}
+		var result SlingResult
+		err := checkBatchNoMoleculeChildren(store, []beads.Bead{src}, singleStoreAttachmentScope(store), &result, false)
+		if err == nil || len(result.AutoBurned) != 0 {
+			t.Fatalf("batch burn with an unreadable subtree: err=%v burned=%v, want a refusal", err, result.AutoBurned)
+		}
+		if !strings.Contains(err.Error(), "subtree could not be read") || strings.Contains(err.Error(), "held by") {
+			t.Fatalf("batch refusal misstates an unreadable subtree as held: %v", err)
+		}
+	})
 	t.Run("batch", func(t *testing.T) {
 		work, src, root := mkAttached(t, "in_progress")
 		var result SlingResult
 		err := checkBatchNoMoleculeChildren(work, []beads.Bead{src}, singleStoreAttachmentScope(work), &result, false)
 		if err == nil || len(result.AutoBurned) != 0 {
 			t.Fatalf("batch burn over an in-progress step: err=%v burned=%v, want a refusal", err, result.AutoBurned)
+		}
+		if !strings.Contains(err.Error(), "held by") {
+			t.Fatalf("batch refusal does not name the held step: %v", err)
 		}
 		if got, _ := work.Get(root.ID); got.Status == "closed" {
 			t.Fatal("the batch check burned an attachment a worker holds")

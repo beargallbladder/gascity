@@ -503,9 +503,10 @@ func checkNoMoleculeChildren(q BeadQuerier, beadID string, scope attachmentScope
 				WorkflowIDs:  []string{attached.ID},
 			}
 		}
-		var active []string
+		var held []string
+		var unreadable error
 		if parentUnassigned && located.Store != nil {
-			if active = attachmentActiveWork(located); len(active) == 0 {
+			if held, unreadable = attachmentActiveWork(located); len(held) == 0 && unreadable == nil {
 				if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
 					if clearErr := clearAttachmentMetadata(scope.work, parent, attached); clearErr != nil {
 						return clearErr
@@ -515,7 +516,7 @@ func checkNoMoleculeChildren(q BeadQuerier, beadID string, scope attachmentScope
 				}
 			}
 		}
-		return &MoleculeAttachedError{BeadID: beadID, Label: AttachmentLabel(attached), AttachmentID: attached.ID, ActiveSteps: active}
+		return &MoleculeAttachedError{BeadID: beadID, Label: AttachmentLabel(attached), AttachmentID: attached.ID, ActiveSteps: held, Unreadable: unreadable}
 	}
 	return nil
 }
@@ -535,26 +536,24 @@ func (e *AttachmentProbeError) Error() string {
 
 func (e *AttachmentProbeError) Unwrap() error { return e.Err }
 
-// attachmentActiveWork returns the beads of the attachment's subtree a worker
-// holds (in_progress, or hooked), or a placeholder when the subtree cannot be
-// read. An unassigned source's stale attachment is burned to make room for a
-// new one, but not one a worker is in the middle of: the attach is refused
-// instead. Fails closed: an unreadable subtree counts as active.
-func attachmentActiveWork(a AttachedBead) []string {
+// attachmentActiveWork reports why an unassigned source's stale attachment may
+// not be burned to make room for a new one: the beads of its subtree a worker
+// holds (in_progress, or hooked), or the error that kept the subtree from
+// being read. Fails closed: an unreadable subtree is never burned.
+func attachmentActiveWork(a AttachedBead) (held []string, unreadable error) {
 	if a.Store == nil {
-		return []string{a.Bead.ID + " (store unavailable)"}
+		return nil, errors.New("its store is unavailable")
 	}
 	subtree, err := molecule.ListSubtree(a.Store, a.Bead.ID)
 	if err != nil {
-		return []string{a.Bead.ID + " (subtree unreadable: " + err.Error() + ")"}
+		return nil, err
 	}
-	var active []string
 	for _, b := range subtree {
 		if b.Status == "in_progress" || b.Status == "hooked" {
-			active = append(active, b.ID)
+			held = append(held, b.ID)
 		}
 	}
-	return active
+	return held, nil
 }
 
 // MoleculeAttachedError reports that a bead already has a live, non-workflow
@@ -573,10 +572,16 @@ type MoleculeAttachedError struct {
 	// hooked), when that is why an unassigned source's attachment was not
 	// burned to make room.
 	ActiveSteps []string
+	// Unreadable is why the attachment's subtree could not be read, when that
+	// is why it was not burned (the guard fails closed).
+	Unreadable error
 }
 
 func (e *MoleculeAttachedError) Error() string {
 	msg := fmt.Sprintf("bead %s already has attached %s %s", e.BeadID, e.Label, e.AttachmentID)
+	if e.Unreadable != nil {
+		msg += fmt.Sprintf("; it was not replaced because its subtree could not be read (%v), so whether a worker holds a step is unknown", e.Unreadable)
+	}
 	if len(e.ActiveSteps) > 0 {
 		msg += fmt.Sprintf("; it was not replaced because a worker holds %s. If that step is stale (its worker is gone), release it with `gc bd update <step> --status open --assignee \"\"` or close it with `gc bd close <step>`, then sling again", strings.Join(e.ActiveSteps, ", "))
 	}
@@ -648,9 +653,10 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, scope a
 				workflowConflicts = append(workflowConflicts, workflowConflict{childID: child.ID, workflowID: attached.ID})
 				continue
 			}
-			var active []string
+			var held []string
+			var unreadable error
 			if childUnassigned && located.Store != nil {
-				if active = attachmentActiveWork(located); len(active) == 0 {
+				if held, unreadable = attachmentActiveWork(located); len(held) == 0 && unreadable == nil {
 					if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
 						if clearErr := clearAttachmentMetadata(scope.work, child, attached); clearErr != nil {
 							return clearErr
@@ -660,8 +666,12 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, scope a
 					}
 				}
 			}
-			if len(active) > 0 {
-				problems = append(problems, fmt.Sprintf("%s (has %s %s, held by %s; release or close a stale step, then sling again)", child.ID, AttachmentLabel(attached), attached.ID, strings.Join(active, ", ")))
+			if unreadable != nil {
+				problems = append(problems, fmt.Sprintf("%s (has %s %s, whose subtree could not be read: %v)", child.ID, AttachmentLabel(attached), attached.ID, unreadable))
+				continue
+			}
+			if len(held) > 0 {
+				problems = append(problems, fmt.Sprintf("%s (has %s %s, held by %s; release or close a stale step, then sling again)", child.ID, AttachmentLabel(attached), attached.ID, strings.Join(held, ", ")))
 				continue
 			}
 			problems = append(problems, fmt.Sprintf("%s (has %s %s)", child.ID, AttachmentLabel(attached), attached.ID))
