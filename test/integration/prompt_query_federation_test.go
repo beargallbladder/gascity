@@ -228,6 +228,25 @@ func TestCityScopedAgentPromptQueriesFindRigWork(t *testing.T) {
 			t.Errorf("AC-2: WorkQuery of city-scoped agent %s does not list routed rig bead %s; output:\n%s", qualifiedName, rigID, got)
 		}
 	})
+
+	t.Run("case I: in-progress rig bead appears in AssignedInProgressQuery", func(t *testing.T) {
+		cityDir, rigDir, qualifiedName := setUpPromptQueryFederationCity(t)
+
+		// The rig-store bead under test: in_progress, assigned to the agent's
+		// session identity.
+		rigID := promptQueryBeadID(t, mustCreateRigBead(t, cityDir, rigDir, "claimed rig work for the watcher"), config.DeriveBeadsPrefix("watcher-rig-alpha"))
+		out, err := bdDoltInRig(cityDir, rigDir, "update", rigID,
+			"--assignee", qualifiedName, "--status", "in_progress")
+		if err != nil {
+			t.Fatalf("claiming rig bead for %s failed: %v\noutput: %s", qualifiedName, err, out)
+		}
+
+		_, inProgressQuery := renderPromptQueryFederationQueries(t, cityDir)
+		got := runPromptQueryAsNamedSession(t, cityDir, qualifiedName, inProgressQuery)
+		if !strings.Contains(got, rigID) {
+			t.Errorf("AC-3: AssignedInProgressQuery of city-scoped agent %s does not list its in-progress rig bead %s; output:\n%s", qualifiedName, rigID, got)
+		}
+	})
 }
 
 func mustCreateRigBead(t *testing.T, cityDir, rigDir, title string) string {
