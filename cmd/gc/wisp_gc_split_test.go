@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -373,6 +372,9 @@ type unreadableLegs struct{}
 func (unreadableLegs) each(func(beads.Store))  {}
 func (unreadableLegs) unusable() error         { return errNoWorkStore }
 func (unreadableLegs) suspendedRigs() []string { return nil }
+func (unreadableLegs) storeForRef(string) (beads.Store, bool, bool) {
+	return nil, false, false
+}
 
 // Should-fix 4: a leg set that cannot be read leaves a stepless root open.
 func TestWispGCHolderGuardFailsClosedOnUnreadableLegs(t *testing.T) {
@@ -398,52 +400,17 @@ func TestWispGCHolderGuardFailsClosedOnUnreadableLegs(t *testing.T) {
 }
 
 // The work arm's dry run over a rig leg shaped like maintainer-city's gascity
-// rig (26 closed expired v1 poured roots holding 27 children, 2 open stepless
-// junk roots, plus a proto template and a closure holding a reopened step that
-// must never be listed). Nothing is mutated; the log names what an enforced
-// pass would do.
+// rig only lists and counts: one summary line, nothing mutated, no closure
+// walked. Enforcing, it closes the abandoned roots, purges the expired
+// closures, refuses the one holding a reopened step, and skips the template.
 func TestWispGCWorkArmDryRunOnARigShapedLikeMaintainerCity(t *testing.T) {
 	e := newSplitEnvWithRig(t, true)
-	rig := e.rig
-	mk := func(b beads.Bead) beads.Bead {
-		t.Helper()
-		created, err := rig.Create(b)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return created
-	}
-	closeID := func(id string) {
-		t.Helper()
-		if err := rig.Close(id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := 0; i < 26; i++ {
-		root := mk(beads.Bead{Title: fmt.Sprintf("mol-poured-%02d", i), Type: "molecule"})
-		children := 1
-		if i == 0 {
-			children = 2
-		}
-		for c := 0; c < children; c++ {
-			closeID(mk(beads.Bead{Title: "step", Type: "step", ParentID: root.ID}).ID)
-		}
-		closeID(root.ID)
-	}
-	for i := 0; i < 2; i++ {
-		mk(beads.Bead{Title: fmt.Sprintf("junk-%d", i), Type: "molecule"})
-	}
-	proto := mk(beads.Bead{Title: "mol-proto", Type: "molecule", Labels: []string{bdTemplateLabel}})
-	closeID(proto.ID)
-	live := mk(beads.Bead{Title: "mol-live-step", Type: "molecule"})
-	liveStep := mk(beads.Bead{Title: "reopened step", Type: "step", ParentID: live.ID})
-	closeID(liveStep.ID)
-	closeID(live.ID)
-	inProgress := "in_progress"
-	if err := rig.Update(liveStep.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
-		t.Fatal(err)
-	}
+	rig := newBatchDeleteWorkStore()
+	mcShapedRigFixture(t, rig)
 	before := len(allBeads(t, rig))
+	prevCap := wispGCWorkArmWalkCap
+	wispGCWorkArmWalkCap = 100
+	t.Cleanup(func() { wispGCWorkArmWalkCap = prevCap })
 
 	var logs bytes.Buffer
 	prevOut, prevFlags := log.Writer(), log.Flags()
@@ -451,32 +418,45 @@ func TestWispGCWorkArmDryRunOnARigShapedLikeMaintainerCity(t *testing.T) {
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
-	legs := workLegsFromCensus(e.cityPath, e.cfg, cityWorkLegOf(beads.WorkStore{Store: e.work}), e.rigStores)
-	withCloseAbandonedEnforced(t, func() {
-		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
-			if _, err := wg.runGC(legs, beads.GraphStore{Store: e.graphStore()}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(48*time.Hour)); err != nil {
-				t.Fatalf("runGC: %v", err)
-			}
+	legs := workLegsFromCensus(e.cityPath, e.cfg, cityWorkLegOf(beads.WorkStore{Store: e.work}), map[string]beads.Store{e.rigName: rig})
+	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	runPass := func() {
+		withCloseAbandonedEnforced(t, func() {
+			withCloseAbandonedTTL(t, 5*time.Minute, func() {
+				if _, err := wg.runGC(legs, beads.GraphStore{Store: e.graphStore()}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(48*time.Hour)); err != nil {
+					t.Logf("runGC: %v", err)
+				}
+			})
 		})
-	})
-	log.SetOutput(prevOut)
+	}
+	runPass()
 	t.Logf("work-arm dry run:\n%s", logs.String())
-
 	if after := len(allBeads(t, rig)); after != before {
 		t.Fatalf("dry run changed the rig: %d beads before, %d after", before, after)
 	}
+	if want := "2 open work-class molecule root(s) idle past 5m0s, 27 closed root(s) past retention"; !strings.Contains(logs.String(), want) {
+		t.Errorf("dry-run log lacks %q", want)
+	}
+
+	logs.Reset()
+	withWorkMoleculesEnforced(t, runPass)
+	t.Logf("work-arm enforced pass:\n%s", logs.String())
 	out := logs.String()
-	for _, want := range []string{
-		"26 work-class molecule root(s), 53 bead(s) in all, eligible for purge",
-		"2 work-class molecule root(s) eligible for close",
-		"would NOT be purged: closure holds open bead(s) " + liveStep.ID,
-	} {
+	for _, want := range []string{"closed abandoned root", "not purging closed root", "holds a bead that is not closed"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("dry-run log lacks %q", want)
+			t.Errorf("enforced log lacks %q", want)
 		}
 	}
-	if strings.Contains(out, proto.ID+" would") {
-		t.Errorf("dry-run log lists proto template %s", proto.ID)
+
+	// The refusal is remembered: the next pass neither walks nor re-logs it.
+	logs.Reset()
+	withWorkMoleculesEnforced(t, runPass)
+	again := logs.String()
+	t.Logf("work-arm second enforced pass:\n%s", again)
+	if strings.Contains(again, "not purging closed root") {
+		t.Errorf("the refused closure was re-walked or re-logged on the next pass")
+	}
+	if !strings.Contains(again, "(0 walked this pass, 1 remembered)") {
+		t.Errorf("second pass summary does not report the remembered refusal")
 	}
 }

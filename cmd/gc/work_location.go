@@ -90,6 +90,27 @@ func (cr *CityRuntime) workLegs() WorkLegs {
 // suspended.
 func (l WorkLegs) suspendedRigs() []string { return l.suspended }
 
+// storeForRef resolves a source store-ref ("city:<name>", "rig:<name>", a
+// class binding ref) to the leg it names: the city work store for a city or
+// binding ref, the rig's store for a serving rig. A suspended rig reports
+// suspended=true (it is not a leg, and is not read); any other ref, ok=false.
+func (l WorkLegs) storeForRef(ref string) (beads.Store, bool, bool) {
+	rig, ok := storeref.ScopeRigContext(ref)
+	if !ok {
+		return nil, false, false
+	}
+	if rig == "" {
+		return l.work, false, l.work != nil
+	}
+	for _, name := range l.suspended {
+		if name == rig {
+			return nil, true, true
+		}
+	}
+	store, ok := l.rigs[rig]
+	return store, false, ok && store != nil
+}
+
 // suspendedOpenRigs names the declared rigs with an open store that are
 // suspended: the complement of servingRigStores among the open rigs.
 func suspendedOpenRigs(cfg *config.City, rigs map[string]beads.Store, suspendedRigPaths map[string]bool) []string {
