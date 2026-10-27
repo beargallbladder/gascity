@@ -258,9 +258,10 @@ How a command gets through:
   also bd's `HOME` and `TMPDIR`, with only `PATH` besides, so a caller's
   environment (`CLICOLOR_FORCE`, `BD_NAME`, `BEADS_DIR`, `TMPDIR`) cannot
   change what it reads. The walk stops at the first level of the tree that
-  no inventory matches, and never runs a command no inventory knows. A city
-  whose `.gc` is read-only is walked without the cache. Each run is killed with its
-  process group after 20 seconds, and the whole walk after two minutes. The
+  no inventory matches, and never runs a command no inventory knows. On a
+  city whose `.gc` is read-only the cache is read but not written. Each run
+  is killed with its process group after 20 seconds, and the whole walk
+  after two minutes; stale scratch dirs are removed on the next walk. The
   binary must also be a Go build of bd's `cmd/bd` with the cobra and pflag
   versions the matched inventory records, which rejects a mise or asdf shim
   or a wrapper script: point `PATH` at the real binary.
@@ -273,15 +274,23 @@ How a command gets through:
   that fails, times out or reads a root with no commands is reported as an
   error and remembered for a minute; it is never cached as a refusal.
 - **The vouch is a convenience.** `gc storage vouch-bd` (with `--rig <rig>`
-  for a rig's bd) walks the binary for real and, only if its tree matches,
-  records the binary's path, sha256 and inventory in
-  `.gc/bd-inventory-vouch.json`. That exact binary is then admitted without a
-  walk, and each such admission records a `gc_bd.vouch_used` event. A binary
-  that matches nothing is refused and nothing is written. The vouch never
-  goes in `city.toml`, so every gc version still loads the city, and you
-  never edit a file to vouch. Anyone who can write `.gc` can write a vouch,
-  so `gc doctor` re-walks vouched binaries and reports a mismatch; an
-  unreadable vouch file is ignored with a doctor warning.
+  for a rig's bd) walks the binary for real, never trusting a cached verdict
+  or an existing vouch, and, only if its tree matches, records the binary's
+  path, its bytes (sha256), the inventory and this gc's inventory set in
+  `.gc/bd-inventory-vouch.json`. That binary is then admitted without a walk.
+  The first admission by a vouch in each gc process (from the vouch or from
+  the cached verdict it produced) records a `gc_bd.vouch_used` event. A
+  binary that matches nothing is refused and nothing is written. A gc whose
+  pinned inventories differ (an upgrade) ignores the vouch and walks the
+  binary again. The vouch never goes in `city.toml`, so every gc version
+  still loads the city, and you never edit a file to vouch.
+- **Neither the vouch nor the cache is a security boundary.** Anyone who can
+  write `.gc` can forge either. `gc doctor` therefore walks each distinct bd
+  binary for real once per run and reports a binary whose cached or vouched
+  verdict the walk contradicts (the walk also corrects the cache). An
+  unreadable vouch file is ignored with a doctor warning. `gc start`'s
+  warm-up reports from the cache only: a binary gc has not judged yet is
+  "pending", not a failure.
 - **gc resolves the command exactly as bd does,** with a mirror of that tree
   under the same cobra and pflag versions. It refuses any argv where cobra's
   command lookup and pflag's flag parse disagree about which arguments name
