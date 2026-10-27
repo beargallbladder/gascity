@@ -76,6 +76,16 @@ cat %q/"$key".txt
 	}
 }
 
+// bumpMtime moves a rewritten binary's mtime forward, as any replacement on
+// a real filesystem does, without sleeping.
+func bumpMtime(t *testing.T, path string) {
+	t.Helper()
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func countLines(t *testing.T, path string) int {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -144,8 +154,8 @@ func TestBdTrustMatchesTheCommandTreeNotTheVersion(t *testing.T) {
 
 	// The binary changes (OSS main's kind of drift): the cache key misses and
 	// the new tree is refused.
-	time.Sleep(10 * time.Millisecond)
 	writeFakeTreeBd(t, bin, filepath.Join(c.scratch, "help2"), logPath, withoutFlag(enterprise.HelpTree(), "update", "--claim"))
+	bumpMtime(t, bin)
 	v, _, err = resolveScopeBdInventory(c.city, cfg, target, false)
 	if err != nil || v.Inventory != "" || v.Source != "walk" || len(v.Diffs) == 0 {
 		t.Fatalf("changed binary verdict = %+v, %v; want a refusal by walk", v, err)
@@ -231,8 +241,8 @@ func TestBdInventoryDoctorCheckAndFix(t *testing.T) {
 		t.Fatal("Fix wrote a vouch for a mismatched tree")
 	}
 
-	time.Sleep(10 * time.Millisecond)
 	writeFakeTreeBd(t, bin, filepath.Join(c.scratch, "good"), logPath, enterprise.HelpTree())
+	bumpMtime(t, bin)
 	if err := check.Fix(&doctor.CheckContext{CityPath: c.city}); err != nil {
 		t.Fatalf("Fix on a matching tree: %v", err)
 	}

@@ -394,7 +394,7 @@ func bdReadEdgeEndpoints(cityPath string, cfg *config.City, scopeRoot string, id
 // bdBindingDependents returns, per work id, the class-binding beads with a
 // dependency on it.
 func bdBindingDependents(cityPath string, ids []string) (map[string][]string, error) {
-	binding, relocated, err := cliSoleClassBinding(cityPath)
+	binding, relocated, err := cliSoleClassBinding(cityPath) // residency:allow — a reverse dependency lookup in the sole class binding for the delete guard; resolves no bead owner
 	if err != nil {
 		return nil, err
 	}
