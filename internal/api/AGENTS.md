@@ -292,6 +292,18 @@ adopts it.
   key. Without a named turn the op is `session(gen)` under the request's key
   or a minted one, and the executor reads the turn. `skipped{stale}` is 200
   for an unnamed stop and 409 `turn_not_current` for a named one.
+- `/respond` (respond listed): a key that names a respond is its retry,
+  followed through the row the first request left under it (an open op
+  awaited, a closed one replayed), so a retry never answers an identical
+  prompt raised later. The front door reads the pending interaction and
+  writes nothing on a refusal. The op answers the occurrence
+  (`Store.RecordRaising`: the latest unresolved raising of the pending
+  request id, or the next), keyed `opjournal.RespondKey`, `at_most_once`; a
+  different answer to the same occurrence is 409 `key_reuse`. A request
+  with a key also leaves an API-executed row of the legacy op's frozen shape
+  (request-id scope, `respondOpPayload`, `at_least_once`) closed
+  `skipped{coalesced_into}` the lane op; the legacy op is never re-keyed.
+  The await is 20 s; an op still open answers 202 with it.
 - Run cancel (interrupt listed): one op per live holder session, keyed
   `run-cancel:<run id>` with the run as causation, awaited together;
   `succeeded` is interrupted, a failure or an op still open is a failure,
