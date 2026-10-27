@@ -71,7 +71,11 @@ func withholdMirroredManagedDoltPort(env map[string]string, cityPath, scopeRoot 
 	}
 	mirror, err := scopeDoltPortMirror(scopeRoot)
 	if err != nil || mirror != port {
-		log.Printf("gc: session env: keeping projected Dolt port %s for %s: .beads/dolt-server.port mirror %q cannot stand in for it (read error: %v)", port, scopeRoot, mirror, err)
+		// The env map this function reads also carries Dolt credentials
+		// (GC_DOLT_PASSWORD/BEADS_DOLT_PASSWORD), so this line is built only
+		// from the scope path, the mirror file, and the read error — never
+		// from an env-derived value (CodeQL go/clear-text-logging).
+		log.Printf("gc: session env: keeping projected Dolt port for %s: .beads/dolt-server.port mirror %q cannot stand in for it (read error: %v)", scopeRoot, mirror, err)
 		return
 	}
 	env["GC_DOLT_PORT"] = ""
