@@ -127,8 +127,12 @@ const (
 	// CoordinatorOutcomeProducerDispositionMetadataKey holds the typed-close JSON
 	// envelope written by gc-outcome-close.
 	CoordinatorOutcomeProducerDispositionMetadataKey = "gc.coordinator_outcome.producer_disposition"
-	CurrentRunIDMetadataKey                          = "gc.current_run_id"
-	CwdMetadataKey                                   = "gc.cwd"
+	// CrossStoreBlockerMetadataKey names, on a cross-store gate, the blocker
+	// it mirrors: a bead held in another store that the gate's dependents must
+	// wait for (internal/dispatch cross_store_gate.go).
+	CrossStoreBlockerMetadataKey = "gc.cross_store_blocker"
+	CurrentRunIDMetadataKey      = "gc.current_run_id"
+	CwdMetadataKey               = "gc.cwd"
 	// AttachFencePendingMetadataKey marks a fenced attach's sub-DAG root
 	// between speculative (deferred, non-runnable) creation and the CAS-last
 	// epoch fence committing. Cleared on activation; a root still carrying it
@@ -542,6 +546,7 @@ var KnownMetadataKeys = []string{
 	ControllerRetryFirstSeenMetadataKey,
 	ControllerRetryCountMetadataKey,
 	CoordinatorOutcomeProducerDispositionMetadataKey,
+	CrossStoreBlockerMetadataKey,
 	CurrentRunIDMetadataKey,
 	CwdMetadataKey,
 	AttachFencePendingMetadataKey,

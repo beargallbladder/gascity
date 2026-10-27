@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"debug/buildinfo"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gastownhall/gascity/internal/bdflags"
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/events"
@@ -216,7 +216,7 @@ type bdTrustOpts struct {
 // asdf shim, a wrapper script, or a pflag bump fails). Tests whose fake bd is
 // a shell script replace it.
 var bdBuildInfoCheck = func(path string, inv *bdflags.Inventory) error {
-	bi, err := buildinfo.ReadFile(path)
+	bi, err := readGoBuildInfo(path)
 	if err != nil {
 		return fmt.Errorf("%s is not a Go build of bd (%w); point PATH at the real bd binary, not a shim or wrapper", path, err)
 	}
@@ -650,10 +650,10 @@ func bdBindingDependents(cityPath string, ids []string) (map[string][]string, er
 }
 
 // bdCrossStoreBlockerKey is the S3b drain gate's metadata key naming the
-// work bead it waits on. TODO(#8360): use beadmeta.CrossStoreBlockerMetadataKey
-// and its "open gates naming id X" helper once #8360 lands; this is the local
-// equivalent.
-const bdCrossStoreBlockerKey = "gc.cross_store_blocker"
+// bead it waits on. The key is declared here exactly as #8360 declares it.
+// TODO(#8360): use #8360's "open gates naming id X" helper once it lands;
+// bdOpenCrossStoreGatesNaming is the local equivalent.
+const bdCrossStoreBlockerKey = beadmeta.CrossStoreBlockerMetadataKey
 
 // bdOpenCrossStoreGatesNaming lists the open beads in store whose
 // gc.cross_store_blocker names id.
