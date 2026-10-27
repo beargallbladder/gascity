@@ -444,7 +444,7 @@ func (m *Manager) waitForInterruptIdleLocked(ctx context.Context, b beads.Bead, 
 			}
 		}
 		if err := runtime.InterruptWithContext(ctx, m.sp, sessName); err != nil {
-			return fmt.Errorf("%s: %w", what, err)
+			return fmt.Errorf("%s: %w: %w", what, errFollowUpNotSent, err)
 		}
 		return nil
 	}

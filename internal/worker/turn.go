@@ -958,9 +958,10 @@ func turnInterruptResult(id string, err error) error {
 // cause other than a runtime that could not answer
 // (runtime.ErrRuntimeUnavailable) or a wait that read nothing showing the
 // session busy (runtime.ErrWaitUnobserved), and session.TurnEndUnreadError
-// otherwise,
-// which a restart on failure does not restart: whether the interrupt ended
-// the turn is unknown. A failed read is never taken as the end, nor as the
+// otherwise. A failed follow-up interrupt send counts as running: the stop
+// sends it only after the check (Still) read the turn current past the
+// first key. A restart on failure does not restart on a
+// TurnEndUnreadError: whether the interrupt ended the turn is unknown. A failed read is never taken as the end, nor as the
 // turn running. It runs under the session mutation lock (the stop's
 // Settle), so each read is a locked one (lockedCurrentTurn), as the check's
 // are: its session load and runtime probes are its own, started within the

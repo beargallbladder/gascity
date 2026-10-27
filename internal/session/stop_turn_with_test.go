@@ -1017,3 +1017,33 @@ func TestStopTurnWithRestartsWhenTheWaitSawABusySession(t *testing.T) {
 		t.Fatalf("StopTurnWith(restart, busy at the timeout) = %+v, %v; want a restart, nil", report, err)
 	}
 }
+
+// A keystroke sequence's follow-up interrupt (a soft-escape family's Ctrl-C
+// fallback) that fails to send says nothing
+// about whether the interrupted turn still runs: a session-scoped stop with
+// a restart on failure withholds the restart, leaving the runtime running,
+// with ErrInterruptOutcomeUnknown and runtime.ErrRuntimeUnavailable, not
+// runtime.ErrTurnNotEnded
+// (SESSION-RUNTIME-026).
+func TestStopTurnWithRestartWithheldWhenTheFollowUpInterruptFails(t *testing.T) {
+	for _, fam := range []struct {
+		name, provider string
+		meta           map[string]string
+	}{
+		{"codex fallback", "codex", nil},
+		{"kimi fallback", "kimi", nil},
+	} {
+		t.Run(fam.name, func(t *testing.T) {
+			mgr, sp, info, _ := newFencedStopSession(t, fam.provider, fam.meta, runtime.TurnInterruptKeystroke)
+			// Neither runtime.ErrRuntimeUnavailable nor runtime.ErrWaitUnobserved.
+			sp.InterruptErrors[info.SessionName] = errors.New("send-keys C-c: exit status 1")
+			report, err := mgr.StopTurnWith(context.Background(), info.ID, StopTurnOptions{Restart: stopTurnRestart(mgr, info, ActorController)})
+			if report.Restarted || !errors.Is(err, ErrInterruptOutcomeUnknown) || !errors.Is(err, runtime.ErrRuntimeUnavailable) || errors.Is(err, runtime.ErrTurnNotEnded) {
+				t.Fatalf("StopTurnWith(restart, follow-up send fails) = %+v, %v; want ErrInterruptOutcomeUnknown and ErrRuntimeUnavailable, and no restart", report, err)
+			}
+			if n := countMethod(sp.SnapshotCalls(), "Stop") + countMethod(sp.SnapshotCalls(), "Start"); n != 0 || !sp.IsRunning(info.SessionName) {
+				t.Fatalf("calls = %v, running %v; want the runtime left running", callMethods(sp.SnapshotCalls()), sp.IsRunning(info.SessionName))
+			}
+		})
+	}
+}

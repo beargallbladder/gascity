@@ -270,9 +270,11 @@ func (m *Manager) waitForInterruptSettleLocked(ctx context.Context, b beads.Bead
 // either: waitErr is a TurnEndUnreadError (no read of it answered), or, on
 // a session-scoped stop, which has no turn identity to read, the stop's own
 // waits read nothing showing the session busy (they wrap
-// runtime.ErrWaitUnobserved or runtime.ErrRuntimeUnavailable). On the
-// turn-scoped path Settle has already replaced waitErr with a text-only
-// error, so the latter rule cannot fire there.
+// runtime.ErrWaitUnobserved or runtime.ErrRuntimeUnavailable) or its
+// follow-up interrupt failed to send (errFollowUpNotSent), which reads
+// nothing either. On the turn-scoped path Settle has already replaced
+// waitErr with a text-only error, so the latter rules cannot fire there;
+// there a follow-up goes only after the check read the turn current.
 // Nothing more is sent, the runtime is left as it is, and whether the
 // interrupt ended the turn is unknown: the error wraps
 // ErrInterruptOutcomeUnknown and runtime.ErrRuntimeUnavailable, not
@@ -285,7 +287,8 @@ func restartWithheld(ctx context.Context, what string, refusal, waitErr error) e
 		return fmt.Errorf("%s: the check refused the follow-up interrupt (%s), so another turn may run now, not restarting it: %w: %w (%s)", what, refusal.Error(), ErrInterruptOutcomeUnknown, runtime.ErrRuntimeUnavailable, waitErr.Error())
 	}
 	if errors.As(waitErr, new(*turnEndUnreadError)) ||
-		errors.Is(waitErr, runtime.ErrWaitUnobserved) || errors.Is(waitErr, runtime.ErrRuntimeUnavailable) {
+		errors.Is(waitErr, runtime.ErrWaitUnobserved) || errors.Is(waitErr, runtime.ErrRuntimeUnavailable) ||
+		errors.Is(waitErr, errFollowUpNotSent) {
 		return fmt.Errorf("%s: nothing showed its interrupted turn still running, not restarting it: %w: %w (%s)", what, ErrInterruptOutcomeUnknown, runtime.ErrRuntimeUnavailable, waitErr.Error())
 	}
 	return nil
@@ -397,6 +400,12 @@ func followUpRefusal(err error) error {
 	}
 	return nil
 }
+
+// errFollowUpNotSent marks a keystroke sequence's follow-up interrupt (a
+// soft-escape family's Ctrl-C fallback, Gemini's immediate confirm) whose
+// send failed: it read nothing about the interrupted turn, so it is no
+// evidence the turn still runs (restartWithheld).
+var errFollowUpNotSent = errors.New("the follow-up interrupt was not sent")
 
 // stopTurnRestartBound bounds a restart after a failed interrupt
 // (StopTurnOptions.Restart) once it is decided; it runs apart from the
