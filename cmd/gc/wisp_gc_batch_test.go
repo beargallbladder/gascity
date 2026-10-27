@@ -38,14 +38,14 @@ func TestWispGCClosureUsesBatchedDelete(t *testing.T) {
 		makeGCBead("mol-1", now.Add(-2*time.Hour), "closed", "molecule"),
 		{
 			ID:        "mol-1.1",
-			Status:    "open",
+			Status:    "closed",
 			Type:      "task",
 			CreatedAt: now.Add(-2 * time.Hour),
 			ParentID:  "mol-1",
 		},
 		{
 			ID:        "mol-1.2",
-			Status:    "open",
+			Status:    "closed",
 			Type:      "task",
 			CreatedAt: now.Add(-2 * time.Hour),
 			ParentID:  "mol-1.1",

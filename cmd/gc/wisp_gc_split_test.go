@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,7 +35,23 @@ func wispGCLegsFor(e splitEnv) wispGCLegs {
 	return workLegsFromCensus(e.cityPath, e.cfg, cityWorkLegOf(beads.WorkStore{Store: e.work}), nil)
 }
 
+// withWorkMoleculesEnforced runs fn with the work arm allowed to mutate.
+func withWorkMoleculesEnforced(t *testing.T, fn func()) {
+	t.Helper()
+	prev := workMoleculesEnforced
+	workMoleculesEnforced = func() bool { return true }
+	defer func() { workMoleculesEnforced = prev }()
+	fn()
+}
+
 func runSplitWispGC(t *testing.T, e splitEnv, now time.Time) {
+	t.Helper()
+	withWorkMoleculesEnforced(t, func() { runSplitWispGCDefault(t, e, now) })
+}
+
+// runSplitWispGCDefault runs the GC with the abandoned-root closer enforced
+// and the work arm at its default (dry-run unless the test enforced it).
+func runSplitWispGCDefault(t *testing.T, e splitEnv, now time.Time) {
 	t.Helper()
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
@@ -152,9 +172,11 @@ func TestWispGCPurgesAnExpiredWorkClassMoleculeRoot(t *testing.T) {
 			}
 		}
 		wg := newWispGC(5*time.Minute, time.Hour, 0)
-		if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
-			t.Fatalf("runGC: %v", err)
-		}
+		withWorkMoleculesEnforced(t, func() {
+			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+				t.Fatalf("runGC: %v", err)
+			}
+		})
 		if _, err := work.Get(root.ID); err == nil {
 			t.Fatalf("closed work-class molecule root %s survived a GC past its TTL", root.ID)
 		}
@@ -193,4 +215,268 @@ func TestWispGCLeavesPlainWorkAlone(t *testing.T) {
 			t.Fatalf("plain closed task %s was collected by the wisp GC: %v", task.ID, err)
 		}
 	})
+}
+
+// purgeFixture builds a closed v1 poured molecule on a work ledger that can
+// batch-delete, and the legs and graph store a GC pass over it uses.
+func purgeFixture(t *testing.T, e splitEnv) (work batchDeleteWorkStore, graph beads.Store, legs wispGCLegs) {
+	t.Helper()
+	work = newBatchDeleteWorkStore()
+	graph = e.graphStore()
+	if e.split {
+		legs = workLegsFromCensus(e.cityPath, e.cfg, cityWorkLegOf(beads.WorkStore{Store: work}), nil)
+	} else {
+		graph = work
+	}
+	return work, graph, legs
+}
+
+// Must-fix: a closed root is not proof its closure is dead. A step reopened
+// after its molecule closed, linked only by ParentID (no gc.root_bead_id, as v1
+// poured steps are), must stop the purge.
+func TestWispGCPurgeRefusesAClosureWithALiveStep(t *testing.T) {
+	forEachTopology(t, func(t *testing.T, e splitEnv) {
+		work, graph, legs := purgeFixture(t, e)
+		root, err := work.Create(beads.Bead{Title: "v1 poured", Type: "molecule"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		step, err := work.Create(beads.Bead{Title: "step", Type: "step", ParentID: root.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{step.ID, root.ID} {
+			if err := work.Close(id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		inProgress := "in_progress"
+		if err := work.Update(step.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
+			t.Fatal(err)
+		}
+		wg := newWispGC(5*time.Minute, time.Hour, 0)
+		withWorkMoleculesEnforced(t, func() {
+			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+				t.Fatalf("runGC: %v", err)
+			}
+		})
+		got, err := work.Get(step.ID)
+		if err != nil {
+			t.Fatalf("in-progress step %s under closed root %s was purged: %v", step.ID, root.ID, err)
+		}
+		if got.Status != "in_progress" {
+			t.Fatalf("step %s status=%q, want in_progress", step.ID, got.Status)
+		}
+		if _, err := work.Get(root.ID); err != nil {
+			t.Fatalf("root %s was purged while its closure held a live step: %v", root.ID, err)
+		}
+	})
+}
+
+// The work arm is dry-run by default: it logs, and closes or purges nothing.
+func TestWispGCWorkArmIsDryRunByDefault(t *testing.T) {
+	e := newSplitEnv(t, true)
+	work, graph, legs := purgeFixture(t, e)
+	expired, err := work.Create(beads.Bead{Title: "expired v1 poured", Type: "molecule"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Close(expired.ID); err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := work.Create(beads.Bead{Title: "abandoned v1 poured", Type: "molecule"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := work.Create(beads.Bead{Title: "step", Type: "step", ParentID: abandoned.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Close(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	withCloseAbandonedEnforced(t, func() {
+		withCloseAbandonedTTL(t, 5*time.Minute, func() {
+			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+				t.Fatalf("runGC: %v", err)
+			}
+		})
+	})
+	if _, err := work.Get(expired.ID); err != nil {
+		t.Fatalf("dry-run work arm purged %s: %v", expired.ID, err)
+	}
+	if got, _ := work.Get(abandoned.ID); got.Status == "closed" {
+		t.Fatalf("dry-run work arm closed %s", abandoned.ID)
+	}
+}
+
+// bd proto templates are molecule rows; the work arm never touches one.
+func TestWispGCWorkArmSkipsProtoTemplates(t *testing.T) {
+	e := newSplitEnv(t, true)
+	work, graph, legs := purgeFixture(t, e)
+	proto, err := work.Create(beads.Bead{Title: "mol-proto", Type: "molecule", Labels: []string{bdTemplateLabel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Close(proto.ID); err != nil {
+		t.Fatal(err)
+	}
+	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	withWorkMoleculesEnforced(t, func() {
+		if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+			t.Fatalf("runGC: %v", err)
+		}
+	})
+	if _, err := work.Get(proto.ID); err != nil {
+		t.Fatalf("proto template %s was purged: %v", proto.ID, err)
+	}
+}
+
+// A suspended rig is not read, yet it can hold the live source of an attached
+// root-only wisp: the holder guard leaves the root open while it is suspended.
+func TestWispGCHolderGuardLeavesARootOpenWhileARigIsSuspended(t *testing.T) {
+	e := newSplitEnvWithRig(t, true)
+	graph := e.graphStore()
+	root, err := graph.Create(beads.Bead{Title: "attached root-only wisp", Type: "molecule", Metadata: map[string]string{
+		beadmeta.KindMetadataKey: beadmeta.KindWisp,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.rig.Create(beads.Bead{Title: "live source in a suspended rig", Type: "task", Metadata: map[string]string{
+		beadmeta.MoleculeIDMetadataKey: root.ID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	e.cfg.Rigs[0].Suspended = true
+	legs := workLegsFromCensus(e.cityPath, e.cfg, cityWorkLegOf(beads.WorkStore{Store: e.work}), e.rigStores)
+	if len(legs.suspendedRigs()) != 1 {
+		t.Fatalf("suspendedRigs = %v, want the one suspended rig", legs.suspendedRigs())
+	}
+	withCloseAbandonedEnforced(t, func() {
+		withCloseAbandonedTTL(t, 5*time.Minute, func() {
+			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(30*time.Minute)); err != nil {
+				t.Fatalf("runGC: %v", err)
+			}
+		})
+	})
+	if got, _ := graph.Get(root.ID); got.Status != "open" {
+		t.Fatalf("attached wisp %s status=%q while its source's rig is suspended, want open", root.ID, got.Status)
+	}
+}
+
+// unreadableLegs is a leg set that cannot be read (a refused city).
+type unreadableLegs struct{}
+
+func (unreadableLegs) each(func(beads.Store))  {}
+func (unreadableLegs) unusable() error         { return errNoWorkStore }
+func (unreadableLegs) suspendedRigs() []string { return nil }
+
+// Should-fix 4: a leg set that cannot be read leaves a stepless root open.
+func TestWispGCHolderGuardFailsClosedOnUnreadableLegs(t *testing.T) {
+	e := newSplitEnv(t, true)
+	graph := e.graphStore()
+	root, err := graph.Create(beads.Bead{Title: "root-only wisp", Type: "molecule", Metadata: map[string]string{
+		beadmeta.KindMetadataKey: beadmeta.KindWisp,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCloseAbandonedEnforced(t, func() {
+		withCloseAbandonedTTL(t, 5*time.Minute, func() {
+			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			if _, err := wg.runGC(unreadableLegs{}, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(30*time.Minute)); err != nil {
+				t.Fatalf("runGC: %v", err)
+			}
+		})
+	})
+	if got, _ := graph.Get(root.ID); got.Status != "open" {
+		t.Fatalf("stepless root %s status=%q with unreadable legs, want open", root.ID, got.Status)
+	}
+}
+
+// The work arm's dry run over a rig leg shaped like maintainer-city's gascity
+// rig (26 closed expired v1 poured roots holding 27 children, 2 open stepless
+// junk roots, plus a proto template and a closure holding a reopened step that
+// must never be listed). Nothing is mutated; the log names what an enforced
+// pass would do.
+func TestWispGCWorkArmDryRunOnARigShapedLikeMaintainerCity(t *testing.T) {
+	e := newSplitEnvWithRig(t, true)
+	rig := e.rig
+	mk := func(b beads.Bead) beads.Bead {
+		t.Helper()
+		created, err := rig.Create(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	closeID := func(id string) {
+		t.Helper()
+		if err := rig.Close(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 26; i++ {
+		root := mk(beads.Bead{Title: fmt.Sprintf("mol-poured-%02d", i), Type: "molecule"})
+		children := 1
+		if i == 0 {
+			children = 2
+		}
+		for c := 0; c < children; c++ {
+			closeID(mk(beads.Bead{Title: "step", Type: "step", ParentID: root.ID}).ID)
+		}
+		closeID(root.ID)
+	}
+	for i := 0; i < 2; i++ {
+		mk(beads.Bead{Title: fmt.Sprintf("junk-%d", i), Type: "molecule"})
+	}
+	proto := mk(beads.Bead{Title: "mol-proto", Type: "molecule", Labels: []string{bdTemplateLabel}})
+	closeID(proto.ID)
+	live := mk(beads.Bead{Title: "mol-live-step", Type: "molecule"})
+	liveStep := mk(beads.Bead{Title: "reopened step", Type: "step", ParentID: live.ID})
+	closeID(liveStep.ID)
+	closeID(live.ID)
+	inProgress := "in_progress"
+	if err := rig.Update(liveStep.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(allBeads(t, rig))
+
+	var logs bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	legs := workLegsFromCensus(e.cityPath, e.cfg, cityWorkLegOf(beads.WorkStore{Store: e.work}), e.rigStores)
+	withCloseAbandonedEnforced(t, func() {
+		withCloseAbandonedTTL(t, 5*time.Minute, func() {
+			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			if _, err := wg.runGC(legs, beads.GraphStore{Store: e.graphStore()}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(48*time.Hour)); err != nil {
+				t.Fatalf("runGC: %v", err)
+			}
+		})
+	})
+	log.SetOutput(prevOut)
+	t.Logf("work-arm dry run:\n%s", logs.String())
+
+	if after := len(allBeads(t, rig)); after != before {
+		t.Fatalf("dry run changed the rig: %d beads before, %d after", before, after)
+	}
+	out := logs.String()
+	for _, want := range []string{
+		"26 work-class molecule root(s), 53 bead(s) in all, eligible for purge",
+		"2 work-class molecule root(s) eligible for close",
+		"would NOT be purged: closure holds open bead(s) " + liveStep.ID,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry-run log lacks %q", want)
+		}
+	}
+	if strings.Contains(out, proto.ID+" would") {
+		t.Errorf("dry-run log lists proto template %s", proto.ID)
+	}
 }

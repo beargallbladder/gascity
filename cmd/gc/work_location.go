@@ -21,6 +21,7 @@ package main
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/beads"
@@ -51,6 +52,9 @@ type WorkLegs struct {
 	plan storeref.ResolvedPlan
 	topo storeref.Topology // the residency topology plan was built from, for by-id reads
 	err  error             // no leg set: a refused city
+	// suspended names the declared, open rigs left out of rigs because they
+	// are suspended (servingRigStores).
+	suspended []string
 }
 
 // errNoWorkStore: a WorkLegs minted without a city work store, which answers
@@ -68,7 +72,9 @@ func workLegsFromCensus(cityPath string, cfg *config.City, work cityWorkLeg, rig
 	if work.store == nil {
 		return l
 	}
-	l.rigs = servingRigStores(cfg, rigs, buildSuspendedRigPathsForCity(cfg, cityPath))
+	suspendedPaths := buildSuspendedRigPathsForCity(cfg, cityPath)
+	l.rigs = servingRigStores(cfg, rigs, suspendedPaths)
+	l.suspended = suspendedOpenRigs(cfg, rigs, suspendedPaths)
 	l.topo = residencyTopologyForCity(cityPath, cfg, work.store, l.rigs)
 	l.plan, l.err = storeref.Plan(storeref.AssignedWork{}, l.topo)
 	return l
@@ -78,6 +84,28 @@ func workLegsFromCensus(cityPath string, cfg *config.City, work cityWorkLeg, rig
 // registers as the city's work leg (registerResidencyRoutes).
 func (cr *CityRuntime) workLegs() WorkLegs {
 	return workLegsFromCensus(cr.cityPath, cr.cfg, cityWorkLegOf(cr.cityWorkStore()), cr.rigBeadStores()) // residency:allow — the census frame; workLegsFromCensus plans the legs (storeref.Plan)
+}
+
+// suspendedRigs names the open rigs this leg set leaves out because they are
+// suspended.
+func (l WorkLegs) suspendedRigs() []string { return l.suspended }
+
+// suspendedOpenRigs names the declared rigs with an open store that are
+// suspended: the complement of servingRigStores among the open rigs.
+func suspendedOpenRigs(cfg *config.City, rigs map[string]beads.Store, suspendedRigPaths map[string]bool) []string {
+	if cfg == nil || len(rigs) == 0 || len(suspendedRigPaths) == 0 {
+		return nil
+	}
+	var out []string
+	for _, rig := range cfg.Rigs {
+		if !suspendedRigPaths[filepath.Clean(rig.Path)] {
+			continue
+		}
+		if store, ok := rigs[rig.Name]; ok && store != nil {
+			out = append(out, rig.Name)
+		}
+	}
+	return out
 }
 
 // unusable is why l answers nothing: no leg set, or the zero WorkLegs,

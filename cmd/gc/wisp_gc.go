@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,22 @@ const closeAbandonedEnv = "GC_WISP_GC_CLOSE_ABANDONED"
 // counts/logs the descendants it WOULD reap and never mutates the store. Set it
 // to a truthy value ("1", "true", "yes", "on") to actually delete them.
 const reapOrphansEnv = "GC_WISP_GC_REAP_ORPHANS"
+
+// workMoleculesEnv is the opt-in environment variable that lets the wisp GC's
+// WORK arm mutate a work ledger: closing abandoned v1 poured molecule roots
+// and purging expired closed ones on the work legs of a split city
+// (collectWorkClassMoleculeRoots). Like reapOrphansEnv it DEFAULTS TO DRY-RUN:
+// unset (or not truthy), the arm only logs the roots it WOULD close or purge.
+// A work ledger holds the operator's own records, so this is opt-in on its
+// own, separately from the graph-class sweeps. The abandoned-root closes it
+// performs also still require closeAbandonedEnv.
+const workMoleculesEnv = "GC_WISP_GC_WORK_MOLECULES"
+
+// workMoleculesEnforced reports whether the work arm may mutate (true) or runs
+// dry (false). A package var so tests can flip it.
+var workMoleculesEnforced = func() bool {
+	return parseBoolEnv(os.Getenv(workMoleculesEnv))
+}
 
 // abandonedRootCloseReason is the close_reason stamped on open workflow roots
 // closed by the periodic abandoned-root sweep (distinct from the reactive
@@ -187,6 +204,10 @@ type wispGCLegs interface {
 	// unusable is why the leg set answers nothing (a refused city). A holder
 	// guard that cannot read its legs fails closed.
 	unusable() error
+	// suspendedRigs names the declared rigs left out of the legs because they
+	// are suspended. They may hold live attachment sources the guard cannot
+	// read, so it fails closed while any is listed.
+	suspendedRigs() []string
 }
 
 // memoryWispGC is the production implementation of wispGC.
@@ -343,6 +364,7 @@ func (m *memoryWispGC) collectWorkClassMoleculeRoots(legs wispGCLegs, graph bead
 	if legs == nil || legs.unusable() != nil {
 		return 0, nil
 	}
+	enforce := workMoleculesEnforced()
 	purged := 0
 	var errs error
 	legs.each(func(work beads.Store) {
@@ -352,12 +374,20 @@ func (m *memoryWispGC) collectWorkClassMoleculeRoots(legs wispGCLegs, graph bead
 		open, err := enumerateWorkClassMoleculeRoots(work, "open", "in_progress")
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("listing open work-class molecule roots for abandoned-root sweep: %w", err))
-		} else if err := closeAbandonedRootCandidates(work, open, holders, now); err != nil {
+		} else if err := closeAbandonedRootCandidatesMode(work, open, holders, now, abandonedCloseMode{
+			enforce:    enforce && closeAbandonedEnforced(),
+			dryRunHint: fmt.Sprintf("set %s=1 and %s=1 to enforce", workMoleculesEnv, closeAbandonedEnv),
+			label:      "work-class molecule root",
+		}); err != nil {
 			errs = errors.Join(errs, err)
 		}
 		closed, err := enumerateWorkClassMoleculeRoots(work, "closed")
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("listing closed work-class molecule roots: %w", err))
+			return
+		}
+		if !enforce {
+			logWorkClassPurgeDryRun(work, closed, cutoff)
 			return
 		}
 		n, err := purgeExpiredBeadClosures(work, closed, cutoff, wispGCClosurePurgeBatchCap)
@@ -367,23 +397,67 @@ func (m *memoryWispGC) collectWorkClassMoleculeRoots(legs wispGCLegs, graph bead
 	return purged, errs
 }
 
+// logWorkClassPurgeDryRun logs, without mutating anything, the closed work-class
+// molecule roots past cutoff the work arm WOULD purge and how many beads each
+// closure holds. A closure the strand guard would refuse (an open member) is
+// logged as refused. Bounded by wispGCClosurePurgeBatchCap like the real purge.
+func logWorkClassPurgeDryRun(store beads.Store, closed []beads.Bead, cutoff time.Time) {
+	would, beadsTotal := 0, 0
+	for _, root := range closed {
+		if would >= wispGCClosurePurgeBatchCap {
+			break
+		}
+		if root.CreatedAt.IsZero() || !root.CreatedAt.Before(cutoff) {
+			continue
+		}
+		ids, open, err := collectExpiredBeadClosureWithOpen(store, root.ID)
+		switch {
+		case err != nil:
+			log.Printf("wisp gc: work-class molecule root %s: cannot collect its closure (%v); it would be skipped", root.ID, err)
+		case len(open) > 0:
+			log.Printf("wisp gc: work-class molecule root %s would NOT be purged: closure holds open bead(s) %s", root.ID, strings.Join(open, ","))
+		default:
+			would++
+			beadsTotal += len(ids)
+			log.Printf("wisp gc: work-class molecule root %s would be purged with its closure (%d bead(s)) (dry-run; set %s=1 to enforce)", root.ID, len(ids), workMoleculesEnv)
+		}
+	}
+	if would > 0 {
+		log.Printf("wisp gc: %d work-class molecule root(s), %d bead(s) in all, eligible for purge (dry-run; set %s=1 to enforce)", would, beadsTotal, workMoleculesEnv)
+	}
+}
+
 // enumerateWorkClassMoleculeRoots lists the v1 poured molecule roots on a work
 // leg in the given statuses: type=molecule roots that classify as work. It
 // reads with the molecule selector alone, so a work ledger pays one query per
 // status rather than the graph store's four.
+//
+// bd proto templates are never candidates. They are molecule rows too (the
+// formula protos `bd mol` instantiates from), so the read stays on the issues
+// tier — a TierBoth read makes bd add --include-templates — and any row
+// carrying the template label is dropped as well.
 func enumerateWorkClassMoleculeRoots(store beads.Store, statuses ...string) ([]beads.Bead, error) {
-	roots, err := enumerateWispGCRootsWith(store, []wispGCRootSelector{wispGCMoleculeRootSelector()}, statuses...)
+	sel := wispGCMoleculeRootSelector()
+	sel.query.TierMode = beads.TierIssues
+	roots, err := enumerateWispGCRootsWith(store, []wispGCRootSelector{sel}, statuses...)
 	if err != nil {
 		return nil, err
 	}
 	out := roots[:0]
 	for _, root := range roots {
-		if beads.IsMoleculeType(root.Type) && strings.TrimSpace(root.ParentID) == "" && coordclass.Classify(root) == coordclass.ClassWork {
-			out = append(out, root)
+		if !beads.IsMoleculeType(root.Type) || strings.TrimSpace(root.ParentID) != "" || coordclass.Classify(root) != coordclass.ClassWork {
+			continue
 		}
+		if slices.Contains(root.Labels, bdTemplateLabel) {
+			continue
+		}
+		out = append(out, root)
 	}
 	return out, nil
 }
+
+// bdTemplateLabel marks a bd proto template row.
+const bdTemplateLabel = "template"
 
 // wispGCHolders answers the abandoned-root sweep's live-holder question: does
 // any bead still point at a root through molecule_id or workflow_id. Holders
@@ -398,6 +472,12 @@ type wispGCHolders struct {
 // finalizer, supersession, or partial materialization left generated members
 // open. Closed roots are the authority boundary: live roots are never listed
 // and therefore never touched. Each subtree close is ordered and idempotent.
+//
+// Only graph-class roots (workflows, wisps) are repaired: their generated
+// members are settled with them, so an open member under a settled one is
+// residue. A v1 POURED molecule root is work class and has no finalizer; an
+// open step under a closed one is a step someone reopened, which is live
+// work, not residue, and is left alone (the closure purge refuses it too).
 func closeGeneratedMembersForClosedRoots(store beads.Store) (int, error) {
 	roots, err := closedWispGCEntries(store)
 	if err != nil {
@@ -406,6 +486,9 @@ func closeGeneratedMembersForClosedRoots(store beads.Store) (int, error) {
 	closed := 0
 	var closeErr error
 	for _, root := range roots {
+		if coordclass.Classify(root) == coordclass.ClassWork {
+			continue
+		}
 		n, err := molecule.CloseSubtreeWithMetadata(store, root.ID, map[string]string{
 			beadmeta.OutcomeMetadataKey: beadmeta.OutcomeSkipped,
 			"close_reason":              sourceworkflow.WorkflowSkippedCloseReason,
@@ -952,10 +1035,26 @@ func closeAbandonedRoots(store beads.Store, holders wispGCHolders, now time.Time
 	return closeAbandonedRootCandidates(store, candidates, holders, now)
 }
 
+// abandonedCloseMode says whether an abandoned-root pass may close, and how it
+// names what it would close in a dry run.
+type abandonedCloseMode struct {
+	enforce    bool
+	dryRunHint string
+	label      string
+}
+
 // closeAbandonedRootCandidates is closeAbandonedRoots over candidates already
 // listed from store, which is where they live and where they are closed.
 func closeAbandonedRootCandidates(store beads.Store, candidates []beads.Bead, holders wispGCHolders, now time.Time) error {
-	enforce := closeAbandonedEnforced()
+	return closeAbandonedRootCandidatesMode(store, candidates, holders, now, abandonedCloseMode{
+		enforce:    closeAbandonedEnforced(),
+		dryRunHint: fmt.Sprintf("set %s=1 to enforce", closeAbandonedEnv),
+		label:      "abandoned root",
+	})
+}
+
+func closeAbandonedRootCandidatesMode(store beads.Store, candidates []beads.Bead, holders wispGCHolders, now time.Time, mode abandonedCloseMode) error {
+	enforce := mode.enforce
 	cutoff := now.Add(-wispGCCloseAbandonedTTL)
 
 	var closeErr error
@@ -993,7 +1092,7 @@ func closeAbandonedRootCandidates(store beads.Store, candidates []beads.Bead, ho
 		// Guard 5: dry-run default. Only count/log what we would close.
 		if !enforce {
 			wouldClose++
-			log.Printf("wisp gc: abandoned root %s would be closed (dry-run; set %s=1 to enforce; descendants=%d)", root.ID, closeAbandonedEnv, descendants)
+			log.Printf("wisp gc: %s %s would be closed (dry-run; %s; descendants=%d)", mode.label, root.ID, mode.dryRunHint, descendants)
 			continue
 		}
 
@@ -1009,7 +1108,7 @@ func closeAbandonedRootCandidates(store beads.Store, candidates []beads.Bead, ho
 		log.Printf("wisp gc: closed %d abandoned root(s)", closed)
 	}
 	if wouldClose > 0 {
-		log.Printf("wisp gc: %d abandoned root(s) eligible for close (dry-run; set %s=1 to enforce)", wouldClose, closeAbandonedEnv)
+		log.Printf("wisp gc: %d %s(s) eligible for close (dry-run; %s)", wouldClose, mode.label, mode.dryRunHint)
 	}
 	return closeErr
 }
@@ -1092,10 +1191,19 @@ func steplessRootIsAbandoned(b beads.Bead) bool {
 // store, then each leg (a work bead is the usual holder, so on a split city
 // the work legs are where it is found — R7). A leg set that cannot be read
 // fails CLOSED, like a failed query.
+//
+// A suspended rig is not a leg (its store is not read: a read restarts its
+// retired proxy), yet it can hold a live source. While any rig is suspended
+// the guard therefore cannot prove a stepless root unattached, and it leaves
+// the root open until the rig resumes.
 func (h wispGCHolders) liveAttachmentSource(rootID string) bool {
 	if h.legs != nil {
 		if err := h.legs.unusable(); err != nil {
 			log.Printf("wisp gc: cannot read the work legs for holders of stepless root %s (%v); leaving it open", rootID, err)
+			return true
+		}
+		if suspended := h.legs.suspendedRigs(); len(suspended) > 0 {
+			log.Printf("wisp gc: rig(s) %s suspended and unread, so a live holder of stepless root %s cannot be ruled out; leaving it open", strings.Join(suspended, ","), rootID)
 			return true
 		}
 	}
@@ -1260,17 +1368,62 @@ func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
 	// the delete is not dependent-recursive, collectExpiredBeadClosure must (and
 	// does) gather only the ownership closure so live work outside it is never
 	// reached.
-	ids, err := collectExpiredBeadClosure(store, rootID)
+	ids, open, err := collectExpiredBeadClosureWithOpen(store, rootID)
 	if err != nil {
 		return err
+	}
+	// A closed root is not proof its closure is dead. A member reopened after
+	// the root closed (a step put back in progress) is live work, and the
+	// set-level strand guard below sees only gc.root_bead_id members, which a
+	// v1 poured molecule's ParentID-linked steps are not. Refuse the whole
+	// closure when any member is not closed; it becomes eligible again once
+	// that member is.
+	if len(open) > 0 {
+		log.Printf("wisp gc: not purging closed root %s: its closure holds bead(s) that are not closed: %s", rootID, strings.Join(open, ","))
+		return workflowDeleteRefusal(rootID, open)
 	}
 	return deleteWorkflowBeadsBatch(store, ids)
 }
 
-func collectExpiredBeadClosure(store beads.Store, rootID string) ([]string, error) {
-	if store == nil {
-		return nil, fmt.Errorf("bead store unavailable")
+// collectExpiredBeadClosureWithOpen is collectExpiredBeadClosure plus the ids
+// of every collected bead that is not closed. Statuses come from the rows the
+// walk already read; a member reached only through a dependency edge is read
+// live. A member whose status cannot be read counts as open: the purge fails
+// closed.
+func collectExpiredBeadClosureWithOpen(store beads.Store, rootID string) ([]string, []string, error) {
+	ids, status, err := collectExpiredBeadClosureStatus(store, rootID)
+	if err != nil {
+		return nil, nil, err
 	}
+	reader := beads.HandlesFor(store).Live
+	var open []string
+	for _, id := range ids {
+		st, known := status[id]
+		if !known {
+			b, err := reader.Get(id)
+			switch {
+			case errors.Is(err, beads.ErrNotFound):
+				continue
+			case err != nil:
+				open = append(open, id)
+				continue
+			}
+			st = b.Status
+		}
+		if st != "closed" {
+			open = append(open, id)
+		}
+	}
+	return ids, open, nil
+}
+
+// collectExpiredBeadClosureStatus walks rootID's ownership closure and returns
+// its ids plus the status of every member the walk read a row for.
+func collectExpiredBeadClosureStatus(store beads.Store, rootID string) ([]string, map[string]string, error) {
+	if store == nil {
+		return nil, nil, fmt.Errorf("bead store unavailable")
+	}
+	status := make(map[string]string)
 	rootOwned := make([]string, 0, 4)
 	related, err := store.List(beads.ListQuery{
 		Metadata:      map[string]string{beadmeta.RootBeadIDMetadataKey: rootID},
@@ -1278,11 +1431,12 @@ func collectExpiredBeadClosure(store beads.Store, rootID string) ([]string, erro
 		TierMode:      beads.TierBoth,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list workflow-owned beads for %s: %w", rootID, err)
+		return nil, nil, fmt.Errorf("list workflow-owned beads for %s: %w", rootID, err)
 	}
 	for _, bead := range related {
 		if bead.ID != "" && bead.ID != rootID {
 			rootOwned = append(rootOwned, bead.ID)
+			status[bead.ID] = bead.Status
 		}
 	}
 
@@ -1315,6 +1469,9 @@ func collectExpiredBeadClosure(store beads.Store, rootID string) ([]string, erro
 			return fmt.Errorf("list children for %s: %w", id, err)
 		}
 		for _, child := range children {
+			if child.ID != "" {
+				status[child.ID] = child.Status
+			}
 			if err := visit(child.ID); err != nil {
 				return err
 			}
@@ -1337,9 +1494,9 @@ func collectExpiredBeadClosure(store beads.Store, rootID string) ([]string, erro
 		return nil
 	}
 	if err := visit(rootID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return ids, nil
+	return ids, status, nil
 }
 
 func gcRetentionTTLString(d time.Duration) string {
