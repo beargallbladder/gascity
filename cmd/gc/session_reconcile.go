@@ -1557,7 +1557,8 @@ func topoOrderRows(rows []sessionpkg.ReconcileSession, deps map[string][]string)
 // versions that add states, and to leave this binary's own archived and
 // draining rows alone. This binary's own close codes are not listed: a row
 // that still carries one is an interrupted close, which the reconciler
-// finishes before the skip (interruptedCloseGate, finishInterruptedClose).
+// finishes, or rolls back, before the skip (interruptedCloseGate,
+// finishInterruptedClose).
 var knownSessionStates = map[string]bool{
 	"active":                             true,
 	"asleep":                             true,

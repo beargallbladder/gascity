@@ -2288,13 +2288,21 @@ func reconcileSessionBeadsTracedWithNamedDemand(
 		// rollback: a newer version's states, and this binary's own archived and
 		// draining rows, are ignored rather than crashing the reconciler. An
 		// interrupted close of this binary's own (a close code left on an open
-		// row when the status Close was lost) is finished first instead
-		// (finishInterruptedClose). The skip is a throttled, durable
-		// session.unknown_state signal (folded onto the tick snapshot).
+		// row when the status Close was lost) is finished first instead, or
+		// rolled back to asleep when its gate now refuses it, and the next tick
+		// takes the asleep row (finishInterruptedClose). The skip is a throttled,
+		// durable session.unknown_state signal (folded onto the tick snapshot).
 		if !isKnownStateInfo(info) {
-			if gate, ok := interruptedCloseGate(info); ok && finishInterruptedClose(cityPath, store, sw, sp, cfg, dt, info, gate, storeQueryPartial, reconcileOpts.deferSessionClosesOnBoot, trace, clk, stderr) {
-				tick.markClosed(id)
-				continue
+			if gate, ok := interruptedCloseGate(info); ok {
+				fold, closed := finishInterruptedClose(cityPath, store, sw, sp, cfg, dt, info, gate, storeQueryPartial, reconcileOpts.deferSessionClosesOnBoot, trace, clk, stderr)
+				if closed {
+					tick.markClosed(id)
+					continue
+				}
+				if fold != nil {
+					tick.apply(id, fold)
+					continue
+				}
 			}
 			if fold := emitSessionUnknownStateDiagnostic(store, info, snapshot, rec, clk, stderr); fold != nil {
 				tick.apply(id, fold)

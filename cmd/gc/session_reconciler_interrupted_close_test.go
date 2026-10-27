@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -224,35 +226,12 @@ func createAssignedInProgressWork(t *testing.T, store beads.Store, template, ass
 	return work
 }
 
-// A finished close keeps the gate of the close it finishes: a duplicate close
-// is work-gated, so a half-closed duplicate holding in_progress work stays
-// open and keeps it; a stale-session close releases the seat's work, so the
-// half-closed stale seat closes and its work returns to the pool unassigned.
+// A finished close keeps the gate of the close it finishes: a stale-session
+// close releases the seat's work, so the half-closed stale seat closes and its
+// work returns to the pool unassigned. A work-gated close that its gate now
+// refuses is rolled back instead
+// (TestInterruptedCloseRefusedByItsGateRejoinsTheLifecycle).
 func TestInterruptedCloseKeepsTheInterruptedCloseGate(t *testing.T) {
-	t.Run("duplicate_is_work_gated", func(t *testing.T) {
-		now := time.Now().UTC()
-		cityPath, cfg, store, sp, seat := newInterruptedClosePoolCity(t, now)
-		work := createAssignedInProgressWork(t, store, "repo/worker", seat.ID)
-		halfCloseSessionBead(t, store, seat.ID, "duplicate", now.Add(-time.Hour), nil)
-
-		var out strings.Builder
-		drainAckRewakeTick(t, cityPath, cfg, sp, store, newDrainOps(sp), newDrainTracker(), &asyncStartTracker{}, &clock.Fake{Time: now}, &out)
-
-		got, err := store.Get(seat.ID)
-		if err != nil {
-			t.Fatalf("reload seat: %v", err)
-		}
-		if got.Status == "closed" {
-			t.Fatalf("half-closed duplicate seat %s closed while it holds in_progress work %s; a duplicate close is work-gated\n%s", seat.ID, work.ID, out.String())
-		}
-		gotWork, err := store.Get(work.ID)
-		if err != nil {
-			t.Fatalf("reload work: %v", err)
-		}
-		if gotWork.Assignee != seat.ID || gotWork.Status != "in_progress" {
-			t.Fatalf("work = status %q assignee %q, want in_progress assigned to %s", gotWork.Status, gotWork.Assignee, seat.ID)
-		}
-	})
 	t.Run("stale_session_releases", func(t *testing.T) {
 		now := time.Now().UTC()
 		cityPath, cfg, store, sp, seat := newInterruptedClosePoolCity(t, now)
@@ -277,6 +256,135 @@ func TestInterruptedCloseKeepsTheInterruptedCloseGate(t *testing.T) {
 			t.Fatalf("work = status %q assignee %q, want open and unassigned", gotWork.Status, gotWork.Assignee)
 		}
 	})
+}
+
+// A work-gated interrupted close (duplicate, gc_swept, the pool-slot
+// passthrough codes, killed) whose gate refuses it now, because work reached
+// the seat after the metadata half landed, is rolled back to asleep on the
+// first tick instead of being held on the unknown-state skip, and the paths
+// that serve a dormant seat take it from the next tick: the assigned-work wake
+// restarts a seat holding in_progress work in place on its own bead, and a
+// killed seat gives back its open claim, closes as killed, and a replacement
+// seat starts for the claim.
+func TestInterruptedCloseRefusedByItsGateRejoinsTheLifecycle(t *testing.T) {
+	cases := []struct {
+		code      string
+		extra     map[string]string
+		openClaim bool   // the seat holds an open routed claim, not in_progress work
+		wantSleep string // the rolled-back row's sleep_reason
+	}{
+		{code: "duplicate", wantSleep: "runtime-missing"},
+		{code: "gc_swept", wantSleep: "runtime-missing"},
+		{code: "idle-timeout", extra: map[string]string{"sleep_reason": "idle-timeout"}, wantSleep: "idle-timeout"},
+		{code: "killed", extra: map[string]string{"sleep_reason": "killed"}, openClaim: true, wantSleep: "killed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			now := time.Now().UTC()
+			cityPath, cfg, store, sp, seat := newInterruptedClosePoolCity(t, now)
+			var work beads.Bead
+			wantWorkStatus := "in_progress"
+			if tc.openClaim {
+				wantWorkStatus = "open"
+				claim, err := store.Create(beads.Bead{
+					Title:    "open claim held by the half-closed seat",
+					Type:     "task",
+					Status:   "open",
+					Assignee: seat.ID,
+					Metadata: map[string]string{"gc.routed_to": "repo/worker"},
+				})
+				if err != nil {
+					t.Fatalf("create claim: %v", err)
+				}
+				work = claim
+			} else {
+				work = createAssignedInProgressWork(t, store, "repo/worker", seat.ID)
+			}
+			halfCloseSessionBead(t, store, seat.ID, tc.code, now.Add(-time.Hour), tc.extra)
+			seatName := seat.Metadata["session_name"]
+
+			dops := newDrainOps(sp)
+			dt := newDrainTracker()
+			tracker := &asyncStartTracker{}
+			clk := &clock.Fake{Time: now}
+			var out strings.Builder
+			drainAckRewakeTick(t, cityPath, cfg, sp, store, dops, dt, tracker, clk, &out)
+			dumpDrainAckRewakeState(t, store, sp, 0)
+
+			got, err := store.Get(seat.ID)
+			if err != nil {
+				t.Fatalf("reload seat: %v", err)
+			}
+			if got.Status == "closed" || got.Metadata["state"] != "asleep" || got.Metadata["sleep_reason"] != tc.wantSleep {
+				t.Fatalf("after the first tick seat = status %q state %q sleep_reason %q, want open asleep with sleep_reason %q: a refused %q close is rolled back\n%s",
+					got.Status, got.Metadata["state"], got.Metadata["sleep_reason"], tc.wantSleep, tc.code, out.String())
+			}
+			if got.Metadata["close_reason"] != "" || got.Metadata["closed_at"] != "" {
+				t.Errorf("rolled-back seat close_reason = %q closed_at = %q, want both cleared", got.Metadata["close_reason"], got.Metadata["closed_at"])
+			}
+			gotWork, err := store.Get(work.ID)
+			if err != nil {
+				t.Fatalf("reload work: %v", err)
+			}
+			if gotWork.Assignee != seat.ID || gotWork.Status != wantWorkStatus {
+				t.Fatalf("after the rollback work = status %q assignee %q, want %s assigned to %s", gotWork.Status, gotWork.Assignee, wantWorkStatus, seat.ID)
+			}
+			warn := fmt.Sprintf("WARN: reconciler: rolled back interrupted %q close of session bead %s to asleep", tc.code, seat.ID)
+			if n := strings.Count(out.String(), warn); n != 1 {
+				t.Fatalf("stderr has %d %q lines, want 1\n%s", n, warn, out.String())
+			}
+
+			served := false
+			for tick := 1; tick <= 6 && !served; tick++ {
+				clk.Advance(30 * time.Second)
+				drainAckRewakeTick(t, cityPath, cfg, sp, store, dops, dt, tracker, clk, &out)
+				dumpDrainAckRewakeState(t, store, sp, tick)
+				got, err = store.Get(seat.ID)
+				if err != nil {
+					t.Fatalf("reload seat: %v", err)
+				}
+				gotWork, err = store.Get(work.ID)
+				if err != nil {
+					t.Fatalf("reload work: %v", err)
+				}
+				open, err := loadSessionBeads(store)
+				if err != nil {
+					t.Fatalf("loadSessionBeads: %v", err)
+				}
+				if !tc.openClaim {
+					if got.Status == "closed" {
+						t.Fatalf("tick %d: seat %s closed while it holds in_progress work %s\n%s", tick, seat.ID, work.ID, out.String())
+					}
+					for _, b := range open {
+						if b.ID != seat.ID && b.Metadata["template"] == "repo/worker" {
+							t.Fatalf("tick %d: second seat %s opened for the template, want the seat restarted in place\n%s", tick, b.ID, out.String())
+						}
+					}
+					served = sp.IsRunning(seatName) && gotWork.Assignee == seat.ID && gotWork.Status == "in_progress"
+					continue
+				}
+				if got.Status != "closed" {
+					continue
+				}
+				if got.Metadata["state"] != tc.code || got.Metadata["close_reason"] != sessionpkg.CanonicalCloseReason(tc.code) {
+					t.Fatalf("tick %d: killed seat closed with state %q close_reason %q, want state %q close_reason %q",
+						tick, got.Metadata["state"], got.Metadata["close_reason"], tc.code, sessionpkg.CanonicalCloseReason(tc.code))
+				}
+				if gotWork.Assignee == seat.ID {
+					t.Fatalf("tick %d: closed killed seat still holds claim %s", tick, work.ID)
+				}
+				for _, b := range open {
+					if b.ID != seat.ID && b.Metadata["template"] == "repo/worker" && sp.IsRunning(b.Metadata["session_name"]) {
+						served = true
+					}
+				}
+			}
+			if !served {
+				t.Fatalf("the rolled-back %q seat's work was never served; seat status %q state %q, work status %q assignee %q\n%s",
+					tc.code, got.Status, got.Metadata["state"], gotWork.Status, gotWork.Assignee, out.String())
+			}
+		})
+	}
 }
 
 // interruptedCloseTick runs one traced reconcile pass over the env's open
@@ -456,10 +564,11 @@ func TestInterruptedCloseKeepsLiveOrUnobservedRuntimeOpen(t *testing.T) {
 	cases := []struct {
 		name       string
 		outcome    TraceOutcomeCode
+		hold       string // the kept_open record's hold, when the finisher holds the row
 		sp         func(*runtime.Fake) runtime.Provider
 		wantStderr string
 	}{
-		{name: "runtime_alive", outcome: TraceOutcomeKeptOpen, sp: func(f *runtime.Fake) runtime.Provider { return f }},
+		{name: "runtime_alive", outcome: TraceOutcomeKeptOpen, hold: "runtime_alive", sp: func(f *runtime.Fake) runtime.Provider { return f }},
 		{name: "liveness_error", outcome: TraceOutcomeSkippedLivenessError, sp: func(f *runtime.Fake) runtime.Provider {
 			return &startUnavailableLivenessProvider{Fake: f}
 		}, wantStderr: "session reconciler: skipping interrupted close of 'worker-zombie': liveness observation failed"},
@@ -492,6 +601,9 @@ func TestInterruptedCloseKeepsLiveOrUnobservedRuntimeOpen(t *testing.T) {
 				if r.SiteCode == TraceSiteCode("reconciler.session.finish_interrupted_close") &&
 					r.ReasonCode == TraceReasonCode("interrupted_close") && r.OutcomeCode == tc.outcome {
 					finisher++
+					if tc.hold != "" && r.Fields["hold"] != tc.hold {
+						t.Errorf("finisher %s record hold = %v, want %q", tc.outcome, r.Fields["hold"], tc.hold)
+					}
 				}
 				if r.ReasonCode == TraceReasonUnknownStateSkipped {
 					skipped++
@@ -616,5 +728,137 @@ func TestInterruptedCloseReportsTheFinishedClose(t *testing.T) {
 	}
 	if events := unknownStateEventsFor(t, rec, b.ID); len(events) != 0 {
 		t.Fatalf("session.unknown_state events = %+v, want none for the finished close", events)
+	}
+}
+
+// The finisher's trace says why a row it does not close stays the way it is: a
+// gate refusal is a rollback carrying the refusal's cause, a runtime that
+// cannot be torn down holds the row open as runtime_teardown (a live runtime
+// is runtime_alive), and neither is the other.
+func TestInterruptedCloseRecordsWhyItDidNotClose(t *testing.T) {
+	finisherRecords := func(trace *sessionReconcilerTraceCycle, name string) []SessionReconcilerTraceRecord {
+		var out []SessionReconcilerTraceRecord
+		for _, r := range trace.records {
+			if r.SessionName == name && r.SiteCode == TraceSiteReconcilerFinishInterruptedClose && r.ReasonCode == TraceReasonInterruptedClose {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	t.Run("gate_refusal_rolls_back_with_its_cause", func(t *testing.T) {
+		env := newReconcilerTestEnv(t)
+		rec := &capturingRecorder{}
+		env.rec = rec
+		b := env.createSessionBead("worker-held", "worker")
+		createAssignedInProgressWork(t, env.store, "worker", b.ID)
+		halfCloseSessionBead(t, env.store, b.ID, "duplicate", env.clk.Now().Add(-time.Hour), nil)
+
+		trace := env.interruptedCloseTick(t, env.sp, false)
+
+		records := finisherRecords(trace, "worker-held")
+		if len(records) != 1 || records[0].OutcomeCode != TraceOutcomeRollback ||
+			records[0].Fields["cause"] != causeHasWork || records[0].Fields["sleep_reason"] != "runtime-missing" {
+			t.Fatalf("finisher records = %+v, want one rollback with cause=%s sleep_reason=runtime-missing", records, causeHasWork)
+		}
+		for _, r := range trace.records {
+			if r.SessionName == "worker-held" && r.ReasonCode == TraceReasonUnknownStateSkipped {
+				t.Fatalf("unknown_state_skipped recorded for the rolled-back row: %+v", r)
+			}
+		}
+		if events := unknownStateEventsFor(t, rec, b.ID); len(events) != 0 {
+			t.Fatalf("session.unknown_state events = %+v, want none for the rolled-back row", events)
+		}
+		if got := env.sessionInfo(b.ID); got.Closed || got.MetadataState != "asleep" {
+			t.Fatalf("row closed=%v state=%q, want open and asleep", got.Closed, got.MetadataState)
+		}
+	})
+	t.Run("runtime_teardown_holds", func(t *testing.T) {
+		env := newReconcilerTestEnv(t)
+		b := env.createSessionBead("worker-pool", "worker")
+		name := "worker-" + b.ID
+		halfCloseSessionBead(t, env.store, b.ID, "stale-session", env.clk.Now().Add(-time.Hour), map[string]string{
+			"session_name": name,
+			"pool_managed": "true",
+		})
+		env.sp.StopErrors[name] = errors.New("stop refused")
+
+		trace := env.interruptedCloseTick(t, env.sp, false)
+
+		records := finisherRecords(trace, name)
+		if len(records) != 1 || records[0].OutcomeCode != TraceOutcomeKeptOpen || records[0].Fields["hold"] != "runtime_teardown" {
+			t.Fatalf("finisher records = %+v, want one kept_open with hold=runtime_teardown", records)
+		}
+		if got := env.sessionInfo(b.ID); got.Closed || got.MetadataState != "stale-session" {
+			t.Fatalf("row closed=%v state=%q, want open and still stale-session", got.Closed, got.MetadataState)
+		}
+	})
+}
+
+// lostCloseStore loses the status Close while lose is set, after the close's
+// metadata half landed: the two-write close of a store without an atomic
+// terminal close, interrupted between its writes.
+type lostCloseStore struct {
+	*beads.MemStore
+	lose bool
+}
+
+// Close loses the status Close while lose is set.
+func (s *lostCloseStore) Close(id string) error {
+	if s.lose {
+		return fmt.Errorf("status close of %s lost", id)
+	}
+	return s.MemStore.Close(id)
+}
+
+// Tx runs fn on the store itself, so a close's Tx loses its Close too.
+func (s *lostCloseStore) Tx(_ string, fn func(beads.Tx) error) error { return fn(s) }
+
+// A close the store really interrupted (the production close, its Close lost
+// after the ClosePatch landed) is recognized by its state alone. While the
+// store keeps losing the Close the finisher's own commit does not land, so
+// the row keeps its close code for a later tick and is not rolled back, and
+// the first tick on which the Close lands finishes it.
+func TestInterruptedCloseFinishesARealInterruptedCommit(t *testing.T) {
+	env := newReconcilerTestEnv(t)
+	store := &lostCloseStore{MemStore: beads.NewMemStore(), lose: true}
+	env.store = store
+	b := env.createSessionBead("worker-gone", "worker")
+	sw := testSeatWork(env.city, env.cfg, env.store, nil)
+	if closeSeat(env.store, sw, env.sessionInfo(b.ID), closeWhy{reason: "stale-session", gate: closeReleasing}, env.clk.Now().UTC(), &env.stderr) {
+		t.Fatal("closeSeat reported a landed close, want the lost Close to fail it")
+	}
+	if got := env.sessionInfo(b.ID); got.Closed || got.MetadataState != "stale-session" {
+		t.Fatalf("after the interrupted close row closed=%v state=%q, want open and stale-session", got.Closed, got.MetadataState)
+	}
+
+	trace := env.interruptedCloseTick(t, env.sp, false)
+
+	var notLanded int
+	for _, r := range trace.records {
+		if r.SessionName == "worker-gone" && r.SiteCode == TraceSiteReconcilerFinishInterruptedClose &&
+			r.OutcomeCode == TraceOutcomeNoChange && r.Fields["cause"] == "commit_not_landed" {
+			notLanded++
+		}
+	}
+	if notLanded != 1 {
+		t.Fatalf("finisher no_change commit_not_landed records = %d, want 1; records: %+v", notLanded, trace.records)
+	}
+	if got := env.sessionInfo(b.ID); got.Closed || got.MetadataState != "stale-session" {
+		t.Fatalf("after a tick whose Close was lost row closed=%v state=%q, want open and still stale-session", got.Closed, got.MetadataState)
+	}
+
+	store.lose = false
+	env.interruptedCloseTick(t, env.sp, false)
+
+	got, err := env.store.Get(b.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != "closed" || got.Metadata["state"] != "stale-session" {
+		t.Fatalf("after a tick whose Close landed row status=%q state=%q, want closed stale-session", got.Status, got.Metadata["state"])
+	}
+	warn := `WARN: reconciler: finished interrupted "stale-session" close of session bead ` + b.ID
+	if n := strings.Count(env.stderr.String(), warn); n != 1 {
+		t.Fatalf("stderr has %d %q lines, want 1; stderr:\n%s", n, warn, env.stderr.String())
 	}
 }
