@@ -29,7 +29,7 @@ gc [flags]
 | [gc agent](#gc-agent) | Manage agent configuration |
 | [gc agent-script](#gc-agent-script) | Run a deterministic YAML agent script |
 | [gc analyze](#gc-analyze) | Read-only analysis over events and beads |
-| [gc bd](#gc-bd) | Run bd in the correct rig directory |
+| [gc bd](#gc-bd) | Run a bd command in the correct rig directory |
 | [gc beads](#gc-beads) | Manage the beads provider |
 | [gc build-image](#gc-build-image) | Build a prebaked agent container image |
 | [gc cities](#gc-cities) | List registered cities |
@@ -356,8 +356,8 @@ conditionally resets an in-progress assignment only when the bead still has
 that assignee.
 
 gc bd forces BD_EXPORT_AUTO=false to prevent bd's git auto-export hook
-from wedging the wrapper after printing command output. If you need
-auto-export behavior, invoke bd directly.
+from wedging the wrapper after printing command output. To write a JSONL
+snapshot, run "gc bd export".
 
 ```
 gc bd [bd-args...]

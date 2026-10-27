@@ -108,7 +108,7 @@ func TestInventoryProvenanceMatchesGoMod(t *testing.T) {
 	cobraV, pflagV := version("github.com/spf13/cobra"), version("github.com/spf13/pflag")
 	for _, inv := range Inventories() {
 		p := inv.Provenance
-		if p.Commit == "" || p.GoVersion == "" || p.BuildTags == "" {
+		if p.Commit == "" || p.GoVersion == "" || p.BuildTags == "" || p.CGOEnabled == "" {
 			t.Errorf("%s provenance is incomplete: %+v", inv.Name, p)
 		}
 		if p.CobraVersion != cobraV || p.PflagVersion != pflagV {
@@ -141,5 +141,22 @@ func TestEmbeddedInventoriesMatchTheirJSON(t *testing.T) {
 		if string(got) != string(want) {
 			t.Errorf("%s.gz does not decompress to %s; regenerate it with gzip -n -9 -c %s > %s.gz", name, name, name, name)
 		}
+	}
+}
+
+// TestDiffHelpTreesReportsGlobalFlags: a binary whose inherited (global)
+// flags differ — a new persistent flag on the root — matches no inventory.
+func TestDiffHelpTreesReportsGlobalFlags(t *testing.T) {
+	pinned := InventoryByName("bd-1.3.2").HelpTree()
+	live := cloneHelpTree(pinned)
+	v := live["list"]
+	v.GlobalFlags += "\n      --sneaky string   a new persistent flag"
+	live["list"] = v
+	d := DiffHelpTrees(pinned, live, 8)
+	if len(d) != 1 || d[0] != `"list" global flags differ` {
+		t.Fatalf("diffs = %v, want the list global-flags difference", d)
+	}
+	if inv, _ := MatchHelpTree(live); inv != nil {
+		t.Fatalf("a tree with an extra global flag matched %s", inv.Name)
 	}
 }

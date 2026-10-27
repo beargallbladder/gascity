@@ -2,7 +2,9 @@ package bdflags
 
 import (
 	"compress/gzip"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,6 +75,8 @@ type InventoryProvenance struct {
 	GoVersion    string `json:"go_version"`
 	CobraVersion string `json:"cobra_version"`
 	PflagVersion string `json:"pflag_version"`
+	// CGOEnabled is the dump build's CGO_ENABLED setting.
+	CGOEnabled string `json:"cgo_enabled"`
 }
 
 // Inventory is one pinned bd build's command tree.
@@ -92,11 +96,22 @@ var (
 	inventoriesOnce sync.Once
 	inventories     []*Inventory
 	inventoriesErr  error
+	inventorySetSum string
 )
+
+// InventorySetFingerprint is a hash of every embedded inventory (name and
+// bytes). A cached trust verdict is valid only under the inventory set it was
+// judged against, so a gc upgrade that changes the set re-judges every binary.
+func InventorySetFingerprint() string {
+	Inventories()
+	return inventorySetSum
+}
 
 // Inventories returns every pinned inventory, sorted by name.
 func Inventories() []*Inventory {
 	inventoriesOnce.Do(func() {
+		setHash := sha256.New()
+		defer func() { inventorySetSum = hex.EncodeToString(setHash.Sum(nil)) }()
 		entries, err := inventoryFS.ReadDir("inventory")
 		if err != nil {
 			inventoriesErr = err
@@ -111,6 +126,9 @@ func Inventories() []*Inventory {
 				inventoriesErr = fmt.Errorf("%s: %w", e.Name(), err)
 				return
 			}
+			// hash.Hash writes never fail.
+			_, _ = fmt.Fprintf(setHash, "%s\x00%d\x00", e.Name(), len(data))
+			_, _ = setHash.Write(data)
 			inv, err := ParseInventory(strings.TrimSuffix(e.Name(), ".json.gz"), data)
 			if err != nil {
 				inventoriesErr = fmt.Errorf("%s: %w", e.Name(), err)

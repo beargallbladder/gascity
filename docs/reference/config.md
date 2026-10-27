@@ -915,7 +915,7 @@ StorageConfig assigns each semantic storage class to a named binding and defines
 |-------|------|----------|---------|-------------|
 | `classes` | StorageClasses | **yes** |  | Classes contains the complete class-to-binding assignment. |
 | `bindings` | map[string]StorageBindingConfig |  |  | Bindings defines named provider-backed bindings. The reserved work binding is synthesized and must not appear here. |
-| `gc_bd_inventory` | string |  |  | GCBdInventory vouches for one bd binary on a split city: "&lt;inventory-id&gt;@sha256:&lt;hex&gt;" names the pinned gc bd inventory (internal/bdflags/inventory) whose command tree that exact binary has. `gc doctor --fix` writes it after a structural walk of the binary matches the inventory; gc bd then trusts that binary without walking it. A binary with any other sha256 is walked and matched as usual. |
+| `gc_bd_inventory` | string |  |  | GCBdInventory vouches for one bd binary on a split city: "&lt;inventory-id&gt;@sha256:&lt;hex&gt;" names the pinned gc bd inventory (internal/bdflags/inventory) whose command tree that exact binary has. `gc doctor --fix` writes it after a structural walk of the binary matches the inventory; gc bd then trusts that binary without walking it. A binary with any other sha256 is walked and matched as usual. A malformed value is ignored (gc doctor warns); it never fails the config load. |
 
 ## Tier
 

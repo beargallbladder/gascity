@@ -44,6 +44,7 @@ type gcInventoryProvenance struct {
 	GoVersion    string `json:"go_version"`
 	CobraVersion string `json:"cobra_version"`
 	PflagVersion string `json:"pflag_version"`
+	CGOEnabled   string `json:"cgo_enabled"`
 }
 
 type gcInventory struct {
@@ -82,6 +83,11 @@ func init() {
 		GoVersion: runtime.Version(),
 	}
 	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "CGO_ENABLED" {
+				inv.Provenance.CGOEnabled = s.Value
+			}
+		}
 		for _, dep := range info.Deps {
 			switch dep.Path {
 			case "github.com/spf13/cobra":

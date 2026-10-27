@@ -6,7 +6,8 @@
   "build_tags": "gms_pure_go",
   "go_version": "go1.26.10",
   "cobra_version": "v1.10.2",
-  "pflag_version": "v1.0.10"
+  "pflag_version": "v1.0.10",
+  "cgo_enabled": "1"
  },
  "commands": [
   {

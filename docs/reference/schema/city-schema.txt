@@ -3148,7 +3148,7 @@
         },
         "gc_bd_inventory": {
           "type": "string",
-          "description": "GCBdInventory vouches for one bd binary on a split city: \"\u003cinventory-id\u003e@sha256:\u003chex\u003e\"\nnames the pinned gc bd inventory (internal/bdflags/inventory) whose\ncommand tree that exact binary has. `gc doctor --fix` writes it after a\nstructural walk of the binary matches the inventory; gc bd then trusts\nthat binary without walking it. A binary with any other sha256 is\nwalked and matched as usual."
+          "description": "GCBdInventory vouches for one bd binary on a split city: \"\u003cinventory-id\u003e@sha256:\u003chex\u003e\"\nnames the pinned gc bd inventory (internal/bdflags/inventory) whose\ncommand tree that exact binary has. `gc doctor --fix` writes it after a\nstructural walk of the binary matches the inventory; gc bd then trusts\nthat binary without walking it. A binary with any other sha256 is\nwalked and matched as usual. A malformed value is ignored (gc doctor\nwarns); it never fails the config load."
         }
       },
       "additionalProperties": false,
