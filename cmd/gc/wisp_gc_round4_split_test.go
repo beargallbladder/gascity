@@ -519,3 +519,58 @@ func TestPurgeRefusesANestedRootWithAnOpenMember(t *testing.T) {
 		})
 	}
 }
+
+// Must-fix 1, the two halves of the arm sharing. With two walks, a close that
+// goes first leaves one for the purge: the expired closure is purged on the
+// first visit even behind abandoned roots. With one walk, the arms alternate:
+// over two visits each arm gets a walk.
+func TestWorkArmArmsShareTheBudget(t *testing.T) {
+	setup := func(t *testing.T) (batchDeleteWorkStore, []beads.Bead, beads.Bead, splitEnv, WorkLegs) {
+		store := newBatchDeleteWorkStore()
+		var junk []beads.Bead
+		for i := 0; i < 3; i++ {
+			junk = append(junk, stepless(t, store, beads.Bead{Title: fmt.Sprintf("junk-%d", i), Type: "molecule"}))
+		}
+		expired := closedPoured(t, store, "expired")
+		e, legs := laneLegs(t, store)
+		return store, junk, expired, e, legs
+	}
+	closedJunk := func(store beads.Store, junk []beads.Bead) int {
+		n := 0
+		for _, j := range junk {
+			if b, err := store.Get(j.ID); err == nil && b.Status == "closed" {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("reserve-with-two-walks", func(t *testing.T) {
+		store, junk, expired, e, legs := setup(t)
+		withWorkArmBudget(t, 2, func() {
+			enforcedLane(t, func() { runLane(t, newWorkMoleculeGC(), legs, e.graphStore(), time.Now().Add(2*time.Hour)) })
+		})
+		if !laneGone(store, expired.ID) {
+			t.Fatal("with two walks, a close that went first left none for the purge")
+		}
+		if closedJunk(store, junk) != 1 {
+			t.Fatalf("closed %d abandoned root(s), want 1 (the other walk is the purge's)", closedJunk(store, junk))
+		}
+	})
+	t.Run("alternation-with-one-walk", func(t *testing.T) {
+		_, _, _, e, legs := setup(t)
+		gc := newWorkMoleculeGC()
+		var first, second string
+		withWorkArmBudget(t, 1, func() {
+			enforcedLane(t, func() {
+				first = runLane(t, gc, legs, e.graphStore(), time.Now().Add(2*time.Hour))
+				second = runLane(t, gc, legs, e.graphStore(), time.Now().Add(2*time.Hour))
+			})
+		})
+		// One visit closes (the close goes first), the next purges (the
+		// purge goes first): a closure is purged on the second visit even
+		// though abandoned roots remain for the close.
+		if !strings.Contains(first, "closed abandoned root") || !strings.Contains(second, "purged 1 closure") {
+			t.Fatalf("over two one-walk visits each arm must get a walk:\nfirst:\n%s\nsecond:\n%s", first, second)
+		}
+	})
+}

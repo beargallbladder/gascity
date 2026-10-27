@@ -52,8 +52,9 @@ type workMoleculeGC struct {
 	// id walked, so a leg resumes where its last visit stopped.
 	rootCursor map[string]string
 	// purgeFirst is, per leg, which arm goes first on its next visit: the
-	// arms alternate, and the close arm leaves one walk for the purge, so a
-	// leg full of busy idle molecules cannot starve its purge.
+	// arms alternate (with one walk a pass, each gets every other visit), and
+	// a close that goes first with two or more walks left leaves one for the
+	// purge, so neither arm can starve the other.
 	purgeFirst map[string]bool
 }
 
@@ -83,11 +84,16 @@ type workArmLeg struct {
 // in flight is not interrupted (the controller's stores are not
 // context-bound), so a stop waits at most for that one call.
 //
-// Throughput: at maintainer-city latency (~0.75 s per bd call) a closure walk
-// and delete is about 6 calls, ~4.5 s, and the listing of each leg 3 calls, so
-// a 5 s pass purges about one closure: roughly 6 closures an hour city-wide at
-// the 10-minute wisp-GC cadence. That is the backstop rate for a backlog; the
-// reactive autoclose and the graph arm do the routine work.
+// Throughput, measured with a bd store answering in ~0.75 s per call (the
+// maintainer-city figure): listing a leg is 3 calls, and walking and deleting
+// a closure of a root and a step is 8 (the member list, one batched children
+// read per level, the live strand guard on the root, the delete; the roots'
+// rows come from one prefetch). The budget never stops the first walk of a
+// pass, so a pass that has work makes exactly one walk at that latency and
+// runs ~8-11 s, over its 5 s wall budget by that one walk: about one closure
+// per pass, ~6 an hour city-wide at the 10-minute wisp-GC cadence. That is a
+// backstop rate for a backlog; the reactive autoclose and the graph arm do the
+// routine work.
 func (w *workMoleculeGC) pass(ctx context.Context, legs wispGCLegs, graph beads.Store, ttl time.Duration, now time.Time) (int, error) {
 	if legs == nil || legs.unusable() != nil || ttl <= 0 {
 		return 0, nil
@@ -206,9 +212,15 @@ func (w *workMoleculeGC) pass(ctx context.Context, legs wispGCLegs, graph beads.
 			runPurge()
 			runClose(0)
 		} else {
-			// The close goes first but leaves one walk for the purge; a walk
-			// the purge did not need goes back to the close.
-			runClose(1)
+			// The close goes first. With two or more walks left it leaves
+			// one for the purge; with one, the alternation is what gives the
+			// purge its turn on the next visit. A walk the purge did not need
+			// goes back to the close.
+			reserve := 0
+			if budget.walks >= 2 {
+				reserve = 1
+			}
+			runClose(reserve)
 			runPurge()
 			runClose(0)
 		}
