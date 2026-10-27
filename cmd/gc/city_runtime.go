@@ -497,7 +497,7 @@ func newCityRuntime(p CityRuntimeParams) (*CityRuntime, error) {
 	mat := buildMaxSessionAgeTracker(p.Cfg, p.CityName, p.SP)
 	adt := buildAssignedWorkDeferTracker(p.Cfg, p.CityName, p.SP)
 
-	wg := newWispGCForConfig(p.Cfg)
+	wg := newWispGCForCity(p.Cfg, p.CityName)
 
 	managedDoltHealth := p.ManagedDoltHealth
 	if managedDoltHealth == nil {
@@ -2950,7 +2950,7 @@ func (cr *CityRuntime) reloadConfigTraced(
 	cr.mat = buildMaxSessionAgeTracker(nextCfg, cr.cityName, nextSp)
 	cr.adt = buildAssignedWorkDeferTracker(nextCfg, cr.cityName, nextSp)
 
-	cr.wg = newWispGCForConfig(nextCfg)
+	cr.wg = newWispGCForCity(nextCfg, cr.cityName)
 
 	// The new config was published above (publishRuntimeConfig), BEFORE
 	// this stage. The stage bumps the order-set generation under the lane's

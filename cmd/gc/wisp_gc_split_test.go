@@ -490,3 +490,23 @@ func withWorkArmBudget(t *testing.T, n int, fn func()) {
 	defer func() { wispGCWorkArmWalkBudget = prev }()
 	fn()
 }
+
+// Nit: on a single-store city, a stepless root's source pointer resolves only
+// for THIS city's ref, as storeForRef does on a split city.
+func TestSingleStoreSourceRefResolution(t *testing.T) {
+	graph := beads.NewMemStore()
+	h := wispGCHolders{graph: graph, cityName: "home"}
+	for ref, want := range map[string]bool{
+		"city:home":   true,
+		"city:other":  false,
+		"class:graph": false,
+		"rig:r1":      false,
+		"":            false,
+	} {
+		root := beads.Bead{Metadata: map[string]string{beadmeta.SourceStoreRefMetadataKey: ref}}
+		store, _, ok := h.sourceStore(root)
+		if ok != want || (ok && store != beads.Store(graph)) {
+			t.Errorf("ref %q: ok=%v; want %v", ref, ok, want)
+		}
+	}
+}

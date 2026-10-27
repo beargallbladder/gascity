@@ -232,6 +232,10 @@ type memoryWispGC struct {
 	// notes are the refusals and per-root log lines this tracker remembers
 	// across passes (wispGCNotes).
 	notes wispGCNotes
+	// cityName is the name this city's "city:<name>" store refs carry. On a
+	// single-store city (no legs) only that ref resolves a stepless root's
+	// source pointer; "" (a tracker built without one) accepts any city ref.
+	cityName string
 }
 
 // newWispGC creates a wisp GC tracker. Returns nil if disabled. The tracker
@@ -246,6 +250,15 @@ func newWispGC(interval, ttl, mailRetentionTTL time.Duration) wispGC {
 		ttl:              ttl,
 		mailRetentionTTL: mailRetentionTTL,
 	}
+}
+
+// newWispGCForCity is newWispGCForConfig for the named city.
+func newWispGCForCity(cfg *config.City, cityName string) wispGC {
+	wg := newWispGCForConfig(cfg)
+	if m, ok := wg.(*memoryWispGC); ok {
+		m.cityName = strings.TrimSpace(cityName)
+	}
+	return wg
 }
 
 func newWispGCForConfig(cfg *config.City) wispGC {
@@ -296,7 +309,7 @@ func (m *memoryWispGC) runGC(legs wispGCLegs, graphStore beads.GraphStore, sessi
 		// CreatedAt, not close time), or on a later tick otherwise. Best-effort:
 		// never fails the GC tick.
 		pass := &wispGCPassLog{}
-		holders := wispGCHolders{graph: store, legs: legs, pass: pass}
+		holders := wispGCHolders{graph: store, legs: legs, pass: pass, cityName: m.cityName}
 		if abandonedErr := closeAbandonedRoots(store, holders, now, &m.notes); abandonedErr != nil {
 			deleteErr = errors.Join(deleteErr, abandonedErr)
 		}
@@ -417,6 +430,9 @@ type wispGCHolders struct {
 	own beads.Store
 	// pass collects what the guard decided this pass, for one summary line.
 	pass *wispGCPassLog
+	// cityName, on a single-store city (no legs), is the only city a source
+	// ref may name ("": any).
+	cityName string
 }
 
 // wispGCPassLog collects, for one pass, the stepless roots the holder guard
@@ -1270,15 +1286,17 @@ func (h wispGCHolders) suspendedRigs() []string {
 
 // sourceStore resolves root's gc.source_store_ref to the store its source
 // lives in. ok=false when the ref names no store this city serves. On a
-// single-store city (no legs) only a city ref resolves, to the graph store,
-// which is the city store there.
+// single-store city (no legs) only THIS city's ref resolves (as on a split
+// city: a class ref or another city's ref names nothing here), to the graph
+// store, which is the city store there.
 func (h wispGCHolders) sourceStore(root beads.Bead) (beads.Store, bool, bool) {
 	ref := strings.TrimSpace(root.Metadata[beadmeta.SourceStoreRefMetadataKey])
 	if ref == "" {
 		return nil, false, false
 	}
 	if h.legs == nil {
-		if rig, ok := storeref.ScopeRigContext(ref); ok && rig == "" && !storeref.IsClassRef(ref) && h.graph != nil {
+		if rig, ok := storeref.ScopeRigContext(ref); ok && rig == "" && !storeref.IsClassRef(ref) && h.graph != nil &&
+			(h.cityName == "" || ref == "city:"+h.cityName) {
 			return h.graph, false, true
 		}
 		return nil, false, false
@@ -1765,31 +1783,44 @@ type wispGCBudget struct {
 	// reserve is how many walks take leaves untouched (an arm that must
 	// leave room for another).
 	reserve int
+	// took is how many walks the pass has started. The first is exempt from
+	// the deadline (not from ctx): a pass whose listings alone outlast the
+	// wall budget still makes progress.
+	took int
 }
 
+// wispGCClock is the wall clock the budget's deadline is set and checked on.
+// Package var so tests can advance it from a slow fake store instead of
+// sleeping.
+var wispGCClock = time.Now
+
 // take spends one walk, or reports that the pass may not start another: out
-// of walks (beyond the reserve), past the deadline, or stopping.
+// of walks (beyond the reserve), past the deadline (except for the pass's
+// first walk), or stopping.
 func (b *wispGCBudget) take() bool {
 	if b == nil {
 		return true
 	}
-	if b.walks <= b.reserve || b.stopped() {
+	if b.walks <= b.reserve || b.ctxDone() || (b.took > 0 && b.pastDeadline()) {
 		return false
 	}
 	b.walks--
+	b.took++
 	return true
 }
 
 // stopped reports whether the pass must stop starting work: its ctx is done
 // or its wall-clock deadline has passed.
 func (b *wispGCBudget) stopped() bool {
-	if b == nil {
-		return false
-	}
-	if b.ctx != nil && b.ctx.Err() != nil {
-		return true
-	}
-	return !b.deadline.IsZero() && !time.Now().Before(b.deadline)
+	return b.ctxDone() || b.pastDeadline()
+}
+
+func (b *wispGCBudget) ctxDone() bool {
+	return b != nil && b.ctx != nil && b.ctx.Err() != nil
+}
+
+func (b *wispGCBudget) pastDeadline() bool {
+	return b != nil && !b.deadline.IsZero() && !wispGCClock().Before(b.deadline)
 }
 
 // exhausted reports whether the pass has no walk left.
