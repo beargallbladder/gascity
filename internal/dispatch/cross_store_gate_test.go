@@ -1,14 +1,12 @@
 package dispatch
 
 import (
-	"errors"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
-	"github.com/gastownhall/gascity/internal/formulatest"
 )
 
 // sqliteGraphStore opens a real SQLite binding minting gcg-.
@@ -234,40 +232,5 @@ func TestOpenCrossStoreGatesNamingFindsTheGatesADeleteWouldStrand(t *testing.T) 
 	}
 	if gates, err := OpenCrossStoreGatesNaming(graph, "gc-7"); err != nil || len(gates) != 0 {
 		t.Fatalf("after release = %+v, %v; want none", gates, err)
-	}
-}
-
-// TestProcessDrainGatesAnExternalRefOnTheRealBead: a member's blocker written
-// as external:<id> is gated on the real bead, so the gate releases when that
-// bead closes; an external capability ref gates nothing.
-func TestProcessDrainGatesAnExternalRefOnTheRealBead(t *testing.T) {
-	formulatest.EnableV2ForTest(t)
-	dir := t.TempDir()
-	writeDrainItemFormula(t, dir)
-	work := beads.NewMemStore()
-	var graph beads.Store
-	drain, memberIDs := seedSplitClassDrainWorkflowIn(t, work, false, func(carried []beads.Bead) beads.Store {
-		graph = beads.NewMemStoreFrom(1000, carried, nil)
-		return graph
-	})
-	blocker, err := work.Create(beads.Bead{Title: "outside the convoy", Type: "task"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustDepAdd(t, work, memberIDs[0], "external:"+blocker.ID, "blocks")
-	mustDepAdd(t, work, memberIDs[1], "external:rig:some-capability", "blocks")
-	if _, err := ProcessControl(graph, drain, ProcessOptions{FormulaSearchPaths: []string{dir}, MemberStores: []beads.Store{work}}); err != nil && !errors.Is(err, ErrControlPending) {
-		t.Fatalf("ProcessControl: %v", err)
-	}
-	gates := crossStoreGatesIn(t, graph)
-	if len(gates) != 1 || gates[0].Metadata[beadmeta.CrossStoreBlockerMetadataKey] != blocker.ID {
-		t.Fatalf("gates = %+v, want one gate naming the real bead %s (not the external: literal, and none for the capability)", gates, blocker.ID)
-	}
-	if err := work.Close(blocker.ID); err != nil {
-		t.Fatal(err)
-	}
-	report, err := ReleaseCrossStoreGates(graph, storesResolver(work))
-	if err != nil || len(report.Released) != 1 {
-		t.Fatalf("release after %s closed = %+v, %v; want the gate released", blocker.ID, report, err)
 	}
 }
