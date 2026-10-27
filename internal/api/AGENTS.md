@@ -321,6 +321,10 @@ adopts it.
   initial message (`POST /sessions` with `message`) is an operator lane
   message op at the boundary under a minted key (`deliverInitialMessage`);
   only a failed proposal fails the create and rolls it back.
+- Wait withdrawal (`withdrawQueuedWaitNudges`): a wait whose nudge is a lane
+  notice holds its op id as `nudge_id`; an op id (`opjournal.IsOpID`) is
+  canceled in the op journal as `gc:wait`, any other id goes to the nudge
+  queue as before.
 - Run cancel (interrupt listed): one op per live holder session, keyed
   `run-cancel:<run id>` with the run as causation, awaited together;
   `succeeded` is interrupted, a failure or an op still open is a failure,

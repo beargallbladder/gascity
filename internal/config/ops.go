@@ -82,8 +82,9 @@ type OpsConfig struct {
 	// lane host can type into, gc session submit's local fallback proposes
 	// the op the API would, and mail --notify, sling --nudge and the
 	// hook-claim continuation propose lane notices (a mail notice is
-	// withdrawn once its mail is read or archived). Wait nudges keep their
-	// legacy delivery in this build.
+	// withdrawn once its mail is read or archived), and a ready wait's
+	// nudge is a lane notice from gc:wait, which finalizes the wait from its
+	// outcome.
 	// Listing interrupt switches the API's POST
 	// /v0/city/{cityName}/session/{id}/stop and run cancel onto the lane:
 	// each proposes an interrupt op the controller's lane host runs, and
