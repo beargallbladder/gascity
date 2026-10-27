@@ -7,6 +7,7 @@ import (
 	"io"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
@@ -207,14 +208,30 @@ func TestCrossStoreGateLaneLeavesASuspendedRigsBlockersUndecided(t *testing.T) {
 	}
 }
 
-// TestCrossStoreGateLaneReportsAnUnresolvedGateOnce: a gate whose blocker no
-// store holds is marked unresolved and announced ONCE, as control.stalled on
-// its drain control.
-func TestCrossStoreGateLaneReportsAnUnresolvedGateOnce(t *testing.T) {
+// TestCrossStoreGateLaneReportsAnUnresolvedControlOnce: gates whose blocker
+// no store holds are marked unresolved and announced ONCE per drain control —
+// one control.stalled for a control with two such gates, aligned with the
+// control dispatcher's emitter (actor controller, error_class pending,
+// first_seen the persisted anchor, the run id) — and not again next pass.
+func TestCrossStoreGateLaneReportsAnUnresolvedControlOnce(t *testing.T) {
 	c := newGateLaneCity(t)
 	var stderr bytes.Buffer
 	c.cr.stderr = &stderr
 	gate, _ := c.gate(t, "gc-404")
+	control := gate.Metadata[beadmeta.CrossStoreGateOwnerMetadataKey]
+	second, err := c.binding.Create(beads.Bead{
+		Title:  "waits for gc-405",
+		Type:   "gate",
+		Labels: []string{dispatch.CrossStoreGateLabel},
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey:          "gcg-root",
+			beadmeta.CrossStoreGateOwnerMetadataKey: control,
+			beadmeta.CrossStoreBlockerMetadataKey:   "gc-405",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.cr.releaseCrossStoreGates()
 	c.cr.releaseCrossStoreGates()
 	var stalled []events.Event
@@ -224,20 +241,52 @@ func TestCrossStoreGateLaneReportsAnUnresolvedGateOnce(t *testing.T) {
 		}
 	}
 	if len(stalled) != 1 {
-		t.Fatalf("control.stalled events = %d, want exactly 1 across two passes", len(stalled))
+		t.Fatalf("control.stalled events = %d, want exactly 1 for one control across two passes", len(stalled))
+	}
+	evt := stalled[0]
+	if evt.Actor != "controller" || evt.Subject != control || evt.RunID != "gcg-root" || evt.Message == "" {
+		t.Fatalf("event = %+v; want actor controller, subject %s, run gcg-root and a message", evt, control)
 	}
 	var payload events.ControlStalledPayload
-	if err := json.Unmarshal(stalled[0].Payload, &payload); err != nil {
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.BeadID != gate.Metadata[beadmeta.CrossStoreGateOwnerMetadataKey] {
-		t.Fatalf("payload = %+v, want the gate's drain control", payload)
+	anchor := mustBeadMeta(t, c.binding, gate.ID, beadmeta.CrossStoreGateUnresolvedAtMetadataKey)
+	if payload.BeadID != control || payload.ErrorClass != "pending" || payload.Attempts != 2 || payload.FirstSeen == "" || payload.FirstSeen != anchor {
+		t.Fatalf("payload = %+v; want control %s, pending, 2 gates, first_seen the persisted anchor %q", payload, control, anchor)
 	}
-	if payload.ErrorClass != "pending" {
-		t.Fatalf("error_class = %q, want pending (the drain is open and healable)", payload.ErrorClass)
+	for _, id := range []string{gate.ID, second.ID} {
+		if mustBeadMeta(t, c.binding, id, beadmeta.CrossStoreGateStateMetadataKey) != dispatch.CrossStoreGateStateUnresolved {
+			t.Fatalf("gate %s is not marked unresolved", id)
+		}
 	}
-	if got, _ := c.binding.Get(gate.ID); got.Metadata[beadmeta.CrossStoreGateStateMetadataKey] != dispatch.CrossStoreGateStateUnresolved {
-		t.Fatalf("gate state = %q, want unresolved", got.Metadata[beadmeta.CrossStoreGateStateMetadataKey])
+}
+
+func mustBeadMeta(t *testing.T, store beads.Store, id, key string) string {
+	t.Helper()
+	b, err := store.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.Metadata[key]
+}
+
+// TestCrossStoreGateLaneReadsNothingWhileTheCityIsQuiescent: a quiescent
+// city's stores are not touched, gates included.
+func TestCrossStoreGateLaneReadsNothingWhileTheCityIsQuiescent(t *testing.T) {
+	c := newGateLaneCity(t, "myrig")
+	blocker, err := c.work.Create(beads.Bead{Title: "blocker", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.gate(t, blocker.ID)
+	quiescent := new(atomic.Bool)
+	quiescent.Store(true)
+	c.cr.cs = &controllerState{beadsQuiescent: quiescent, cityBeadStore: c.work, storageRoutes: c.cr.storageRoutes, beadStores: c.cr.standaloneRigStores}
+	c.work.lists, c.work.gets = 0, 0
+	report := c.cr.releaseCrossStoreGates()
+	if report.Open != 0 || c.work.reads() != 0 || c.rigs["myrig"].reads() != 0 {
+		t.Fatalf("quiescent pass: report %+v, work reads %d, rig reads %d; want nothing read", report, c.work.reads(), c.rigs["myrig"].reads())
 	}
 }
 

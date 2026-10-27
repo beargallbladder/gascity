@@ -135,11 +135,17 @@ const (
 	// control that minted it. One gate serves every item of that drain waiting
 	// on the same blocker, and the gate is released once the control closes.
 	CrossStoreGateOwnerMetadataKey = "gc.cross_store_gate_owner"
-	// CrossStoreGateStateMetadataKey records why a cross-store gate is still
-	// open ("unresolved": no store holds its blocker) or why it was released.
+	// CrossStoreGateStateMetadataKey records a cross-store gate's state:
+	// "unresolved" (open; no store holds its blocker), "released" (closed by
+	// the controller; reopened if its blocker opens again) or "overridden"
+	// (closed by an operator; final).
 	CrossStoreGateStateMetadataKey = "gc.cross_store_gate_state"
-	CurrentRunIDMetadataKey        = "gc.current_run_id"
-	CwdMetadataKey                 = "gc.cwd"
+	// CrossStoreGateUnresolvedAtMetadataKey is when a cross-store gate was
+	// first found unresolved (RFC3339): the persisted anchor its control.stalled
+	// event reports as first_seen.
+	CrossStoreGateUnresolvedAtMetadataKey = "gc.cross_store_gate_unresolved_at"
+	CurrentRunIDMetadataKey               = "gc.current_run_id"
+	CwdMetadataKey                        = "gc.cwd"
 	// AttachFencePendingMetadataKey marks a fenced attach's sub-DAG root
 	// between speculative (deferred, non-runnable) creation and the CAS-last
 	// epoch fence committing. Cleared on activation; a root still carrying it
@@ -555,6 +561,7 @@ var KnownMetadataKeys = []string{
 	CrossStoreBlockerMetadataKey,
 	CrossStoreGateOwnerMetadataKey,
 	CrossStoreGateStateMetadataKey,
+	CrossStoreGateUnresolvedAtMetadataKey,
 	CurrentRunIDMetadataKey,
 	CwdMetadataKey,
 	AttachFencePendingMetadataKey,

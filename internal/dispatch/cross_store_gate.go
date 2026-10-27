@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
@@ -54,13 +56,30 @@ import (
 // a doctor finding) and an operator can override by closing the gate. A blocker
 // a store that could not be read MAY hold keeps its gate exactly as it is.
 //
+// # A blocker that reopens
+//
+// On a single-store city a closed blocker that is reopened holds its
+// dependents again. A gate follows it: a gate the controller released
+// (gc.cross_store_gate_state=released) is REOPENED when the drain finds its
+// blocker open again (ensureCrossStoreGate), and the release pass reopens the
+// released gates of a live drain whose blocker reopened. Only an operator's
+// close is final: a gate closed without the released marker is recorded as
+// gc.cross_store_gate_state=overridden the first time the drain sees it, and
+// is never reopened.
+//
 // # Identity
 //
 // One gate serves every item of one drain that waits on the same blocker. Its
 // id is derived from (control, blocker) under the store's own mint prefix, so
 // two processes that race to mint it collide on the store's duplicate-id check
-// and both end up with the one gate. A store that does not honor a pinned id
-// mints its own, and the gate is then found by its metadata.
+// and both end up with the one gate.
+//
+// The id is pinned only in a store that declares a mint prefix (IDPrefix) and
+// honors a pinned id: the SQLite engine and the native Dolt workspace engine a
+// binding is served from, and the CachingStore over either. A store that
+// declares no prefix (the in-memory test stores) mints its own id, and the
+// gate is found by its metadata (owner and blocker) instead; that path is
+// check-then-create and so not race-safe, which is why production stores pin.
 
 // CrossStoreGateLabel marks a gate bead that mirrors a blocker held in another
 // store.
@@ -75,9 +94,12 @@ const crossStoreGateType = "gate"
 const (
 	// CrossStoreGateStateUnresolved: no store holds the gate's blocker.
 	CrossStoreGateStateUnresolved = "unresolved"
-	// CrossStoreGateStateReleased: the gate was released (its close_reason
-	// says why).
+	// CrossStoreGateStateReleased: the controller released the gate (its
+	// close_reason says why). It is reopened if its blocker opens again.
 	CrossStoreGateStateReleased = "released"
+	// CrossStoreGateStateOverridden: an operator closed the gate. Final: the
+	// drain's items run whatever the blocker does.
+	CrossStoreGateStateOverridden = "overridden"
 )
 
 // crossStoreGateRoot is the workflow root a drain's gates belong to: the
@@ -104,23 +126,53 @@ func crossStoreGateID(store beads.Store, control beads.Bead, blockerID string) s
 	return prefix + "-xsg-" + hex.EncodeToString(sum[:6])
 }
 
-// gateAnswer reads an existing gate: its id when open, "" when it was released.
-func gateAnswer(gate beads.Bead) string {
-	if gate.Status == "closed" {
-		return ""
+// gateAnswer settles an existing gate for a blocker the drain just found OPEN
+// (or held by no store): an open gate holds; a gate the controller released is
+// reopened, because its blocker opened again; a gate an operator closed is
+// final, and its override is recorded the first time it is seen. It returns
+// the gate's id when it holds the item, "" when it does not.
+func gateAnswer(store beads.Store, gate beads.Bead) (string, error) {
+	if gate.Status != "closed" {
+		return gate.ID, nil
 	}
-	return gate.ID
+	switch gate.Metadata[beadmeta.CrossStoreGateStateMetadataKey] {
+	case CrossStoreGateStateReleased:
+		if err := reopenCrossStoreGate(store, gate.ID); err != nil {
+			return "", err
+		}
+		return gate.ID, nil
+	case CrossStoreGateStateOverridden:
+		return "", nil
+	default:
+		if err := store.SetMetadata(gate.ID, beadmeta.CrossStoreGateStateMetadataKey, CrossStoreGateStateOverridden); err != nil {
+			return "", fmt.Errorf("recording the operator override of cross-store gate %s: %w", gate.ID, err)
+		}
+		return "", nil
+	}
+}
+
+// reopenCrossStoreGate reopens a gate the controller released and clears its
+// released marker, so it holds its items again.
+func reopenCrossStoreGate(store beads.Store, id string) error {
+	if err := store.Reopen(id); err != nil {
+		return fmt.Errorf("reopening cross-store gate %s: %w", id, err)
+	}
+	if err := store.SetMetadata(id, beadmeta.CrossStoreGateStateMetadataKey, ""); err != nil {
+		return fmt.Errorf("clearing the released marker of cross-store gate %s: %w", id, err)
+	}
+	return nil
 }
 
 // ensureCrossStoreGate returns the open gate in store that holds control's work
-// back until blockerID closes, minting it on first use. It returns "" when the
-// gate was already released: the blocker closed, so it no longer constrains
-// the item, and a released gate is never reopened or replaced.
+// back until blockerID closes, minting it on first use. The caller has just
+// found the blocker open (or held by no store), so a gate the controller
+// released is reopened. It returns "" only when an operator closed the gate:
+// the operator's override is final.
 func ensureCrossStoreGate(store beads.Store, control beads.Bead, blockerID string) (string, error) {
 	pinned := crossStoreGateID(store, control, blockerID)
 	if pinned != "" {
 		if gate, err := beads.HandlesFor(store).Live.Get(pinned); err == nil {
-			return gateAnswer(gate), nil
+			return gateAnswer(store, gate)
 		} else if !errors.Is(err, beads.ErrNotFound) {
 			return "", fmt.Errorf("reading cross-store gate %s: %w", pinned, err)
 		}
@@ -145,7 +197,7 @@ func ensureCrossStoreGate(store beads.Store, control beads.Bead, blockerID strin
 				return gate.ID, nil
 			}
 		}
-		return "", nil
+		return gateAnswer(store, existing[0])
 	}
 	gate, err := store.Create(beads.Bead{
 		ID:     pinned,
@@ -162,7 +214,7 @@ func ensureCrossStoreGate(store beads.Store, control beads.Bead, blockerID strin
 		if pinned != "" {
 			// A racing minter won the pinned id: use its gate.
 			if raced, getErr := beads.HandlesFor(store).Live.Get(pinned); getErr == nil {
-				return gateAnswer(raced), nil
+				return gateAnswer(store, raced)
 			}
 		}
 		return "", fmt.Errorf("creating the cross-store gate for blocker %s: %w", blockerID, err)
@@ -206,6 +258,9 @@ type CrossStoreGateReport struct {
 	// NewlyUnresolved are the gates this pass marked unresolved (a subset of
 	// Unresolved): the transition a caller reports once.
 	NewlyUnresolved []beads.Bead
+	// Reopened are released gates of a live drain the pass reopened because
+	// their blocker opened again, by id.
+	Reopened []string
 }
 
 // ReleaseCrossStoreGates closes every open cross-store gate in store whose
@@ -230,25 +285,49 @@ func ReleaseCrossStoreGates(store beads.Store, resolve CrossStoreBlockerResolver
 	if err != nil {
 		return report, fmt.Errorf("listing open cross-store gates: %w", err)
 	}
+	released, err := store.List(beads.ListQuery{
+		Label:         CrossStoreGateLabel,
+		Status:        "closed",
+		Metadata:      map[string]string{beadmeta.CrossStoreGateStateMetadataKey: CrossStoreGateStateReleased},
+		IncludeClosed: true,
+		Live:          true,
+		TierMode:      beads.TierBoth,
+	})
+	if err != nil {
+		return report, fmt.Errorf("listing released cross-store gates: %w", err)
+	}
 	sort.Slice(gates, func(i, j int) bool { return gates[i].ID < gates[j].ID })
 	var open []beads.Bead
-	blockerSet := make(map[string]bool)
 	for _, gate := range gates {
-		if gate.Status == "closed" {
-			continue
+		if gate.Status != "closed" {
+			open = append(open, gate)
 		}
-		open = append(open, gate)
+	}
+	report.Open = len(open)
+	if len(open) == 0 && len(released) == 0 {
+		return report, nil
+	}
+	controls, err := gateControls(store, append(slices.Clone(open), released...))
+	if err != nil {
+		return report, err
+	}
+	// A released gate is a candidate to reopen only while its drain is live.
+	var reopenable []beads.Bead
+	for _, gate := range released {
+		if gate.Status == "closed" && gate.Metadata[beadmeta.CrossStoreGateStateMetadataKey] == CrossStoreGateStateReleased &&
+			controls[strings.TrimSpace(gate.Metadata[beadmeta.CrossStoreGateOwnerMetadataKey])] == gateControlLive {
+			reopenable = append(reopenable, gate)
+		}
+	}
+	sort.Slice(reopenable, func(i, j int) bool { return reopenable[i].ID < reopenable[j].ID })
+	blockerSet := make(map[string]bool)
+	for _, gate := range append(slices.Clone(open), reopenable...) {
 		if id := gateBlocker(gate); id != "" {
 			blockerSet[id] = true
 		}
 	}
-	report.Open = len(open)
-	if len(open) == 0 {
+	if len(blockerSet) == 0 && len(open) == 0 {
 		return report, nil
-	}
-	controls, err := gateControls(store, open)
-	if err != nil {
-		return report, err
 	}
 	blockers := make([]string, 0, len(blockerSet))
 	for id := range blockerSet {
@@ -260,6 +339,17 @@ func ReleaseCrossStoreGates(store beads.Store, resolve CrossStoreBlockerResolver
 		return report, fmt.Errorf("resolving %d cross-store blocker(s): %w", len(blockers), err)
 	}
 	var errs []error
+	for _, gate := range reopenable {
+		blockerID := gateBlocker(gate)
+		if blockerID == "" || undecided[blockerID] || blockerReleased(copies[blockerID]) {
+			continue
+		}
+		if err := reopenCrossStoreGate(store, gate.ID); err != nil {
+			errs = append(errs, fmt.Errorf("gate %s: %w", gate.ID, err))
+			continue
+		}
+		report.Reopened = append(report.Reopened, gate.ID)
+	}
 	for _, gate := range open {
 		release, reason, unresolved := judgeCrossStoreGate(gate, controls, copies, undecided)
 		switch {
@@ -268,10 +358,19 @@ func ReleaseCrossStoreGates(store beads.Store, resolve CrossStoreBlockerResolver
 			if gate.Metadata[beadmeta.CrossStoreGateStateMetadataKey] == CrossStoreGateStateUnresolved {
 				continue
 			}
-			if err := store.SetMetadata(gate.ID, beadmeta.CrossStoreGateStateMetadataKey, CrossStoreGateStateUnresolved); err != nil {
+			at := crossStoreGateNow().UTC().Format(time.RFC3339)
+			if err := store.SetMetadataBatch(gate.ID, map[string]string{
+				beadmeta.CrossStoreGateStateMetadataKey:        CrossStoreGateStateUnresolved,
+				beadmeta.CrossStoreGateUnresolvedAtMetadataKey: at,
+			}); err != nil {
 				errs = append(errs, fmt.Errorf("gate %s: recording an unresolved blocker: %w", gate.ID, err))
 				continue
 			}
+			if gate.Metadata == nil {
+				gate.Metadata = map[string]string{}
+			}
+			gate.Metadata[beadmeta.CrossStoreGateStateMetadataKey] = CrossStoreGateStateUnresolved
+			gate.Metadata[beadmeta.CrossStoreGateUnresolvedAtMetadataKey] = at
 			report.NewlyUnresolved = append(report.NewlyUnresolved, gate)
 		case release:
 			if err := store.SetMetadataBatch(gate.ID, map[string]string{
@@ -357,10 +456,26 @@ func judgeCrossStoreGate(gate beads.Bead, controls map[string]gateControlState, 
 	if len(held) == 0 {
 		return false, "", true
 	}
-	for _, b := range held {
-		if !beads.DependencySatisfied(b.Status, beads.ReadinessWorkOutcome(b.Metadata)) {
-			return false, "", false
-		}
+	if !blockerReleased(held) {
+		return false, "", false
 	}
 	return true, fmt.Sprintf("blocker %s closed", blockerID), false
 }
+
+// blockerReleased reports whether a blocker held as copies releases its
+// dependents: held somewhere, and closed — not closed blocked — in EVERY store
+// that holds it.
+func blockerReleased(copies []beads.Bead) bool {
+	if len(copies) == 0 {
+		return false
+	}
+	for _, b := range copies {
+		if !beads.DependencySatisfied(b.Status, beads.ReadinessWorkOutcome(b.Metadata)) {
+			return false
+		}
+	}
+	return true
+}
+
+// now is the clock gate timestamps read; a variable so a test can pin it.
+var crossStoreGateNow = time.Now

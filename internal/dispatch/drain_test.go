@@ -3421,3 +3421,72 @@ func TestProcessDrainGatesAnExternalRefOnTheRealBead(t *testing.T) {
 		t.Fatalf("release after %s closed = %+v, %v; want the gate released", blocker.ID, report, err)
 	}
 }
+
+// TestProcessDrainHoldsItsItemAgainWhenAReleasedBlockerReopens is single-store
+// parity for a blocker that reopens: open -> held, closed -> its gate released
+// and the item runnable, reopened -> the drain's next pass reopens the gate and
+// the item is held again, on a real SQLite binding.
+func TestProcessDrainHoldsItsItemAgainWhenAReleasedBlockerReopens(t *testing.T) {
+	formulatest.EnableV2ForTest(t)
+	dir := t.TempDir()
+	writeDrainItemFormula(t, dir)
+	work := beads.NewMemStore()
+	var graph beads.Store
+	drain, memberIDs := seedSplitClassDrainWorkflowIn(t, work, false, func(_ []beads.Bead) beads.Store {
+		store, err := beads.OpenSQLiteStore(t.TempDir(), beads.WithSQLiteStoreIDPrefix("gcg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.(interface{ CloseStore() error }).CloseStore() })
+		graph = store
+		return store
+	})
+	blocker, err := work.Create(beads.Bead{Title: "outside", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustDepAdd(t, work, memberIDs[0], blocker.ID, "blocks")
+	opts := ProcessOptions{FormulaSearchPaths: []string{dir}, MemberStores: []beads.Store{work}}
+	if _, err := ProcessControl(graph, drain, opts); err != nil && !errors.Is(err, ErrControlPending) {
+		t.Fatal(err)
+	}
+	manifest := mustDrainManifest(t, mustGetBead(t, graph, drain.ID))
+	runnable := func() bool {
+		t.Helper()
+		ready, err := graph.Ready()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := map[string]bool{}
+		for _, b := range ready {
+			ids[b.ID] = true
+		}
+		for _, id := range itemWorkflowBeadIDs(t, graph, manifest.Rows[0].ItemRootID) {
+			if ids[id] {
+				return true
+			}
+		}
+		return false
+	}
+	if runnable() {
+		t.Fatal("the item runs while its blocker is open")
+	}
+	if err := work.Close(blocker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReleaseCrossStoreGates(graph, storesResolver(work)); err != nil {
+		t.Fatal(err)
+	}
+	if !runnable() {
+		t.Fatal("the item is held after its blocker closed and its gate was released")
+	}
+	if err := work.Reopen(blocker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProcessControl(graph, mustGetBead(t, graph, drain.ID), opts); err != nil && !errors.Is(err, ErrControlPending) {
+		t.Fatal(err)
+	}
+	if runnable() {
+		t.Fatalf("blocker %s is open again but the item is runnable: the released gate stayed released", blocker.ID)
+	}
+}

@@ -81,41 +81,79 @@ func (cr *CityRuntime) releaseCrossStoreGates() dispatch.CrossStoreGateReport {
 	if len(report.Released) > 0 {
 		fmt.Fprintf(cr.stdout, "Cross-store gates: released %d (%s); their drain items may run\n", len(report.Released), strings.Join(report.Released, " ")) //nolint:errcheck // best-effort stdout
 	}
-	for _, gate := range report.NewlyUnresolved {
-		cr.recordUnresolvedCrossStoreGate(gate)
+	if len(report.Reopened) > 0 {
+		fmt.Fprintf(cr.stdout, "Cross-store gates: reopened %d (%s); their blockers opened again\n", len(report.Reopened), strings.Join(report.Reopened, " ")) //nolint:errcheck // best-effort stdout
 	}
+	cr.recordUnresolvedCrossStoreGates(report.NewlyUnresolved)
 	if err != nil {
 		fmt.Fprintf(cr.stderr, "%s: cross-store gates: %v\n", cr.logPrefix, err) //nolint:errcheck // best-effort stderr
 	}
 	return report
 }
 
-// recordUnresolvedCrossStoreGate makes a gate whose blocker no store holds
-// visible: once, on the transition, as a control.stalled event on its drain
-// control (error_class "pending": the drain is open and an operator can heal
-// it), and on stderr. `gc doctor` reports every such gate for as long as it is
-// open (cross-store-gates).
-func (cr *CityRuntime) recordUnresolvedCrossStoreGate(gate beads.Bead) {
-	blocker := gate.Metadata[beadmeta.CrossStoreBlockerMetadataKey]
-	control := gate.Metadata[beadmeta.CrossStoreGateOwnerMetadataKey]
-	msg := fmt.Sprintf("drain items wait on cross-store gate %s, whose blocker %s is held by no store this city federates; close the gate to release them", gate.ID, blocker)
-	fmt.Fprintf(cr.stderr, "%s: cross-store gates: %s\n", cr.logPrefix, msg) //nolint:errcheck // best-effort stderr
-	if cr.rec == nil {
+// recordUnresolvedCrossStoreGates makes gates whose blocker no store holds
+// visible: once per drain control per pass that newly found any, as one
+// control.stalled event on that control listing its gates, and on stderr.
+// `gc doctor` reports every such gate for as long as it is open
+// (cross-store-gates).
+//
+// The event is the one the control dispatcher emits for a control whose
+// pending wait outlived its horizon (emitControlStalled), field for field:
+// actor "controller", error_class "pending" (the drain is open and an operator
+// can heal it — restore the blocker, or close the gate), first_seen the
+// persisted anchor (the earliest gc.cross_store_gate_unresolved_at among the
+// control's gates), attempts the count of gates it waits on, the message and
+// the run id. A dedicated event type would need a new API schema entry for the
+// same operator question — "which control is stuck, since when, on what" —
+// that control.stalled already answers on the surface operators triage from.
+func (cr *CityRuntime) recordUnresolvedCrossStoreGates(gates []beads.Bead) {
+	if len(gates) == 0 {
 		return
 	}
-	cr.rec.Record(events.Event{
-		Type:    events.ControlStalled,
-		Actor:   "gc",
-		Subject: control,
-		Payload: events.ControlStalledPayloadJSON(events.ControlStalledPayload{
+	byControl := make(map[string][]beads.Bead)
+	var controls []string
+	for _, gate := range gates {
+		control := gate.Metadata[beadmeta.CrossStoreGateOwnerMetadataKey]
+		if _, seen := byControl[control]; !seen {
+			controls = append(controls, control)
+		}
+		byControl[control] = append(byControl[control], gate)
+	}
+	sort.Strings(controls)
+	for _, control := range controls {
+		group := byControl[control]
+		firstSeen := ""
+		var parts []string
+		for _, gate := range group {
+			if at := gate.Metadata[beadmeta.CrossStoreGateUnresolvedAtMetadataKey]; at != "" && (firstSeen == "" || at < firstSeen) {
+				firstSeen = at
+			}
+			parts = append(parts, fmt.Sprintf("%s (blocker %s)", gate.ID, gate.Metadata[beadmeta.CrossStoreBlockerMetadataKey]))
+		}
+		rootID := group[0].Metadata[beadmeta.RootBeadIDMetadataKey]
+		msg := fmt.Sprintf("drain %s waits on cross-store gate(s) %s whose blocker no store this city federates holds; restore the blocker, or close the gate to release its items", control, strings.Join(parts, ", "))
+		fmt.Fprintf(cr.stderr, "%s: cross-store gates: %s\n", cr.logPrefix, msg) //nolint:errcheck // best-effort stderr
+		if cr.rec == nil {
+			continue
+		}
+		payload := events.ControlStalledPayload{
 			BeadID:     control,
 			Kind:       "drain",
-			RootBeadID: gate.Metadata[beadmeta.RootBeadIDMetadataKey],
+			RootBeadID: rootID,
 			ErrorClass: "pending",
-			FirstSeen:  time.Now().UTC().Format(time.RFC3339),
+			FirstSeen:  firstSeen,
+			Attempts:   len(group),
 			Error:      msg,
-		}),
-	})
+		}
+		cr.rec.Record(events.Event{
+			Type:    events.ControlStalled,
+			Actor:   "controller",
+			Subject: control,
+			Message: fmt.Sprintf("control bead %s stalled since %s: %s", control, firstSeen, msg),
+			Payload: events.ControlStalledPayloadJSON(payload),
+			RunID:   rootID,
+		})
+	}
 }
 
 // crossStoreBlockerResolver reads every gate blocker from every work store a
