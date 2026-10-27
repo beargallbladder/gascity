@@ -477,7 +477,7 @@ func checkNoMoleculeChildren(q BeadQuerier, beadID string, scope attachmentScope
 		if errors.Is(err, beads.ErrNotFound) {
 			return nil
 		}
-		return fmt.Errorf("could not verify molecule attachment for %s: %w", beadID, err)
+		return &AttachmentProbeError{BeadID: beadID, Err: err}
 	}
 
 	for _, located := range attachments {
@@ -507,6 +507,21 @@ func checkNoMoleculeChildren(q BeadQuerier, beadID string, scope attachmentScope
 	}
 	return nil
 }
+
+// AttachmentProbeError reports that the attach guard could not read a source
+// bead's attachment (a store error, not a not-found), so it cannot tell
+// whether a live molecule is attached and refuses rather than risk pouring a
+// second one. It is a store fault, not a conflict: the API answers it 5xx.
+type AttachmentProbeError struct {
+	BeadID string
+	Err    error
+}
+
+func (e *AttachmentProbeError) Error() string {
+	return fmt.Sprintf("could not verify molecule attachment for %s: %v", e.BeadID, e.Err)
+}
+
+func (e *AttachmentProbeError) Unwrap() error { return e.Err }
 
 // MoleculeAttachedError reports that a bead already has a live, non-workflow
 // molecule/wisp attachment blocking a new formula attach. It is distinct from
@@ -566,12 +581,14 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, scope a
 		workflowID string
 	}
 	var workflowConflicts []workflowConflict
+	var probeErrs []error
 	for _, child := range open {
 		attachments, err := CollectAttachments(child, q, scope.stores()...)
 		if err != nil && len(attachments) == 0 {
 			if errors.Is(err, beads.ErrNotFound) {
 				continue
 			}
+			probeErrs = append(probeErrs, &AttachmentProbeError{BeadID: child.ID, Err: err})
 			problems = append(problems, fmt.Sprintf("%s (could not verify molecule attachment: %v)", child.ID, err))
 			continue
 		}
@@ -606,6 +623,11 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, scope a
 	}
 	summary := fmt.Errorf("cannot use --on: beads already have attached molecules: %s",
 		strings.Join(problems, ", "))
+	if len(probeErrs) > 0 {
+		// A probe that could not complete is a store fault, not a conflict:
+		// carry the typed errors so a caller (the API) answers it as one.
+		summary = errors.Join(append([]error{summary}, probeErrs...)...)
+	}
 	if len(workflowConflicts) == 0 {
 		return summary
 	}

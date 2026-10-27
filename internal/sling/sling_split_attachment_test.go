@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -400,4 +401,46 @@ func TestAttachGuardFailsClosedOnAnUnreadableAttachment(t *testing.T) {
 	if err := checkBatchNoMoleculeChildren(work, []beads.Bead{src}, dangling, &result, false); err != nil {
 		t.Fatalf("batch check with a dangling molecule_id: %v, want no refusal", err)
 	}
+}
+
+// Review 6b: a routed bead re-slung with a DIFFERENT --on formula. An
+// unassigned source keeps the attach path's burn-and-attach (the stale
+// molecule is reported in AutoBurned); a source the target already holds
+// fails with MoleculeAttachedError, because attaching would double up on work
+// in progress.
+func TestSplitSlingDifferentOnFormulaBurnsUnassignedAndRefusesAssigned(t *testing.T) {
+	forEachSlingTopology(t, func(t *testing.T, env splitAttachEnv) {
+		t.Run("unassigned", func(t *testing.T) {
+			src := env.source(t, "")
+			first, err := env.sling(t, src.ID, splitAttachVaporA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := env.work.SetMetadata(src.ID, beadmeta.RoutedToMetadataKey, "mayor"); err != nil {
+				t.Fatal(err)
+			}
+			second, err := env.sling(t, src.ID, splitAttachVaporB)
+			if err != nil {
+				t.Fatalf("second --on onto an unassigned source: %v, want burn-and-attach", err)
+			}
+			if !slices.Contains(second.AutoBurned, first.WispRootID) {
+				t.Fatalf("AutoBurned = %v, want the stale molecule %s", second.AutoBurned, first.WispRootID)
+			}
+		})
+		t.Run("assigned", func(t *testing.T) {
+			src := env.source(t, "mayor")
+			first, err := env.sling(t, src.ID, splitAttachVaporA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := env.work.SetMetadata(src.ID, beadmeta.RoutedToMetadataKey, "mayor"); err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.sling(t, src.ID, splitAttachVaporB)
+			var molErr *MoleculeAttachedError
+			if !errors.As(err, &molErr) || molErr.AttachmentID != first.WispRootID {
+				t.Fatalf("second --on onto a held source: err=%v, want MoleculeAttachedError naming %s", err, first.WispRootID)
+			}
+		})
+	})
 }

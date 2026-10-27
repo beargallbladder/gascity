@@ -1436,3 +1436,35 @@ func TestSlingFailsWhenGraphBindingScanFails(t *testing.T) {
 		t.Fatalf("source workflow_id = %q, want a refused launch to leave source metadata untouched", reloaded.Metadata["workflow_id"])
 	}
 }
+
+// Review 6b: a second --on whose formula would double up on an assigned
+// source's live molecule is a 409, not a 400.
+func TestSlingOnAssignedSourceWithALiveMoleculeIsAConflict(t *testing.T) {
+	srv, state := newSlingTestServer(t)
+	formulaDir := t.TempDir()
+	state.cfg.FormulaLayers.City = []string{formulaDir}
+	for _, name := range []string{"first-work", "second-work"} {
+		body := "formula = \"" + name + "\"\nversion = 1\n\n[[steps]]\nid = \"work\"\ntitle = \"Work\"\n"
+		if err := os.WriteFile(filepath.Join(formulaDir, name+".toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := state.stores["myrig"]
+	source, err := store.Create(beads.Bead{ID: "BL-77", Title: "task", Type: "task", Assignee: "someone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(formula string) *httptest.ResponseRecorder {
+		body := `{"target":"myrig/worker","formula":"` + formula + `","attached_bead_id":"` + source.ID + `"}`
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, newPostRequest(cityURL(state, "/sling"), strings.NewReader(body)))
+		return rec
+	}
+	if rec := post("first-work"); rec.Code >= 300 {
+		t.Fatalf("first --on: status %d body %s", rec.Code, rec.Body.String())
+	}
+	rec := post("second-work")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("second --on onto a live molecule: status %d body %s, want 409", rec.Code, rec.Body.String())
+	}
+}

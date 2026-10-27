@@ -181,7 +181,14 @@ func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDep
 	if check.Idempotent {
 		decision, probeErr := onFormulaNeedsAttachment(opts, querier, deps)
 		switch {
+		case decision.Conflict != nil && decision.ConflictSourceUnassigned:
+			// An unassigned source keeps the attach path's burn-and-attach
+			// semantics: nobody is working the live attachment, so the new
+			// formula replaces it (reported in AutoBurned).
+			check.Idempotent = false
 		case decision.Conflict != nil:
+			// An assigned source: attaching would double up on work in
+			// progress, so the request fails instead of being dropped.
 			return false, decision.Conflict
 		case probeErr != nil:
 			// The attachment probe failed, so we cannot prove the routed bead
@@ -292,18 +299,25 @@ type attachmentDecision struct {
 	// Assignee is the claiming identity when SkippedForClaim is true.
 	Assignee string
 	// Conflict is set when an explicit --on names a formula other than the
-	// one the bead's live attachment was poured from. The sling must fail
-	// with it rather than read as an idempotent no-op.
-	Conflict *MoleculeAttachedError
+	// one the bead's live attachment was poured from. The sling must not read
+	// as an idempotent no-op: an unassigned source (ConflictSourceUnassigned)
+	// falls through to the attach path, which burns the stale attachment and
+	// attaches the new formula; an assigned one fails with it.
+	Conflict                 *MoleculeAttachedError
+	ConflictSourceUnassigned bool
 }
 
 // conflictingOnFormulaAttachment reports a live attachment that an explicit
 // --on formula would collide with: one whose recorded formula differs from the
 // requested one. An attachment that records no formula, or a sling that only
 // implies its formula through default_sling_formula, never conflicts here.
+//
+// Only a legacy molecule/wisp attachment conflicts here. A live graph.v2
+// workflow attachment keeps its own guard on the graph path (the
+// source-workflow lock and its ConflictError), unchanged.
 func conflictingOnFormulaAttachment(opts SlingOpts, live beads.Bead) *MoleculeAttachedError {
 	requested := strings.TrimSpace(opts.OnFormula)
-	if requested == "" {
+	if requested == "" || IsWorkflowAttachment(live) {
 		return nil
 	}
 	attached := strings.TrimSpace(live.Metadata[beadmeta.FormulaNameMetadataKey])
@@ -345,7 +359,11 @@ func onFormulaNeedsAttachment(opts SlingOpts, querier BeadQuerier, deps SlingDep
 		// idempotent no-op would silently drop; report the live attachment
 		// instead, as the attach path does for an assigned source.
 		if conflict := conflictingOnFormulaAttachment(opts, live.Bead); conflict != nil {
-			return attachmentDecision{Conflict: conflict}, nil
+			unassigned := false
+			if src, ok := BeadFromGetters(opts.BeadOrFormula, querier, deps.Store); ok {
+				unassigned = strings.TrimSpace(src.Assignee) == ""
+			}
+			return attachmentDecision{Conflict: conflict, ConflictSourceUnassigned: unassigned}, nil
 		}
 		return attachmentDecision{}, nil
 	}
