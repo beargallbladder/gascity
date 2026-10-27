@@ -98,6 +98,63 @@ func TestGcBdSplitDeleteRefusesABindingDependency(t *testing.T) {
 	if g := bdClassFlipGuard(splitGuardTestCity(), scope, []string{"delete", "demo-3"}, deps); g.refusal != "" {
 		t.Errorf("deleting a bead nothing in the binding depends on was refused: %q", g.refusal)
 	}
+
+	// Round-3 must-fix 3: every id must name exactly one bead (real bd 1.3.2
+	// deleted tt-vrt for `bd delete vrt --force`), the override included,
+	// and --cascade is refused.
+	exact := splitTestDeps(nil, func(id string) (beads.Bead, bdReadResult) {
+		switch id {
+		case "demo-1":
+			return beads.Bead{ID: id, Type: "task"}, bdReadFound
+		case "vrt":
+			return beads.Bead{}, bdReadNotFound
+		case "dem":
+			return beads.Bead{}, bdReadCollision
+		}
+		return beads.Bead{}, bdReadFailed
+	})
+	for argv, want := range map[string]string{
+		"delete vrt --force":                              "no bead \"vrt\"",
+		"delete dem --force":                              "a short or partial id",
+		"delete demo-1 vrt --force":                       "no bead \"vrt\"",
+		"delete vrt --force " + bdDeleteAllowDanglingFlag: "no bead \"vrt\"",
+		"delete demo-1 --cascade --force":                 "--cascade",
+		"delete demo-x":                                   "could not read",
+	} {
+		g := bdClassFlipGuard(splitGuardTestCity(), scope, strings.Fields(argv), exact)
+		if !strings.Contains(g.refusal, want) {
+			t.Errorf("gc bd %s: refusal = %q, want %q", argv, g.refusal, want)
+		}
+	}
+}
+
+// TestBdOpenCrossStoreGatesNaming: an open S3b drain gate whose
+// gc.cross_store_blocker names a work bead holds that bead; a closed one, or
+// one naming another bead, does not.
+func TestBdOpenCrossStoreGatesNaming(t *testing.T) {
+	store := beads.NewMemStore()
+	mk := func(blocker string, closed bool) string {
+		b, err := store.Create(beads.Bead{Title: "gate", Type: "gate", Metadata: map[string]string{bdCrossStoreBlockerKey: blocker}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if closed {
+			if err := store.Close(b.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return b.ID
+	}
+	open := mk("demo-1", false)
+	mk("demo-1", true)
+	mk("demo-2", false)
+	got, err := bdOpenCrossStoreGatesNaming(store, "demo-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != open {
+		t.Fatalf("open gates naming demo-1 = %v, want [%s]", got, open)
+	}
 }
 
 // TestReaperPurgeAgeStaysAboveTheGateSweep pins the delete guard's other half:
@@ -133,10 +190,19 @@ func TestReaperPurgeAgeStaysAboveTheGateSweep(t *testing.T) {
 
 // TestGcBdRefusalsNeverAdviseRawBd is review must-fix 2: no refusal tells
 // the operator to run bd itself, which bypasses every guard. It checks the
-// tables, every string literal of the files that write refusals (a command's
-// cobra help text aside), and the documents the refusals point at.
+// tables, every string literal of the files that write refusals (cobra
+// Short, Long and Example included), and the documents the refusals point at.
 func TestGcBdRefusalsNeverAdviseRawBd(t *testing.T) {
 	advice := regexp.MustCompile("(?i)(\\b(run|use|try|call|invoke|via|with|through)\\s+`?(raw\\s+|plain\\s+|the\\s+)?bd(\\s|`|$|\\.|,))|bd directly|raw bd|bd itself|outside gc|bypass")
+	for _, bad := range []string{
+		"If you need auto-export behavior, invoke bd directly.",
+		"stop the city and run bd init in the scope",
+		"use `bd backup restore`",
+	} {
+		if !advice.MatchString(bad) {
+			t.Fatalf("the raw-bd advice pattern misses %q", bad)
+		}
+	}
 	check := func(where, s string) {
 		if advice.MatchString(s) {
 			t.Errorf("%s advises raw bd: %q", where, s)
@@ -180,12 +246,6 @@ func TestGcBdRefusalsNeverAdviseRawBd(t *testing.T) {
 			t.Fatal(err)
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
-			// A cobra command's own help text is not a refusal.
-			if kv, ok := n.(*ast.KeyValueExpr); ok {
-				if key, ok := kv.Key.(*ast.Ident); ok && (key.Name == "Short" || key.Name == "Long" || key.Name == "Example") {
-					return false
-				}
-			}
 			lit, ok := n.(*ast.BasicLit)
 			if !ok || lit.Kind != token.STRING {
 				return true

@@ -59,7 +59,10 @@ func TestGcBdShippedInvocationsAreAllowedOnSplit(t *testing.T) {
 			pinned := inv
 			deps.inventory = func() (*bdflags.Inventory, error) { return pinned, nil }
 			g := bdClassFlipGuard(splitGuardTestCity(), t.TempDir(), row.Argv, deps)
-			refused := g.refusal != "" && !strings.Contains(g.refusal, "read") // a missing input file in this test
+			// A file the invocation names (--metadata @file, delete --from-file,
+			// batch -f) does not exist in this test's scope: that refusal is the
+			// test's, not the allowlist's.
+			refused := g.refusal != "" && !strings.Contains(g.refusal, "no such file or directory")
 			if _, known := bdSplitKnownRefusedShipped[key]; known {
 				seenRefused[key] = true
 				if !refused {

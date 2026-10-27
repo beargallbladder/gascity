@@ -680,11 +680,20 @@ func bdImportGlobalTakesValue(name string) bool {
 	return false
 }
 
-// judgeBdDelete refuses deleting a work bead that a class-binding bead
-// depends on: the binding's edge would dangle, and a dependency on a missing
-// bead is one no Ready computation clears. --gc-allow-dangling-edges (gc's
-// own flag) deletes anyway.
+// judgeBdDelete judges `gc bd delete`. Every id (positional or from
+// --from-file) must name exactly one bead of this work store: bd resolves a
+// short or partial id to whatever bead it prefixes, so a delete is checked
+// against the bead it would remove, like every other judged write. Deleting a
+// work bead that a class-binding bead depends on, or that an open cross-store
+// drain gate waits on (gc.cross_store_blocker), is refused: the binding's edge
+// or gate would dangle, and a dependency on a missing bead is one no Ready
+// computation clears. --gc-allow-dangling-edges (gc's own flag) overrides that
+// check, not the id resolution. --cascade is refused: it deletes dependents gc
+// has not judged.
 func judgeBdDelete(in bdClassGuardInput) bdClassGuard {
+	if in.args.Bool("--cascade") {
+		return in.refuse("gc bd delete --cascade: refused on this split city: it deletes every dependent bd finds, which gc does not judge one by one. Delete the beads by id instead. Nothing was written.")
+	}
 	ids := slices.Clone(in.args.positionals)
 	for _, f := range in.args.Values("--from-file") {
 		path := f
@@ -701,7 +710,15 @@ func judgeBdDelete(in bdClassGuardInput) bdClassGuard {
 			}
 		}
 	}
-	if in.gcFlag || len(ids) == 0 {
+	if len(ids) == 0 {
+		return in.pass()
+	}
+	for _, id := range ids {
+		if _, result := in.read(id); result != bdReadFound {
+			return in.refuse("%s", in.readRefusal(id, result))
+		}
+	}
+	if in.gcFlag {
 		return in.pass()
 	}
 	if in.bindingDependents == nil {
@@ -713,7 +730,7 @@ func judgeBdDelete(in bdClassGuardInput) bdClassGuard {
 	}
 	for _, id := range ids {
 		if d := deps[id]; len(d) > 0 {
-			return in.refuse("gc bd delete %s: refused on this split city: %s in the class binding depend(s) on it, and deleting it would leave that dependency dangling. Close it instead, or re-run with %s if the dangling edge is intended. Nothing was written.", id, strings.Join(d, ", "), bdDeleteAllowDanglingFlag)
+			return in.refuse("gc bd delete %s: refused on this split city: %s in the class binding depend(s) or wait(s) on it, and deleting it would leave that edge or gate dangling. Close it instead, or re-run with %s if the dangling edge is intended. Nothing was written.", id, strings.Join(d, ", "), bdDeleteAllowDanglingFlag)
 		}
 	}
 	return in.pass()
