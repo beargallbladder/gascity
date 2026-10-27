@@ -66,6 +66,15 @@ type AttachedBead struct {
 // DB-child attachments (beads whose parent is this bead) are listed through
 // childQuerier and are attributed to the LAST store in stores — the parent's
 // own store, since a child shares its parent's ledger.
+//
+// Ordering risk: on a migrated city the binding holds relics whose ids keep
+// their work prefix, and bd can mint a work id that collides with one. A
+// molecule_id naming such a reused id resolves to the binding's relic, not to
+// the work-store molecule, because the graph store is asked first. The guard
+// then decides on the relic's status; it never mutates the work molecule.
+// Collisions are rare (bd reuses an id only after its row is gone) and the
+// relic census bounds the population; the by-id residency plan is the place to
+// settle it if it ever matters.
 func CollectAttachments(parent beads.Bead, childQuerier BeadChildQuerier, stores ...beads.Store) ([]AttachedBead, error) {
 	stores = nonNilStores(stores)
 	var (
@@ -494,7 +503,7 @@ func checkNoMoleculeChildren(q BeadQuerier, beadID string, scope attachmentScope
 				WorkflowIDs:  []string{attached.ID},
 			}
 		}
-		if parentUnassigned && located.Store != nil {
+		if parentUnassigned && located.Store != nil && !attachmentHasWorkInProgress(located) {
 			if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
 				if clearErr := clearAttachmentMetadata(scope.work, parent, attached); clearErr != nil {
 					return clearErr
@@ -522,6 +531,27 @@ func (e *AttachmentProbeError) Error() string {
 }
 
 func (e *AttachmentProbeError) Unwrap() error { return e.Err }
+
+// attachmentHasWorkInProgress reports whether any bead of the attachment's
+// subtree is in progress (someone is working a step), or the subtree cannot be
+// read. An unassigned source's stale attachment is burned to make room for a
+// new one, but not one a worker is in the middle of: the attach is refused
+// instead. Fails closed: an unreadable subtree counts as in progress.
+func attachmentHasWorkInProgress(a AttachedBead) bool {
+	if a.Store == nil {
+		return true
+	}
+	subtree, err := molecule.ListSubtree(a.Store, a.Bead.ID)
+	if err != nil {
+		return true
+	}
+	for _, b := range subtree {
+		if b.Status == "in_progress" {
+			return true
+		}
+	}
+	return false
+}
 
 // MoleculeAttachedError reports that a bead already has a live, non-workflow
 // molecule/wisp attachment blocking a new formula attach. It is distinct from
@@ -606,7 +636,7 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, scope a
 				workflowConflicts = append(workflowConflicts, workflowConflict{childID: child.ID, workflowID: attached.ID})
 				continue
 			}
-			if childUnassigned && located.Store != nil {
+			if childUnassigned && located.Store != nil && !attachmentHasWorkInProgress(located) {
 				if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
 					if clearErr := clearAttachmentMetadata(scope.work, child, attached); clearErr != nil {
 						return clearErr

@@ -1468,3 +1468,40 @@ func TestSlingOnAssignedSourceWithALiveMoleculeIsAConflict(t *testing.T) {
 		t.Fatalf("second --on onto a live molecule: status %d body %s, want 409", rec.Code, rec.Body.String())
 	}
 }
+
+// probeFailingStore fails the read of one id with a store error (not a
+// not-found), the way an unreachable backing answers.
+type probeFailingStore struct {
+	beads.Store
+	failID string
+}
+
+func (s probeFailingStore) Get(id string) (beads.Bead, error) {
+	if id == s.failID {
+		return beads.Bead{}, errors.New("store unavailable")
+	}
+	return s.Store.Get(id)
+}
+
+// Re-review M26: an attachment probe the guard could not complete is a store
+// fault, answered 500, not a 400 the client should fix.
+func TestSlingAttachmentProbeFailureIsAServerError(t *testing.T) {
+	srv, state := newSlingTestServer(t)
+	formulaDir := t.TempDir()
+	state.cfg.FormulaLayers.City = []string{formulaDir}
+	if err := os.WriteFile(filepath.Join(formulaDir, "probe-work.toml"), []byte("formula = \"probe-work\"\nversion = 1\n\n[[steps]]\nid = \"work\"\ntitle = \"Work\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inner := state.stores["myrig"]
+	source, err := inner.Create(beads.Bead{ID: "BL-88", Title: "task", Type: "task", Assignee: "someone", Metadata: map[string]string{"molecule_id": "gc-999"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.stores["myrig"] = probeFailingStore{Store: inner, failID: "gc-999"}
+	body := `{"target":"myrig/worker","formula":"probe-work","attached_bead_id":"` + source.ID + `"}`
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newPostRequest(cityURL(state, "/sling"), strings.NewReader(body)))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("sling with an unreadable attachment: status %d body %s, want 500", rec.Code, rec.Body.String())
+	}
+}

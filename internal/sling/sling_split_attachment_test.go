@@ -467,3 +467,52 @@ func TestAttachedRootOnlyWispRecordsItsSource(t *testing.T) {
 		}
 	})
 }
+
+// Re-review nit: an unassigned source's stale attachment is burned to make
+// room for a new formula, but not while one of its steps is in progress: the
+// re-sling is refused instead.
+func TestSplitSlingDoesNotBurnAnAttachmentWithWorkInProgress(t *testing.T) {
+	forEachSlingTopology(t, func(t *testing.T, env splitAttachEnv) {
+		src := env.source(t, "")
+		first, err := env.sling(t, src.ID, splitAttachPouredA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner := env.work
+		kids, err := owner.Children(first.WispRootID)
+		if err != nil || len(kids) == 0 {
+			t.Fatalf("children of %s: %v (n=%d)", first.WispRootID, err, len(kids))
+		}
+		inProgress := "in_progress"
+		if err := owner.Update(kids[0].ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = env.sling(t, src.ID, splitAttachPouredA)
+		var molErr *MoleculeAttachedError
+		if !errors.As(err, &molErr) {
+			t.Fatalf("re-sling over an attachment with a step in progress: err=%v, want MoleculeAttachedError", err)
+		}
+		root, err := owner.Get(first.WispRootID)
+		if err != nil || root.Status == "closed" {
+			t.Fatalf("attachment %s was burned while a step was in progress (status=%q err=%v)", first.WispRootID, root.Status, err)
+		}
+	})
+}
+
+// Re-review M18: the different-formula --on rule covers legacy molecule
+// attachments only; a live graph.v2 workflow keeps its own guard.
+func TestConflictingOnFormulaRuleSkipsWorkflowAttachments(t *testing.T) {
+	opts := SlingOpts{BeadOrFormula: "gc-1", OnFormula: "other"}
+	workflow := beads.Bead{ID: "gcg-1", Type: "task", Metadata: map[string]string{
+		beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+		beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+		beadmeta.FormulaNameMetadataKey:     "first",
+	}}
+	if got := conflictingOnFormulaAttachment(opts, workflow); got != nil {
+		t.Fatalf("conflictingOnFormulaAttachment on a workflow attachment = %v, want nil", got)
+	}
+	molecule := beads.Bead{ID: "gcg-2", Type: "molecule", Metadata: map[string]string{beadmeta.FormulaNameMetadataKey: "first"}}
+	if got := conflictingOnFormulaAttachment(opts, molecule); got == nil {
+		t.Fatal("conflictingOnFormulaAttachment on a legacy molecule with another formula = nil, want a conflict")
+	}
+}
