@@ -49,8 +49,16 @@ func newCLILaneCityOver(t *testing.T, store beads.Store, opts ...laneFixtureOpt)
 	f := newLaneFixtureOver(t, store, opts...)
 	f.cfg.Ops.Authoritative = []string{string(opjournal.KindMessage)}
 	c := &cliLaneCity{laneFixture: f, env: map[string]string{}, ringReply: "ok"}
-	oldClock, oldLookup, oldRing := cliOpClock, cliOpLookupEnv, cliLaneRing
-	t.Cleanup(func() { cliOpClock, cliOpLookupEnv, cliLaneRing = oldClock, oldLookup, oldRing })
+	oldClock, oldLookup, oldRing, oldOpen := cliOpClock, cliOpLookupEnv, cliLaneRing, openNudgeWorkStore
+	t.Cleanup(func() {
+		cliOpClock, cliOpLookupEnv, cliLaneRing, openNudgeWorkStore = oldClock, oldLookup, oldRing, oldOpen
+	})
+	// The legacy path queues a nudge through the city's nudges store. The
+	// fixture's city is a bare directory, so the real opener resolves the
+	// default bd provider and starts a dolt sql-server that outlives the test.
+	// Every nudge store opened from here is the fixture's own (lane tests run
+	// serially, as the seam requires).
+	openNudgeWorkStore = func(string, string) (beads.Store, error) { return store, nil }
 	cliOpClock = f.clk
 	cliOpLookupEnv = func(k string) (string, bool) { v, ok := c.env[k]; return v, ok }
 	// No controller answers by default: the mode is unknown.
@@ -126,13 +134,11 @@ func TestCLILaneNudgePolicy(t *testing.T) {
 // With message listed, a nudge is one lane op: no legacy op, no queue item,
 // whatever ops.content says.
 func TestSessionNudgeLaneWritesOneLaneOp(t *testing.T) {
-	for _, gate := range []string{"", "auto", "require"} {
+	for _, gate := range []string{"off", "auto", "require"} {
 		for _, mode := range []nudgeDeliveryMode{nudgeDeliveryWaitIdle, nudgeDeliveryImmediate, nudgeDeliveryQueue} {
 			t.Run(gate+"/"+string(mode), func(t *testing.T) {
 				c := newCLILaneCity(t)
-				if gate != "" {
-					c.env["GC_OPS_CONTENT"] = gate
-				}
+				c.env["GC_OPS_CONTENT"] = gate
 				code, stdout, stderr := c.nudge(mode, "", true, cliLaneTestMessage)
 				if code != 0 {
 					t.Fatalf("nudge = %d; stderr=%s", code, stderr)
@@ -179,21 +185,19 @@ func TestSessionNudgeLaneWritesOneLaneOp(t *testing.T) {
 // With the list empty, the nudge takes OJ-5's path: a legacy op under auto,
 // none with the gate off, and no lane op either way.
 func TestSessionNudgeListEmptyKeepsOJ5Path(t *testing.T) {
-	for _, gate := range []string{"", "auto"} {
+	for _, gate := range []string{"off", "auto"} {
 		t.Run("gate="+gate, func(t *testing.T) {
 			c := newCLILaneCity(t)
 			c.cfg.Ops.Authoritative = nil
 			c.target = resolveNudgeTargetFromSessionInfo(c.dir, c.cfg, c.targetInfo(t))
-			if gate != "" {
-				c.env["GC_OPS_CONTENT"] = gate
-			}
+			c.env["GC_OPS_CONTENT"] = gate
 			code, stdout, stderr := c.nudge(nudgeDeliveryImmediate, "", false, cliLaneTestMessage)
 			if code != 0 || stdout != "Nudged "+c.target.agentKey()+"\n" {
 				t.Fatalf("nudge = %d, stdout %q; stderr=%s", code, stdout, stderr)
 			}
 			ops := c.ops(t)
 			switch gate {
-			case "":
+			case "off":
 				if len(ops) != 0 {
 					t.Fatalf("op rows %+v, want none with the gate off", ops)
 				}
@@ -236,8 +240,18 @@ func TestSessionNudgeLaneRoutesUnservedSessionsLegacy(t *testing.T) {
 				t.Fatalf("lane op %+v for an unserved protocol runtime", op)
 			}
 		}
-		if c.queuedItems(t) != 1 {
-			t.Fatal("the legacy path did not queue the nudge")
+		pending, _, _, err := listQueuedNudgesForTarget(c.dir, c.target, time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatalf("listing queued nudges: %v", err)
+		}
+		if len(pending) != 1 {
+			t.Fatalf("the legacy path queued %d nudges, want 1", len(pending))
+		}
+		// The queue's shadow bead lands in the fixture's store, never in a
+		// store a real provider would open (and start a server for).
+		shadow, open, err := nudgeShadows(beads.NudgesStore{Store: c.store}).Find(pending[0].ID)
+		if err != nil || !open || shadow.BeadID != pending[0].BeadID {
+			t.Fatalf("queued nudge %s's shadow in the fixture store = %+v (open %v, err %v), want bead %q", pending[0].ID, shadow, open, err, pending[0].BeadID)
 		}
 	})
 	t.Run("no session row", func(t *testing.T) {
