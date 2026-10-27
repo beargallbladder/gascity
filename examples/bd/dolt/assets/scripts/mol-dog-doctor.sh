@@ -226,8 +226,12 @@ fi
 # recovery restores from. DBs with neither are reported as a coverage gap
 # rather than silently excluded — the exclusion is how unconfigured
 # production DBs went unbacked-up until journal corruption made them
-# unrecoverable (#3176). mol-dog-backup.sh configures the backup on its next
-# run, so this warning self-heals unless the backup dog itself is failing.
+# unrecoverable (#3176). The gap does not always heal on its own:
+# mol-dog-backup.sh registers a backup only when bd reports no destination,
+# and bd answers from .beads/dolt-backup.json, not from the database. A
+# database restored from backup comes back with no backup registered while
+# that file survives, so journal recovery registers the backup again itself,
+# and this warning is what reports a database still missing one.
 BACKUP_ELIGIBLE_DBS=""
 BACKUP_STALE_ITEMS=""
 for db in $USER_DBS; do

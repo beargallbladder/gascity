@@ -1326,6 +1326,11 @@ resource = "subprocess"
 calls = 20
 
 [[count]]
+path = "examples/bd/dolt/journal_recovery_runbook_test.go"
+resource = "subprocess"
+calls = 2
+
+[[count]]
 path = "examples/bd/dolt/logs_test.go"
 resource = "subprocess"
 calls = 1

@@ -9,20 +9,58 @@ journals approach the compaction threshold (default 4 GB warn / 6 GB error). If 
 starts successfully, prefer `gc dolt compact` before a corruption event rather than this
 recovery path.
 
-**Automatic recovery comes first.** For gc-managed databases, `gc start` already
+**Automatic recovery comes first.** For gc-managed databases, starting the city already
 recovers from journal corruption on its own: when the server fails with a journal/noms
-error, it probes each database offline, moves every confirmed-corrupt store to
+error, it probes each database offline and restores every confirmed-corrupt one with
+`dolt backup restore` from the database's registered local backup — bd's `default`
+backup, which the `mol-dog-backup` order registers with `bd backup init` under
+`<city>/.dolt-backup/<dbname>` (the legacy `<dbname>-backup` entry only when `default` is
+not registered). The restore runs in `/path/to/city/.gc/runtime/packs/dolt/restore-staging/`,
+and the backup is registered on the restored copy again, which `dolt backup restore` leaves
+with no backup registered. The finished copy then moves to
+`/path/to/city/.gc/runtime/packs/dolt/restore-ready/`, the corrupt store moves to
 `/path/to/city/.gc/runtime/packs/dolt/corrupt-aside/<dbname>.<timestamp>` (never deleted),
-and restores it with `dolt backup restore` from the database's registered local backup —
-bd's `default` backup, which the `mol-dog-backup` order registers with `bd backup init`
-under `<city>/.dolt-backup/<dbname>` (the legacy `<dbname>-backup` entry only when
-`default` is not registered). Every step is logged by `gc start`. If the selected backup is
-not a non-empty local `file://` directory, or the restore fails, it refuses: the store is
-left in place, `gc start` fails with the original error, and the log lists the backups it
-checked and the exact manual `dolt backup restore` command. This runbook is for that case.
+and the copy moves into its place. Until then the corrupt store stays where it is. Each
+move is a rename, so recovery refuses when `restore-staging/`, `restore-ready/` or
+`corrupt-aside/` is on a different filesystem from the Dolt data directory.
+
+The recovery runs when the city starts: `gc start`, or the supervisor starting the city
+(for example after a reboot). Health patrol's restart of an unhealthy Dolt server does not
+run it, so a corruption found while the city is running needs `gc stop`, then `gc start`.
+
+gc gives the Dolt server's start 120 seconds in all, so an automatic restore may take 45
+of them (`GC_DOLT_JOURNAL_RESTORE_TIMEOUT_SECONDS`). A restore that needs longer is stopped
+and its partial copy removed, the corrupt store stays in place, and `gc start` fails with a
+line that says the restore `did not finish within 45s`. Run `gc dolt start`, which has no
+time limit and lets the restore run to completion, then `gc start`. A start killed in the
+middle of a restore leaves its partial copy in `restore-staging/`, which the next start
+removes. A start killed between moving the corrupt store aside and moving the copy in
+leaves the database missing from the data directory. The next start moves the copy in from
+`restore-ready/` before it starts the server, and when it cannot, it fails with a
+`CRITICAL` line that names both copies.
+
+A successful recovery does not stop the start, so look for it. Every step is recorded,
+timestamped, as a `gc-beads-bd:` line in the managed Dolt log (`gc dolt logs`; by default
+`/path/to/city/.gc/runtime/packs/dolt/dolt.log`):
+
+```bash
+gc dolt logs -n 2000 | grep 'gc-beads-bd:'
+ls /path/to/city/.gc/runtime/packs/dolt/corrupt-aside/
+```
+
+A `RESTORED '<dbname>'` line means that database lost every write made since its last
+backup sync; the line names the backup and the preserved store.
+
+If the selected backup is not a non-empty local `file://` directory, another database
+registers the same directory, or one of recovery's directories is on a different filesystem,
+recovery refuses: the store is left in place, `gc start`
+fails with the original error, and the error and the log list the backups it checked and
+the manual `dolt backup restore` command. A restore that fails leaves the store in place
+too. This runbook is for those cases.
 
 In the steps below, `<data_dir>` is the managed Dolt data directory:
-`/path/to/city/.beads/dolt` unless `GC_DOLT_DATA_DIR` overrides it.
+`/path/to/city/.beads/dolt` unless `GC_DOLT_DATA_DIR` overrides it. `<somewhere-safe>` is
+a path outside it that does not exist yet, where the corrupt store is kept.
 
 ---
 
@@ -35,6 +73,8 @@ Use this runbook when:
 - You need to recover a managed Dolt database that fails to open
 
 Do **not** use this runbook for:
+- An automatic restore that ran out of time (`did not finish within`): run `gc dolt start`,
+  then `gc start`
 - A running-but-slow server (use `gc dolt compact` instead)
 - Backup staleness warnings without a startup failure (monitor and schedule compaction)
 - Non-managed Dolt stores (external endpoint configured; recovery is out of scope here)
@@ -54,11 +94,11 @@ ls -lh <data_dir>/<dbname>/.dolt/noms/*.journal
 # 3. Stop everything
 gc stop 2>/dev/null || true
 
-# 4a. Restore from the registered backup (preferred; works with the server down)
+# 4a. Restore from the registered backup (preferred; works with the server down):
+#     run the Step 4 block, which restores a usable registered backup in a
+#     staging directory, registers it on the restored copy again, and only
+#     then swaps the copy in for the corrupt store
 # WARNING: all changes after the backup snapshot are lost
-url=$(jq -r '.backups.default.url // .backups["<dbname>-backup"].url // empty' <data_dir>/<dbname>/.dolt/repo_state.json)
-mv <data_dir>/<dbname> <somewhere-safe>
-(cd <data_dir> && dolt backup restore "$url" <dbname>)
 
 # 4b. Reconstruct from the core JSONL archive (lossy last resort)
 # WARNING: JSONL recovery loses all non-issue history (events, wisps, comment and
@@ -132,21 +172,71 @@ lsof -i :"${GC_DOLT_PORT:-28231}" 2>/dev/null || true
 **gc-managed databases.** Restore from the backup registered in the database's
 `repo_state.json`, which stays readable when the noms store does not. Prefer bd's
 `default` backup; use the legacy `<dbname>-backup` entry only when `default` is not
-registered. The restore runs offline, with the server down:
+registered. The legacy entry's URL is either an object's `url` field or a plain string.
+The restore runs offline, with the server down. Like the automatic recovery, this block
+restores only a non-empty local directory that no other database registers, since a
+directory two databases sync to holds whichever synced to it last. It restores into a
+staging directory next to `<data_dir>`, so the corrupt store stays in place until the
+restore has succeeded:
 
 ```bash
-# The registered backup URL (bd's default backup, else the legacy entry)
-url=$(jq -r '.backups.default.url // .backups["<dbname>-backup"].url // empty' <data_dir>/<dbname>/.dolt/repo_state.json)
-echo "$url"   # expect file:///path/to/city/.dolt-backup/<dbname>
+# The registered backup: bd's default backup, else the legacy entry
+state=<data_dir>/<dbname>/.dolt/repo_state.json
+name=$(jq -r 'if (.backups // {} | has("default")) then "default" else "<dbname>-backup" end' "$state")
+url=$(jq -r --arg name "$name" '.backups[$name] | (.url? // .) | strings' "$state")
+echo "$name $url"   # expect: default file:///path/to/city/.dolt-backup/<dbname>
 
-# Keep the corrupt store; never delete it
-mv <data_dir>/<dbname> <somewhere-safe>
+# Refuse anything but a non-empty local directory no other database registers
+refusal=
+if [ "${url#file://}" = "$url" ] || [ -z "$(ls -A "${url#file://}" 2>/dev/null)" ]; then
+  refusal="it is not a non-empty local file:// directory"
+else
+  for dir in <data_dir>/*/; do
+    dir=${dir%/}
+    [ "${dir##*/}" != <dbname> ] && [ -f "$dir/.dolt/repo_state.json" ] || continue
+    if jq -r '(.backups // {}) | objects | .[] | (.url? // .) | strings' "$dir/.dolt/repo_state.json" |
+      grep -qxF -- "$url"; then
+      refusal="database ${dir##*/} registers the same directory"
+    fi
+  done
+fi
 
-# Restore the database from the backup
-(cd <data_dir> && dolt backup restore "$url" <dbname>)
+# Restore into staging and register the backup on the restored copy (dolt
+# backup restore leaves it with none), then swap the copy in and keep the
+# corrupt store (never delete it), moving the store back if the swap fails
+if [ -n "$refusal" ]; then
+  echo "not restoring <dbname> from backup '$name' ($url): $refusal; the store is untouched" >&2
+elif [ -e <somewhere-safe> ]; then
+  echo "<somewhere-safe> already exists: pick a new path to keep the corrupt store at; the store is untouched" >&2
+elif ! staging=$(mktemp -d <data_dir>.restore.XXXXXX); then
+  echo "could not create a staging directory next to <data_dir>; the store is untouched" >&2
+elif ! (cd "$staging" && dolt backup restore "$url" <dbname>); then
+  rm -rf "$staging"
+  echo "the restore failed; the store is untouched" >&2
+else
+  (cd "$staging/<dbname>" && dolt backup add "$name" "$url") ||
+    echo "WARNING: the restored <dbname> has no backup registered: with the server down, run \"dolt backup add $name '$url'\" in <data_dir>/<dbname>" >&2
+  if ! mv <data_dir>/<dbname> <somewhere-safe>; then
+    rm -rf "$staging"
+    echo "could not move <data_dir>/<dbname> to <somewhere-safe>; the store is untouched" >&2
+  elif mv "$staging/<dbname>" <data_dir>/<dbname>; then
+    rmdir "$staging"
+  elif [ ! -e <data_dir>/<dbname> ] && mv <somewhere-safe> <data_dir>/<dbname>; then
+    rm -rf "$staging"
+    echo "could not move the restored copy into <data_dir>; the store is back in place, untouched" >&2
+  else
+    echo "CRITICAL: the restored copy could not be moved into <data_dir> AND the corrupt store could not be moved back; original data is at <somewhere-safe>, the restored copy at $staging/<dbname>" >&2
+  fi
+fi
 ```
 
-If the restore fails, move the corrupt store back before trying anything else.
+When the block refuses, the restore fails or the swap fails, the store is untouched. A
+refusal because another database registers the same directory means that directory may
+hold the other database's data: pick a backup that holds `<dbname>`, set `name` and `url`
+to it, and run the block again from `refusal=`. When only `dolt backup add` fails, the
+restored database is in place but is not backed up until you run the command the warning
+prints. A `CRITICAL` line means `<data_dir>/<dbname>` is missing: move the restored copy
+or the corrupt store it names to `<data_dir>/<dbname>` before you start the city.
 
 **bd-owned proxied scopes** (the default for new cities; `dolt_mode` is
 `proxied-server` in the scope's `.beads/metadata.json`) are backed up by the
@@ -233,8 +323,9 @@ gc dolt compact
 - [ ] Dolt server starts and responds to SQL queries
 - [ ] `gc doctor` passes with no errors (warnings on non-critical checks are acceptable)
 - [ ] `gc start` brings all configured sessions online
-- [ ] The database registers bd's `default` backup and `gc bd backup status --json` shows a
-      recent `.dolt.last_sync`
+- [ ] The restored database registers the backup it came from (`dolt backup`, run in
+      `<data_dir>/<dbname>`, lists it), and `gc bd backup status --json` shows a recent
+      `.dolt.last_sync` after the next backup run
 - [ ] The corrupt store under `corrupt-aside/` (or `<somewhere-safe>`) is kept until the
       restored database is confirmed
 - [ ] Open in-progress beads reviewed and state corrected if import was used
