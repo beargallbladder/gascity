@@ -133,3 +133,21 @@ func TestPromptQueriesUnchangedOutsideCityScopedAgentsOnRigCities(t *testing.T) 
 		}
 	})
 }
+
+// TestPromptQueriesUserWorkQueryOverridesVerbatim pins AC-5 of issue #1689: a
+// user-authored work_query is the caller-owned discovery contract, so all four
+// placeholders carry it verbatim — on a rig city, at both render sites,
+// exactly as on a rig-less city.
+func TestPromptQueriesUserWorkQueryOverridesVerbatim(t *testing.T) {
+	f := newPromptQueryPinsFixture(t, "city", true)
+	const custom = "echo my own discovery"
+	f.agent.WorkQuery = custom
+	prime, controller := f.renderedQueries(t)
+	for i, queries := range [2][4]string{prime, controller} {
+		for j, got := range queries {
+			if got != custom {
+				t.Errorf("%s %s = %q, want the user work_query verbatim %q", []string{"prime", "controller"}[i], promptQueryPinNames[j], got, custom)
+			}
+		}
+	}
+}
