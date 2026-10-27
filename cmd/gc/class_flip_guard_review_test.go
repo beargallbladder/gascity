@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/bdflags"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -26,8 +27,8 @@ type guardCase struct {
 	enterprise bool
 }
 
-// bdEnterpriseVersionLine is the pinned Enterprise build's `bd version`.
-const bdEnterpriseVersionLine = "bd version 1.3.0 (Enterprise dev, Observer unknown; 77612097cec0: enterprise@77612097cec0)\n"
+// bdEnterpriseInventory is the pinned Enterprise build's inventory id.
+const bdEnterpriseInventory = "bd-1.3.0-enterprise-77612097cec0"
 
 func runGuardCases(t *testing.T, cases []guardCase) {
 	t.Helper()
@@ -35,7 +36,7 @@ func runGuardCases(t *testing.T, cases []guardCase) {
 		t.Run(c.name, func(t *testing.T) {
 			deps := splitTestDeps(nil, func(string) (beads.Bead, bdReadResult) { return c.before, c.read })
 			if c.enterprise {
-				deps.version = func() (string, error) { return bdEnterpriseVersionLine, nil }
+				deps.inventory = func() (*bdflags.Inventory, error) { return bdflags.InventoryByName(bdEnterpriseInventory), nil }
 			}
 			g := bdClassFlipGuard(splitGuardTestCity(), t.TempDir(), c.argv, deps)
 			if c.refuse != (g.refusal != "") {

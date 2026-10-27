@@ -82,28 +82,51 @@ func (in bdClassGuardInput) readRefusal(id string, result bdReadResult) string {
 }
 
 // checkEdgeEndpoints enforces the cross-store edge rule: every endpoint of an
-// edge must be a bead of this work store — found here, exactly — and one no
-// class binding holds (a migrated relic keeps a work-shaped id but lives in the
-// binding). bd accepts an edge to an id it cannot resolve, and a dep row
-// naming a bead in another store is one no Ready computation clears.
+// edge must be a bead of one of this city's work stores — found there, exactly
+// — and one no class binding holds (a migrated relic keeps a work-shaped id
+// but lives in the binding). bd accepts an edge to an id it cannot resolve,
+// and a dep row naming a bead in another store is one no Ready computation
+// clears. An "external:<project>:<capability>" endpoint is bd's
+// cross-project capability reference, not a bead id of any store, and is
+// allowed as such.
 func (in bdClassGuardInput) checkEdgeEndpoints(ids ...string) string {
+	var check []string
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
-		if id == "" {
+		if id == "" || strings.HasPrefix(id, "external:") || slices.Contains(check, id) {
 			continue
 		}
-		_, result := in.read(id)
+		check = append(check, id)
+	}
+	if len(check) == 0 {
+		return ""
+	}
+	results := map[string]bdReadResult{}
+	if in.endpoints != nil {
+		results = in.endpoints(check)
+	} else {
+		for _, id := range check {
+			_, results[id] = in.read(id)
+		}
+	}
+	for _, id := range check {
+		result, ok := results[id]
+		if !ok {
+			result = bdReadFailed
+		}
 		if result != bdReadFound {
-			return fmt.Sprintf("gc bd %s: refused on this split city: an edge endpoint must be a bead of this work store, and %s. A dependency edge across stores is never written. Nothing was written.", in.path, strings.TrimPrefix(in.readRefusal(id, result), fmt.Sprintf("gc bd %s %s: refused on this split city: ", in.path, id)))
+			return fmt.Sprintf("gc bd %s: refused on this split city: an edge endpoint must be a bead of this city's work stores, and %s. A dependency edge across stores is never written. Nothing was written.", in.path, strings.TrimPrefix(in.readRefusal(id, result), fmt.Sprintf("gc bd %s %s: refused on this split city: ", in.path, id)))
 		}
-		if in.held == nil {
-			return fmt.Sprintf("gc bd %s: refused on this split city: gc cannot check whether %s lives in the class binding. Nothing was written.", in.path, id)
-		}
-		held, err := in.held(id)
-		if err != nil {
-			return fmt.Sprintf("gc bd %s: refused on this split city: gc could not check whether %s lives in the class binding (%v). Nothing was written.", in.path, id, err)
-		}
-		if held {
+	}
+	if in.held == nil {
+		return fmt.Sprintf("gc bd %s: refused on this split city: gc cannot check whether %s lives in the class binding. Nothing was written.", in.path, strings.Join(check, ", "))
+	}
+	held, err := in.held(check)
+	if err != nil {
+		return fmt.Sprintf("gc bd %s: refused on this split city: gc could not check whether %s lives in the class binding (%v). Nothing was written.", in.path, strings.Join(check, ", "), err)
+	}
+	for _, id := range check {
+		if held[id] {
 			return fmt.Sprintf("gc bd %s: refused on this split city: %s lives in the class binding, and a dependency edge across stores is never written. Nothing was written.", in.path, id)
 		}
 	}
@@ -169,9 +192,21 @@ func judgeBdCreate(in bdClassGuardInput) bdClassGuard {
 		shape.Metadata = map[string]string{}
 		maps.Copy(shape.Metadata, fields)
 	}
-	if plan, ok := in.args.Last("--graph"); ok {
-		if class, parsed := bdRelocatedClassGraphPlanClass(in.scopeRoot, plan); parsed && !slices.Contains(in.holds, class) {
-			return in.refuse("gc bd %s --graph: refused on this split city: the plan is %s class, which this store does not hold. Mint it with `%s`. Nothing was written.", in.path, class, coordclass.MintCommand(class))
+	if _, ok := in.args.Last("--graph"); ok {
+		// bd applies every node of the plan, each with its own type, labels
+		// and metadata (decoded as raw JSON), plus parent links and edges.
+		// No shipped workflow uses `gc bd create --graph`, so it is refused
+		// rather than re-derived node by node.
+		return in.refuse("gc bd %s --graph: refused on this split city: a graph plan mints one bead per node, each with its own type, labels, metadata and edges, and gc does not re-derive bd's reading of the plan here. Instead: %s. Nothing was written.", in.path, bdSplitAltSling)
+	}
+	// bd create --parent copies the parent's labels onto the child unless
+	// --no-inherit-labels is set. The parent must be a work bead of this store
+	// (the edge rule below), and a work bead's labels classify as work on any
+	// type — every label arm of Classify fires on the label alone — but the
+	// inherited labels are judged with the child's own anyway.
+	if parent, ok := in.args.Last("--parent"); ok && !in.args.Bool("--no-inherit-labels") {
+		if p, result := in.read(parent); result == bdReadFound {
+			shape.Labels = normalizeBdLabels(append(shape.Labels, p.Labels...))
 		}
 	}
 	if flip := coordclass.CheckFlip(beads.Bead{}, shape, in.holds); flip != nil {
@@ -363,7 +398,7 @@ func judgeBdSQL(in bdClassGuardInput) bdClassGuard {
 		return in.refuse("gc bd sql: refused on this split city: expected exactly one query. Nothing was written.")
 	}
 	if why := sqlReadOnlyProblem(in.args.positionals[0]); why != "" {
-		return in.refuse("gc bd sql: refused on this split city: %s. Only a single plain read statement (SELECT, SHOW, DESCRIBE, EXPLAIN SELECT), with no comments and no Dolt procedures, passes through gc bd sql here: a raw write can give a work-store bead an infrastructure type or label, which strands it. Use the gc bd verbs, which gc judges, or run bd directly in %s if you have checked what it will write. Nothing was written.", why, in.scopeRoot)
+		return in.refuse("gc bd sql: refused on this split city: %s. Only a single plain read statement (SELECT, SHOW, DESCRIBE, EXPLAIN SELECT), with no comments and no Dolt procedures, passes through gc bd sql here: a raw write can give a work-store bead an infrastructure type or label, which strands it. Use the gc bd verbs, which gc judges. Nothing was written.", why)
 	}
 	return in.pass()
 }
@@ -481,7 +516,7 @@ func judgeBdBatch(in bdClassGuardInput) bdClassGuard {
 // A kept row's dependency must name a kept row of the file or a bead of this
 // work store no binding holds (the cross-store edge rule).
 func judgeBdImport(in bdClassGuardInput) bdClassGuard {
-	args, skipInfra := stripSkipInfraFlag(in.bdArgs)
+	args, skipInfra := in.bdArgs, in.gcFlag
 	sources := append(slices.Clone(in.args.positionals), in.args.Values("--input")...)
 	switch len(sources) {
 	case 0:
@@ -643,4 +678,52 @@ func bdImportGlobalTakesValue(name string) bool {
 		}
 	}
 	return false
+}
+
+// judgeBdDelete refuses deleting a work bead that a class-binding bead
+// depends on: the binding's edge would dangle, and a dependency on a missing
+// bead is one no Ready computation clears. --gc-allow-dangling-edges (gc's
+// own flag) deletes anyway.
+func judgeBdDelete(in bdClassGuardInput) bdClassGuard {
+	ids := slices.Clone(in.args.positionals)
+	for _, f := range in.args.Values("--from-file") {
+		path := f
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(in.scopeRoot, path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return in.refuse("gc bd delete: refused on this split city: gc must read %s to check the beads it deletes, and could not: %v. Nothing was written.", f, err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+				ids = append(ids, line)
+			}
+		}
+	}
+	if in.gcFlag || len(ids) == 0 {
+		return in.pass()
+	}
+	if in.bindingDependents == nil {
+		return in.refuse("gc bd delete: refused on this split city: gc cannot check whether a class-binding bead depends on %s. Nothing was written.", strings.Join(ids, ", "))
+	}
+	deps, err := in.bindingDependents(ids)
+	if err != nil {
+		return in.refuse("gc bd delete: refused on this split city: gc could not check the class binding for beads that depend on %s (%v). Nothing was written.", strings.Join(ids, ", "), err)
+	}
+	for _, id := range ids {
+		if d := deps[id]; len(d) > 0 {
+			return in.refuse("gc bd delete %s: refused on this split city: %s in the class binding depend(s) on it, and deleting it would leave that dependency dangling. Close it instead, or re-run with %s if the dangling edge is intended. Nothing was written.", id, strings.Join(d, ", "), bdDeleteAllowDanglingFlag)
+		}
+	}
+	return in.pass()
+}
+
+// judgeBdInit refuses an issue prefix inside a class binding's reserved
+// namespace: the work store would mint ids that answer to the binding.
+func judgeBdInit(in bdClassGuardInput) bdClassGuard {
+	if prefix, ok := in.args.Last("--prefix"); ok && bdIDIsClassReserved(strings.TrimSuffix(strings.TrimSpace(prefix), "-")+"-x") { // residency:allow — judges a new store's id prefix; resolves no bead
+		return in.refuse("gc bd init --prefix %s: refused on this split city: that prefix is a class binding's reserved namespace. Pick a work prefix. Nothing was written.", prefix)
+	}
+	return in.pass()
 }

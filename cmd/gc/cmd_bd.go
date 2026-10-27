@@ -578,12 +578,17 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	var classGuardStore beads.Store
 	classGuard := bdClassFlipGuard(cfg, target.ScopeRoot, bdArgs, bdClassGuardDeps{
 		stdin: os.Stdin,
-		version: func() (string, error) {
-			return bdVersionInScope(cityPath, cfg, target)
+		inventory: func() (*bdflags.Inventory, error) {
+			return bdSplitInventoryResolver(cityPath, cfg, target)
 		},
-		held: func(id string) (bool, error) {
-			_, owned, err := cliByIDBindingOwner(cityPath, id)
-			return owned, err
+		held: func(ids []string) (map[string]bool, error) {
+			return bdHeldByBinding(cityPath, ids)
+		},
+		bindingDependents: func(ids []string) (map[string][]string, error) {
+			return bdBindingDependents(cityPath, ids)
+		},
+		endpoints: func(ids []string) map[string]bdReadResult {
+			return bdReadEdgeEndpoints(cityPath, cfg, target.ScopeRoot, ids)
 		},
 		templates: func() ([]beads.Bead, error) {
 			if classGuardStore == nil {
@@ -611,6 +616,7 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	})
 	if classGuard.refusal != "" {
 		fmt.Fprintf(stderr, "%s\n", classGuard.refusal) //nolint:errcheck // best-effort stderr
+		recordBdSplitRefusal(cityPath, target.ScopeRoot, bdArgs, classGuard, stderr)
 		return 1
 	}
 	if classGuard.cleanup != nil {
@@ -839,31 +845,6 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	// only through the city event log, so announce it (bd_close_events.go).
 	announceBdPassthroughCloses(cityPath, guardStore, guardBeads, bdArgs)
 	return 0
-}
-
-// bdVersionInScope runs `bd version` with the binary, working directory and
-// environment the passthrough would use, so the split-city allowlist judges
-// against the inventory of the bd that will actually run.
-func bdVersionInScope(cityPath string, cfg *config.City, target execStoreTarget) (string, error) {
-	bdPath, err := resolveBdBinaryForScope(cityPath, target.ScopeRoot)
-	if err != nil {
-		return "", err
-	}
-	env, err := bdCommandEnv(cityPath, cfg, target)
-	if err != nil {
-		return "", err
-	}
-	cmd := exec.Command(bdPath, "version")
-	cmd.Dir = target.ScopeRoot
-	cmd.Env = workQueryEnvForDir(env, cmd.Dir)
-	start := time.Now()
-	out, err := cmd.Output()
-	exit := 0
-	if err != nil {
-		exit = -1
-	}
-	beads.TraceBDCall("go:gc-bd-split-version", target.ScopeRoot, []string{"version"}, start, exit, err)
-	return string(out), err
 }
 
 func parseBdReleaseIfCurrentArgs(args []string) (id, expectedAssignee string, ok bool, err error) {

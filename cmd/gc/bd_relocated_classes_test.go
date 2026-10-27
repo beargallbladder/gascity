@@ -404,6 +404,7 @@ func bdSQLRefusalCityDir(t *testing.T, storageTOML string) (capture, cityDir str
 		cityFlag, rigFlag, bdBeadExists = origCityFlag, origRigFlag, origProbe
 	})
 	bdBeadExists = func(string, *config.City, execStoreTarget, string) bool { return false }
+	pinTestBdInventory(t)
 	cityFlag, rigFlag = "", ""
 
 	cityDir = t.TempDir()

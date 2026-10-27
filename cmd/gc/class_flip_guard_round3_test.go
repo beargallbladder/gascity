@@ -4,11 +4,13 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/bdflags"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -37,7 +39,13 @@ func runEdgeCases(t *testing.T, cases []edgeCase) {
 				}
 				return beads.Bead{}, bdReadNotFound
 			})
-			deps.held = func(id string) (bool, error) { return id == "relic-1", nil }
+			deps.held = func(ids []string) (map[string]bool, error) {
+				out := map[string]bool{}
+				for _, id := range ids {
+					out[id] = id == "relic-1"
+				}
+				return out, nil
+			}
 			if err := os.WriteFile(filepath.Join(scope, "ops.txt"), []byte("dep add demo-1 gcg-9\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -124,19 +132,21 @@ func TestGcBdSplitShouldFixes(t *testing.T) {
 	})
 	g := bdClassFlipGuard(splitGuardTestCity(), t.TempDir(), []string{"show", "demo-1"}, func() bdClassGuardDeps {
 		d := splitTestDeps(nil, func(string) (beads.Bead, bdReadResult) { return guardTask, bdReadFound })
-		d.version = func() (string, error) { return "bd version 1.3.3 (dev)\n", nil }
+		d.inventory = func() (*bdflags.Inventory, error) {
+			return nil, fmt.Errorf("%w: /opt/bd (sha256 0123456789ab) matches none", errBdUninventoried)
+		}
 		return d
 	}())
-	if !strings.Contains(g.refusal, "not a build gc's split-city allowlist is pinned to") {
-		t.Fatalf("a bd newer than the pinned inventories: refusal=%q", g.refusal)
+	if !strings.Contains(g.refusal, "matches none") || !strings.Contains(g.refusal, "gc doctor") || g.kind != bdRefusalUninventoried {
+		t.Fatalf("a bd whose tree matches no inventory: refusal=%q kind=%q", g.refusal, g.kind)
 	}
 	g = bdClassFlipGuard(splitGuardTestCity(), t.TempDir(), []string{"show", "demo-1"}, func() bdClassGuardDeps {
 		d := splitTestDeps(nil, nil)
-		d.version = func() (string, error) { return "", errors.New("exec: bd: not found") }
+		d.inventory = func() (*bdflags.Inventory, error) { return nil, errors.New("exec: bd: not found") }
 		return d
 	}())
-	if !strings.Contains(g.refusal, "`bd version` failed") {
-		t.Fatalf("an unreadable bd version: refusal=%q", g.refusal)
+	if !strings.Contains(g.refusal, "exec: bd: not found") {
+		t.Fatalf("an unwalkable bd: refusal=%q", g.refusal)
 	}
 	if single := bdClassFlipGuard(&config.City{}, t.TempDir(), []string{"show"}, bdClassGuardDeps{}); single.refusal != "" {
 		t.Fatalf("a single-store city needs no bd version: %q", single.refusal)

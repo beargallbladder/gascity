@@ -1295,6 +1295,21 @@ func serveBdByIDResolved(door bdByIDClassDoor, op bdByIDOp, bdArgs []string, rig
 	case bdByIDDepTree:
 		return doBdByIDDepTree(resolution.Graph, resolution.Bead, op, stdout, stderr), true
 	case bdByIDUpdate:
+		// The cross-store edge rule, binding side: a reparent of a binding
+		// resident must name a parent the same binding holds, never a work
+		// bead (a parent-child edge across stores no read resolves).
+		if op.Update.ParentID != nil && strings.TrimSpace(*op.Update.ParentID) != "" {
+			parent := strings.TrimSpace(*op.Update.ParentID)
+			pr, err := door.resolve(parent)
+			if err != nil {
+				fmt.Fprintf(stderr, "gc bd update %s: refused: %v. Nothing was written.\n", op.ID, err) //nolint:errcheck // best-effort stderr
+				return 1, true
+			}
+			if !pr.Found {
+				fmt.Fprintf(stderr, "gc bd update %s: refused: the new parent %s is not in %s, and a parent-child edge across stores is never written. Nothing was written.\n", op.ID, parent, door.bindingName()) //nolint:errcheck // best-effort stderr
+				return 1, true
+			}
+		}
 		// The class-must-not-flip guard, binding side: an update that would
 		// leave the resident a class this binding does not hold — a graph step
 		// whose only graph marker is removed reads as work — strands it here.

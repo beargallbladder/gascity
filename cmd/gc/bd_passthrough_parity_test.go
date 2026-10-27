@@ -73,6 +73,7 @@ func newBdParityCity(t *testing.T, opts bdParityOpts) bdParityCity {
 	restoreFlag(t, &rigFlag)
 	resetCLIStorageRoutes(t)
 	captureCLIStorageStderr(t)
+	pinTestBdInventory(t)
 
 	rawRoot := t.TempDir()
 	root, err := filepath.EvalSymlinks(rawRoot)

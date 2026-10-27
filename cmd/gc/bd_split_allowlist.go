@@ -21,10 +21,11 @@ import (
 // bdSplitAllowlist, each with a vetted flag set; anything else is refused with
 // a pointer to the gc-native command.
 //
-// The command gc judges is the command bd runs. gc reads the version of the bd
-// it is about to run, picks the pinned inventory of exactly that build
+// The command gc judges is the command bd runs. gc matches the command tree of
+// the bd binary it is about to run against the pinned inventories
 // (internal/bdflags/inventory, dumped from bd's own cobra tree, hidden flags
-// included) and refuses any other build. It then resolves the argv with a
+// included; see bd_inventory_trust.go for the trust policy) and refuses a
+// binary that matches none. It then resolves the argv with a
 // mirror of that cobra tree under the cobra and pflag versions bd uses, so
 // cobra's subcommand pre-scan and pflag's flag parse are bd's own. It also
 // refuses an argv whose cobra reading and pflag reading disagree about which
@@ -60,9 +61,9 @@ type bdSplitCommand struct {
 
 const (
 	bdSplitAltSling   = "gc sling <target> <formula> or gc formula cook <formula>, which put every bead in the store that holds its class"
-	bdSplitAltRestore = "the split-city restore path in examples/bd/dolt/docs/journal-corruption-recovery.md (restore into a scratch scope, bd export, then gc bd import <file> --skip-infra)"
-	bdSplitAltRequest = "if a workflow needs it, request an addition to the allowlist (docs/runbooks/split-storage-classes.md, \"gc bd on split cities\"); meanwhile run bd directly in the scope after checking what it writes"
-	bdSplitAltBulk    = "stop the city and run bd directly in the scope; the next gc start re-runs the containment check over the work store"
+	bdSplitAltRestore = "the split-city restore path in examples/bd/dolt/docs/journal-corruption-recovery.md, which ends in gc bd import <file> --skip-infra"
+	bdSplitAltRequest = "if a workflow needs it, request an addition to the allowlist (docs/runbooks/split-storage-classes.md, \"gc bd on split cities\")"
+	bdSplitAltBulk    = "this operation is not available through gc bd on a split city; follow the supported procedure in docs/runbooks/split-storage-classes.md (\"gc bd on split cities\") and run gc doctor afterwards"
 )
 
 // bdSplitAllowlist is every command path gc bd forwards on a split city.
@@ -115,7 +116,7 @@ var bdSplitAllowlist = map[string]bdSplitCommand{
 	// Writes that touch no field Classify reads.
 	"close":        {why: "status and close reason"},
 	"reopen":       {why: "status"},
-	"delete":       {why: "removes beads; a deleted bead has no class to strand"},
+	"delete":       {judge: judgeBdDelete, why: "removes beads; refused when a class-binding bead depends on one (--gc-allow-dangling-edges overrides)"},
 	"assign":       {why: "assignee"},
 	"priority":     {why: "priority"},
 	"note":         {why: "appends notes"},
@@ -149,8 +150,9 @@ var bdSplitAllowlist = map[string]bdSplitCommand{
 	"dolt commit":  {why: "commits the working set already written"},
 	"config set":   {judge: judgeBdConfigSet, why: "configuration, not bead rows; only the keys in bdSplitConfigSetKeys"},
 	"init": {
-		only: []string{"--prefix", "--non-interactive", "--skip-hooks", "--skip-agents", "--init-if-missing", "--recreate-missing"},
-		why:  "creates an empty store (the journal-corruption runbook); --from-jsonl, the backend/server/remote flags and the global --db are not vetted",
+		judge: judgeBdInit,
+		only:  []string{"--prefix", "--non-interactive", "--skip-hooks", "--skip-agents", "--init-if-missing", "--recreate-missing"},
+		why:   "creates an empty store (the journal-corruption runbook); --from-jsonl, the backend/server/remote flags and the global --db are not vetted",
 	},
 
 	// Writes judged by the class-must-not-flip guard.
@@ -551,13 +553,22 @@ const (
 type bdClassGuardDeps struct {
 	// stdin is what bd would read; the guard reads it for import - and batch.
 	stdin io.Reader
-	// version returns `bd version` of the bd gc is about to run.
-	version func() (string, error)
+	// inventory returns the pinned inventory the bd gc is about to run
+	// matches (bd_inventory_trust.go), or an error.
+	inventory func() (*bdflags.Inventory, error)
 	// read returns the bead id resolves to in the work store, collision-aware.
 	read func(id string) (beads.Bead, bdReadResult)
-	// held reports whether a class binding holds id (a migrated relic keeps a
-	// work-shaped id).
-	held func(id string) (bool, error)
+	// endpoints reads edge endpoints across the city's WORK stores (the
+	// city's and every rig's, by id prefix; a cross-rig dependency is a
+	// shipped order and stays allowed), batched per store. nil falls back to
+	// read, one id at a time, in this scope's store.
+	endpoints func(ids []string) map[string]bdReadResult
+	// held reports which ids a class binding holds (a migrated relic keeps a
+	// work-shaped id), over one topology built for the whole call.
+	held func(ids []string) (map[string]bool, error)
+	// bindingDependents returns, per id, the binding beads that depend on it
+	// (a reverse lookup in the class binding).
+	bindingDependents func(ids []string) (map[string][]string, error)
 	// templates lists the work store's template-labeled beads (bd's legacy
 	// proto lookup for a mol-* name).
 	templates func() ([]beads.Bead, error)
@@ -565,9 +576,12 @@ type bdClassGuardDeps struct {
 
 // bdClassGuardInput is everything a judge may consult.
 type bdClassGuardInput struct {
-	path      string
-	args      bdSplitArgs
-	bdArgs    []string
+	path   string
+	args   bdSplitArgs
+	bdArgs []string // the argv to forward, gc's own flag removed
+	// gcFlag reports the verb's gc-only flag (import --skip-infra, delete
+	// --gc-allow-dangling-edges).
+	gcFlag    bool
 	holds     []coordclass.Class
 	scopeRoot string
 	bdClassGuardDeps
@@ -586,38 +600,31 @@ func (in bdClassGuardInput) pass() bdClassGuard { return bdClassGuard{args: in.b
 // --skip-infra on import is dropped).
 func bdClassFlipGuard(cfg *config.City, scopeRoot string, bdArgs []string, deps bdClassGuardDeps) bdClassGuard {
 	holds := workStoreClassHolds(cfg)
+	args, gcFlag := stripGCOwnFlags(bdArgs)
 	if holds == nil {
-		if verb, _, ok := bdRelocatedClassVerb(bdArgs); ok && verb == "import" {
-			args, _ := stripSkipInfraFlag(bdArgs)
-			return bdClassGuard{args: args}
-		}
-		return bdClassGuard{args: bdArgs}
+		return bdClassGuard{args: args}
 	}
-	if deps.version == nil {
-		return bdClassGuard{refusal: "gc bd: refused on this split city: gc could not determine which bd build it would run. Nothing was written."}
+	if deps.inventory == nil {
+		return bdClassGuard{kind: bdRefusalUninventoried, refusal: "gc bd: refused on this split city: gc could not determine which bd command tree it would run. Run `gc doctor` to check this city's bd. Nothing was written."}
 	}
-	out, err := deps.version()
-	if err != nil {
-		return bdClassGuard{refusal: fmt.Sprintf("gc bd: refused on this split city: `bd version` failed (%v), so gc cannot tell which commands this bd has. Nothing was written.", err)}
-	}
-	inv, err := bdflags.InventoryFor(out)
-	if err != nil {
-		return bdClassGuard{refusal: fmt.Sprintf("gc bd: refused on this split city: %v. A bd build gc has not inventoried may have commands and flags gc has not vetted; regenerate internal/bdflags/inventory (inventorygen/generate.sh) for it, or run bd directly in %s. Nothing was written.", err, scopeRoot)}
-	}
-	args := bdArgs
-	if verb, _, ok := bdRelocatedClassVerb(bdArgs); ok && verb == "import" {
-		args, _ = stripSkipInfraFlag(bdArgs)
+	inv, err := deps.inventory()
+	if err != nil || inv == nil {
+		return bdClassGuard{kind: bdRefusalUninventoried, refusal: fmt.Sprintf("gc bd: refused on this split city: %v. gc forwards gc bd only to a bd whose command tree matches a pinned, vetted inventory, because a different tree can have commands and flags gc has not vetted. Run `gc doctor` to see the differences, install a pinned bd build, or have the gc maintainers inventory this build (internal/bdflags/inventorygen). Nothing was written.", err)}
 	}
 	res := resolveBdSplitCommand(inv, args, scopeRoot)
 	if res.refusal != "" {
-		return bdClassGuard{refusal: res.refusal}
+		return bdClassGuard{kind: bdRefusalAllowlist, path: res.path, refusal: res.refusal}
 	}
 	if res.cmd.judge == nil {
-		return bdClassGuard{args: bdArgs}
+		return bdClassGuard{args: args}
 	}
-	return res.cmd.judge(bdClassGuardInput{
-		path: res.path, args: res.args, bdArgs: bdArgs, holds: holds, scopeRoot: scopeRoot, bdClassGuardDeps: deps,
+	g := res.cmd.judge(bdClassGuardInput{
+		path: res.path, args: res.args, bdArgs: args, gcFlag: gcFlag, holds: holds, scopeRoot: scopeRoot, bdClassGuardDeps: deps,
 	})
+	if g.refusal != "" {
+		g.kind, g.path = bdRefusalJudge, res.path
+	}
+	return g
 }
 
 // bdSplitAllowlistPaths returns the allowlisted paths, sorted (for the docs

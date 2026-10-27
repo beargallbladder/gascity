@@ -378,10 +378,24 @@ func slicesContainsString(xs []string, want string) bool {
 // no bead held by the binding, no template beads.
 func splitTestDeps(stdin io.Reader, read func(string) (beads.Bead, bdReadResult)) bdClassGuardDeps {
 	return bdClassGuardDeps{
-		stdin:     stdin,
-		version:   func() (string, error) { return "bd version 1.3.2 (dev)\n", nil },
-		read:      read,
-		held:      func(string) (bool, error) { return false, nil },
-		templates: func() ([]beads.Bead, error) { return nil, nil },
+		stdin:             stdin,
+		inventory:         func() (*bdflags.Inventory, error) { return bdflags.InventoryByName("bd-1.3.2"), nil },
+		read:              read,
+		held:              func([]string) (map[string]bool, error) { return map[string]bool{}, nil },
+		bindingDependents: func([]string) (map[string][]string, error) { return map[string][]string{}, nil },
+		templates:         func() ([]beads.Bead, error) { return nil, nil },
 	}
+}
+
+// pinTestBdInventory makes doBd treat the scope's bd (a shell fake with no
+// real command tree) as the pinned bd 1.3.2 build, for tests of the
+// passthrough on a split city. The trust policy itself is tested on its own
+// (bd_inventory_trust_test.go).
+func pinTestBdInventory(t testing.TB) {
+	t.Helper()
+	prev := bdSplitInventoryResolver
+	bdSplitInventoryResolver = func(string, *config.City, execStoreTarget) (*bdflags.Inventory, error) {
+		return bdflags.InventoryByName("bd-1.3.2"), nil
+	}
+	t.Cleanup(func() { bdSplitInventoryResolver = prev })
 }

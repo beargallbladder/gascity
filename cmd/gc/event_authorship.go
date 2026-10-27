@@ -10,4 +10,9 @@ import "github.com/gastownhall/gascity/internal/events"
 func init() {
 	// The start-capacity valve runs in the reconciler only.
 	events.RegisterAuthorship(breakerStateChangedEventType, events.AuthorController)
+	// gc bd runs in any gc process, an agent's included: its refusal event
+	// is recorded where the refusal happens.
+	events.RegisterAuthorship(bdSplitRefusalEvent, events.AuthorWorker)
+	// The un-inventoried-bd finding is recorded by a starting controller.
+	events.RegisterAuthorship(bdUninventoriedEvent, events.AuthorController)
 }

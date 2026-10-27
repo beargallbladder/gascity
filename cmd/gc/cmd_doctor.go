@@ -294,6 +294,9 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 			register(newDoltDriftCheck(cityPath, cfg))
 		}
 		register(doctor.NewConfigValidCheck(cfg))
+		// A split city's gc bd refuses everything when the scope's bd matches
+		// no pinned command-tree inventory (bd_inventory_trust.go).
+		register(newBdInventoryCheck(cityPath, cfg))
 		register(doctor.NewLegacySuspendedFieldCheck(cfg))
 		reconcilerCheck = newSessionReconcilerDoctorCheck(cfg, reconcilerModeLookupEnv)
 		register(reconcilerCheck)

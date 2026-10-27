@@ -126,11 +126,22 @@ func classFlipRefusalText(who string, flip *coordclass.Flip) string {
 // read it to judge it.
 type bdClassGuard struct {
 	refusal string
+	// kind and path describe a refusal for telemetry (the gc_bd.refused
+	// event): which gate refused, and the command path when known.
+	kind    string
+	path    string
 	args    []string
 	stdin   io.Reader
 	notice  string
 	cleanup func()
 }
+
+// The gates a split-city gc bd refusal can come from.
+const (
+	bdRefusalUninventoried = "bd-uninventoried"
+	bdRefusalAllowlist     = "allowlist"
+	bdRefusalJudge         = "judge"
+)
 
 // bdLabelFlagValues parses a label FLAG value — update's --add-label, -l,
 // --remove-label and --set-labels, and create's --labels/-l/--label — exactly
@@ -212,9 +223,26 @@ func sqlReadOnlyProblem(query string) string {
 	}
 }
 
-// stripSkipInfraFlag removes every occurrence of gc's own --skip-infra from argv.
-func stripSkipInfraFlag(argv []string) ([]string, bool) {
-	const flag = bdImportSkipInfraFlag
+// bdDeleteAllowDanglingFlag is gc's own flag on `gc bd delete`: delete a work
+// bead even though a bead in the class binding depends on it. gc consumes it;
+// bd never sees it.
+const bdDeleteAllowDanglingFlag = "--gc-allow-dangling-edges"
+
+// bdGCOwnFlags are gc's own bool flags on a gc bd verb; gc consumes them and
+// bd never sees them.
+var bdGCOwnFlags = map[string]string{
+	"import": bdImportSkipInfraFlag,
+	"delete": bdDeleteAllowDanglingFlag,
+}
+
+// stripGCOwnFlags removes the verb's gc-only flag from argv and reports
+// whether it was given.
+func stripGCOwnFlags(argv []string) ([]string, bool) {
+	verb, _, ok := bdRelocatedClassVerb(argv)
+	flag, has := bdGCOwnFlags[verb]
+	if !ok || !has {
+		return argv, false
+	}
 	out := make([]string, 0, len(argv))
 	found := false
 	for _, a := range argv {
