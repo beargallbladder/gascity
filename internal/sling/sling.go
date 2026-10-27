@@ -16,6 +16,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/coordclass"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/executionevent"
 	"github.com/gastownhall/gascity/internal/formula"
@@ -182,6 +183,20 @@ type SlingDeps struct {
 func (deps SlingDeps) graphStore() beads.Store {
 	if deps.GraphStore != nil {
 		return deps.GraphStore
+	}
+	return deps.Store
+}
+
+// moleculeStoreFor returns the store a compiled recipe's molecule is poured
+// into: the graph store for a graph-class recipe (a graph.v2 workflow, a
+// root-only wisp), the work store for a work-class one (a v1 POURED molecule
+// container with plain steps). This is the rule order dispatch, `gc order
+// run` and `gc formula cook` follow (moleculeClassStore in cmd/gc), so a v1
+// poured molecule stays visible to every work-scope reader. On a single-store
+// city both are the same store.
+func (deps SlingDeps) moleculeStoreFor(recipe *formula.Recipe) beads.Store {
+	if molecule.RecipeClass(recipe) == coordclass.ClassGraph {
+		return deps.graphStore()
 	}
 	return deps.Store
 }
@@ -1460,7 +1475,7 @@ func materializeCompiledSlingFormula(ctx context.Context, recipe *formula.Recipe
 			return nil, err
 		}
 	}
-	result, err := molecule.Instantiate(ctx, graphStore, recipe, opts)
+	result, err := molecule.Instantiate(ctx, deps.moleculeStoreFor(recipe), recipe, opts)
 	if err != nil {
 		SlingTracef("instantiate molecule-error formula=%s dur=%s err=%v", formulaName, time.Since(instantiateStart), err)
 		if len(replacedSnapshots) > 0 {

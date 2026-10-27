@@ -439,10 +439,12 @@ func slingFormula(opts SlingOpts, deps SlingDeps) (SlingResult, error) {
 	if err != nil {
 		return SlingResult{Target: a.QualifiedName()}, fmt.Errorf("instantiating formula %q: %w", opts.BeadOrFormula, err)
 	}
-	// The wisp root lives in the store that minted it: the graph store, which
-	// on a city whose graph class is relocated to a [storage] binding is not
-	// the work store (#6054). Every read and stamp of the root goes there.
-	rootStore := deps.graphStore()
+	// The root lives in the store that minted it: the graph store for a
+	// graph-class recipe, which on a city whose graph class is relocated to a
+	// [storage] binding is not the work store (#6054), and the work store for
+	// a v1 poured one (moleculeStoreFor). Every read and stamp of the root
+	// goes there.
+	rootStore := deps.moleculeStoreFor(recipe)
 	if mResult.GraphWorkflow || IsGraphWorkflowAttachment(rootStore, mResult.RootID) {
 		// A standalone --formula launch has no work bead, so no merge shape.
 		wfResult, wfErr := doStartGraphWorkflow(mResult.RootID, "", "", "", a, method, deps)

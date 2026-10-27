@@ -205,7 +205,7 @@ func TestSplitSlingOnUnassignedSourceBurnsTheStaleMolecule(t *testing.T) {
 				if err != nil {
 					t.Fatalf("second sling: %v", err)
 				}
-				firstRoot, err := env.graph.Get(first.WispRootID)
+				firstRoot, _, err := getFromStores(first.WispRootID, []beads.Store{env.graph, env.work})
 				if err != nil {
 					t.Fatalf("reading first root %s: %v", first.WispRootID, err)
 				}
@@ -299,4 +299,58 @@ func beadIDs(bs []beads.Bead) []string {
 		out = append(out, b.ID+"("+b.Status+")")
 	}
 	return out
+}
+
+// Gate-reported misroute (review 3a): a v1 POURED recipe compiles to a
+// molecule whose every bead is work class. It is poured into the work store,
+// as order dispatch, gc order run and gc formula cook do, both when attached
+// with --on and when slung standalone with --formula. A graph-class recipe
+// (an attached vapor wisp) still goes to the graph store.
+func TestSplitSlingPoursEachRecipeIntoTheStoreOfItsClass(t *testing.T) {
+	forEachSlingTopology(t, func(t *testing.T, env splitAttachEnv) {
+		a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+
+		src := env.source(t, "")
+		poured, err := env.sling(t, src.ID, splitAttachPouredA)
+		if err != nil {
+			t.Fatalf("sling --on poured: %v", err)
+		}
+		root, err := env.work.Get(poured.WispRootID)
+		if err != nil {
+			t.Fatalf("attached v1 poured root %s is not in the work store: %v", poured.WispRootID, err)
+		}
+		if got := coordclass.Classify(root); got != coordclass.ClassWork {
+			t.Fatalf("attached v1 poured root classifies %s, want work", got)
+		}
+
+		standalone, err := DoSling(SlingOpts{Target: a, BeadOrFormula: splitAttachPouredB, IsFormula: true}, env.deps, env.deps.Store)
+		if err != nil {
+			t.Fatalf("sling --formula poured: %v", err)
+		}
+		if _, err := env.work.Get(standalone.BeadID); err != nil {
+			t.Fatalf("standalone v1 poured root %s is not in the work store: %v", standalone.BeadID, err)
+		}
+
+		vsrc := env.source(t, "")
+		vapor, err := env.sling(t, vsrc.ID, splitAttachVaporA)
+		if err != nil {
+			t.Fatalf("sling --on vapor: %v", err)
+		}
+		if _, err := env.graph.Get(vapor.WispRootID); err != nil {
+			t.Fatalf("attached vapor wisp %s is not in the graph store: %v", vapor.WispRootID, err)
+		}
+
+		if !env.split {
+			return
+		}
+		rows, err := env.graph.List(beads.ListQuery{AllowScan: true, IncludeClosed: true, TierMode: beads.TierBoth})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range rows {
+			if coordclass.Classify(b) == coordclass.ClassWork {
+				t.Errorf("work-class bead %s (type=%s) poured into the graph store", b.ID, b.Type)
+			}
+		}
+	})
 }
