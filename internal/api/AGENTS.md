@@ -315,6 +315,20 @@ adopts it.
   answer that may have reached its prompt (`maybe_delivered`,
   `ambiguous_delivery`) is 409 `op_already_failed` with no resend offered,
   since a resend would answer the next occurrence.
+- `/submit` and `/messages` (message listed): a lane message op under the
+  operator, keyed by the Idempotency-Key or a minted one, with
+  `LaneMessageOpPolicy` (default and follow_up at the boundary,
+  interrupt_now as a deliver-now unit, which never hard-restarts), proposed
+  after a configured named session's row is materialized; `resume: true`
+  first runs the operator wake that consumes the hold. The 202 follows the
+  commit, `request_id` the op id, and the acceptance is recorded before the
+  lane is rung (a refused acceptance cancels the op). The terminal event
+  follows `laneSubmitSettle` (5 s) later through `cityOps.emit`: the
+  result, queued false, for an op closed succeeded; `request.failed`
+  (`messageReplayErrorCode`) for one closed otherwise; the result, queued
+  true, for one still open. A same-key retry of a closed op replays it
+  (`storedReplayAnswer`); of an open lane op it is 202 replayed. extmsg
+  member notices are lane notices from `gc:extmsg`.
 - Run cancel (interrupt listed): one op per live holder session, keyed
   `run-cancel:<run id>` with the run as causation, awaited together;
   `succeeded` is interrupted, a failure or an op still open is a failure,
