@@ -202,53 +202,51 @@ func TestWorkGCLaneWiring(t *testing.T) {
 	})
 }
 
-// slowListStore delays every List, as a bd subprocess does.
-type slowListStore struct {
+// wispLaneListCounter counts List calls.
+type wispLaneListCounter struct {
 	batchDeleteWorkStore
-	delay time.Duration
 	mu    *sync.Mutex
 	lists *int
 }
 
-func (s slowListStore) List(q beads.ListQuery) ([]beads.Bead, error) {
+func (s wispLaneListCounter) List(q beads.ListQuery) ([]beads.Bead, error) {
 	s.mu.Lock()
 	*s.lists++
 	s.mu.Unlock()
-	time.Sleep(s.delay)
 	return s.batchDeleteWorkStore.List(q)
 }
 
 // Should-fix 3/4: the pass stops starting work at the wall-clock deadline and
-// as soon as its ctx is done.
+// as soon as its ctx is done: past either, it lists no leg and walks no root.
 func TestWorkArmHonoursItsDeadlineAndCtx(t *testing.T) {
-	mk := func(t *testing.T) (batchDeleteWorkStore, slowListStore, *int) {
+	mk := func(t *testing.T) (batchDeleteWorkStore, wispLaneListCounter, *int) {
 		inner := newBatchDeleteWorkStore()
 		for i := 0; i < 10; i++ {
 			closedPoured(t, inner, fmt.Sprintf("r-%d", i))
 		}
 		lists := 0
-		return inner, slowListStore{batchDeleteWorkStore: inner, delay: 20 * time.Millisecond, mu: &sync.Mutex{}, lists: &lists}, &lists
+		return inner, wispLaneListCounter{batchDeleteWorkStore: inner, mu: &sync.Mutex{}, lists: &lists}, &lists
 	}
 	count := func(inner batchDeleteWorkStore) int {
 		rows, _ := inner.List(beads.ListQuery{AllowScan: true, IncludeClosed: true, Type: "molecule"})
 		return 10 - len(rows)
 	}
 	t.Run("deadline", func(t *testing.T) {
-		inner, slow, _ := mk(t)
-		e, legs := laneLegs(t, slow)
+		inner, counting, lists := mk(t)
+		e, legs := laneLegs(t, counting)
 		prev := wispGCWorkArmWallBudget
-		wispGCWorkArmWallBudget = 50 * time.Millisecond
+		wispGCWorkArmWallBudget = time.Nanosecond
 		t.Cleanup(func() { wispGCWorkArmWallBudget = prev })
 		withWorkArmBudget(t, 100, func() {
 			enforcedLane(t, func() { runLane(t, newWorkMoleculeGC(), legs, e.graphStore(), time.Now().Add(2*time.Hour)) })
 		})
-		if n := count(inner); n >= 10 {
-			t.Fatalf("one pass purged all %d closures through a 50ms wall budget on a slow store", n)
+		if n := count(inner); n != 0 || *lists != 0 {
+			t.Fatalf("a pass past its wall deadline listed %d time(s) and purged %d closure(s); it must start nothing", *lists, n)
 		}
 	})
 	t.Run("ctx-done", func(t *testing.T) {
-		inner, slow, lists := mk(t)
-		e, legs := laneLegs(t, slow)
+		inner, counting, lists := mk(t)
+		e, legs := laneLegs(t, counting)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		enforcedLane(t, func() {
