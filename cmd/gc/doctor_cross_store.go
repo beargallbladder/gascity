@@ -156,6 +156,9 @@ type danglingBlockingEdgesCheck struct {
 	cfg      *config.City
 	cityPath string
 	newStore func(string) (beads.Store, error)
+	// scopes are the stores the last collect read; Fix re-asks them whether a
+	// target is still absent right before it removes an edge to it.
+	scopes []doctorScope
 }
 
 func newDanglingBlockingEdgesCheck(cfg *config.City, cityPath string, newStore func(string) (beads.Store, error)) *danglingBlockingEdgesCheck {
@@ -210,6 +213,7 @@ func typedDepLiteral(target string) (depType, id string, ok bool) {
 // (one batched read per store).
 func (c *danglingBlockingEdgesCheck) collect() (edges []danglingEdge, skipped []string) {
 	scopes, unread, skipped := splitCityDoctorScopes(c.cfg, c.cityPath, c.newStore)
+	c.scopes = scopes
 	if len(scopes) == 0 {
 		return nil, skipped
 	}
@@ -374,7 +378,7 @@ func (c *danglingBlockingEdgesCheck) Fix(*doctor.CheckContext) error {
 		if e.action == danglingOperator {
 			continue
 		}
-		if err := fixDanglingEdge(e); err != nil {
+		if err := fixDanglingEdge(e, c.stillAbsent); err != nil {
 			// One row's failure does not abandon the others.
 			errs = append(errs, err)
 		}
@@ -382,8 +386,25 @@ func (c *danglingBlockingEdgesCheck) Fix(*doctor.CheckContext) error {
 	return errors.Join(errs...)
 }
 
-// fixDanglingEdge applies one edge's fix, re-reading the row's edges right
-// before it writes (an agent may have changed them since the scan).
+// stillAbsent re-asks every store the scan read whether id is held now.
+func (c *danglingBlockingEdgesCheck) stillAbsent(id string) (bool, error) {
+	for _, sc := range c.scopes {
+		found, err := beads.GetMany(sc.store, []string{id})
+		if err != nil {
+			return false, fmt.Errorf("%s: re-reading %s: %w", sc.label, id, err)
+		}
+		if len(found) > 0 {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// fixDanglingEdge applies one edge's fix, re-reading right before it writes
+// (an agent may have changed things since the scan): the row's edges, and —
+// for a removal — that no store holds the target now, or — for a rewrite —
+// that the row's own store still holds the real id. A premise that moved
+// leaves the edge for the next run.
 //
 // A rewrite never retypes an edge the row already has: on SQLite and the
 // in-memory stores adding an edge to a target the row already points at
@@ -394,7 +415,7 @@ func (c *danglingBlockingEdgesCheck) Fix(*doctor.CheckContext) error {
 // the literal edge's payload where the store can say what it is — and the
 // literal is removed only once the add succeeded, so a failed add loses
 // nothing. (A creator is not carried: the store interface does not expose it.)
-func fixDanglingEdge(e danglingEdge) error {
+func fixDanglingEdge(e danglingEdge, stillAbsent func(string) (bool, error)) error {
 	deps, err := e.store.DepList(e.rowID, "down")
 	if err != nil {
 		return fmt.Errorf("%s row %s: re-reading edges before the fix: %w", e.label, e.rowID, err)
@@ -412,6 +433,26 @@ func fixDanglingEdge(e danglingEdge) error {
 	}
 	if !literalPresent {
 		return nil
+	}
+	switch e.action {
+	case danglingRewrite:
+		if _, err := beads.HandlesFor(e.store).Live.Get(e.realID); err != nil {
+			if errors.Is(err, beads.ErrNotFound) {
+				return nil
+			}
+			return fmt.Errorf("%s row %s: re-reading %s before the rewrite: %w", e.label, e.rowID, e.realID, err)
+		}
+	default:
+		target, _ := beads.ExternalBlockerTarget(e.target)
+		if stillAbsent != nil {
+			absent, err := stillAbsent(target)
+			if err != nil {
+				return fmt.Errorf("%s row %s: %w", e.label, e.rowID, err)
+			}
+			if !absent {
+				return nil
+			}
+		}
 	}
 	if e.action == danglingRewrite && !realPresent {
 		if err := addTypedEdgeLike(e); err != nil {
