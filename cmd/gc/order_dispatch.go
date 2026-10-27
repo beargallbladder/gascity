@@ -728,7 +728,7 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 		if !legacyOK {
 			continue
 		}
-		storesForGate, storeKeysForGate := m.gateStoresFor(cityPath, store, storeKey, legacyStore, m.orderPoursWork(ctx, a))
+		storesForGate, storeKeysForGate := m.gateStoresFor(cityPath, store, storeKey, legacyStore, func() bool { return m.orderPoursWork(ctx, a) })
 		scoped := a.ScopedName()
 		// NoWorkGate orders (pure probes/sweeps that track no beads) opt out of
 		// BOTH open-work gates entirely. The gates exist to suppress re-dispatch
@@ -2336,8 +2336,9 @@ func (m *memoryOrderDispatcher) ordersStoreKey() string {
 // gate leg on a split city too: without it the open-work gate re-fires while
 // the run is still open, and the cooldown clock and the event cursor regress
 // once the tracking bead is gone (R17). Every other order keeps the binding
-// legs alone.
-func (m *memoryOrderDispatcher) gateStoresFor(cityPath string, store beads.Store, storeKey string, legacyStore beads.Store, poursWork bool) ([]beads.Store, []string) {
+// legs alone. poursWork is asked only when a binding exists, so a
+// single-store city never compiles a formula to build its gate; nil means no.
+func (m *memoryOrderDispatcher) gateStoresFor(cityPath string, store beads.Store, storeKey string, legacyStore beads.Store, poursWork func() bool) ([]beads.Store, []string) {
 	workStores := []beads.Store{store}
 	workKeys := []string{storeKey}
 	if legacyStore != nil {
@@ -2356,7 +2357,7 @@ func (m *memoryOrderDispatcher) gateStoresFor(cityPath string, store beads.Store
 		infraKeys = append(infraKeys, m.ordersStoreKey())
 	}
 	if len(infraStores) > 0 {
-		if poursWork && store != nil && !storeListContains(infraStores, store) {
+		if poursWork != nil && store != nil && !storeListContains(infraStores, store) && poursWork() {
 			infraStores = append(infraStores, store)
 			infraKeys = append(infraKeys, storeKey)
 		}
@@ -2369,8 +2370,12 @@ func (m *memoryOrderDispatcher) gateStoresFor(cityPath string, store beads.Store
 // so its run evidence lands in the target work store (see gateStoresFor). The
 // answer is memoized per order; every dispatch refreshes it from the recipe it
 // actually poured (rememberOrderPoursWork), so an edited formula is picked up
-// by the next run. An exec order, or a formula that does not compile, pours
-// nothing into the work store.
+// by the next run. An exec order pours nothing into the work store.
+//
+// A formula that does not compile here answers TRUE and is not memoized: the
+// work leg then stays on the gate. Reading one store too many costs a read;
+// reading one too few would miss a previous run's evidence (after a restart
+// the memo is empty) and fire the order again.
 func (m *memoryOrderDispatcher) orderPoursWork(ctx context.Context, a orders.Order) bool {
 	if a.IsExec() || strings.TrimSpace(a.Formula) == "" {
 		return false
@@ -2383,7 +2388,10 @@ func (m *memoryOrderDispatcher) orderPoursWork(ctx context.Context, a orders.Ord
 		return known
 	}
 	recipe, err := formula.CompileWithoutRuntimeVarValidation(ctx, a.Formula, orderFormulaSearchPaths(m.cfg, a), nil)
-	pours := err == nil && recipeCoordClass(recipe) == coordclass.ClassWork
+	if err != nil {
+		return true
+	}
+	pours := recipeCoordClass(recipe) == coordclass.ClassWork
 	m.rememberOrderPoursWork(scoped, pours)
 	return pours
 }

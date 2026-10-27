@@ -206,3 +206,35 @@ func closeAll(t *testing.T, store beads.Store) {
 		}
 	}
 }
+
+// Review 8: a single-store city never compiles a formula to build its gate,
+// and a compile failure keeps the work leg without memoizing a "no".
+func TestOrderGatePoursWorkIsLazyAndFailsSafe(t *testing.T) {
+	t.Run("single-store-never-asks", func(t *testing.T) {
+		e := newSplitEnv(t, false)
+		m, _ := newWorkClassOrderDispatcher(t, e, pouredOrderFor(t), nil)
+		m.gateStoresFor(e.cityPath, e.work, "city\x00"+e.cityPath, nil, func() bool {
+			t.Fatal("poursWork was asked on a single-store city")
+			return false
+		})
+	})
+	t.Run("compile-failure-keeps-the-work-leg", func(t *testing.T) {
+		e := newSplitEnv(t, true)
+		a := pouredOrderFor(t)
+		a.Formula = "does-not-exist"
+		m, _ := newWorkClassOrderDispatcher(t, e, a, nil)
+		if !m.orderPoursWork(context.Background(), a) {
+			t.Fatal("orderPoursWork on an uncompilable formula = false, want true (keep the work leg)")
+		}
+		m.cacheMu.Lock()
+		_, memoized := m.poursWork[a.ScopedName()]
+		m.cacheMu.Unlock()
+		if memoized {
+			t.Fatal("a compile failure was memoized")
+		}
+		stores, _ := m.gateStoresFor(e.cityPath, e.work, "city\x00"+e.cityPath, nil, func() bool { return m.orderPoursWork(context.Background(), a) })
+		if !storeListContains(stores, e.work) {
+			t.Fatal("gate legs omit the work store for an order whose formula did not compile")
+		}
+	})
+}
