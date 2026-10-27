@@ -170,3 +170,83 @@ func TestBdTopLevelVerbsCurrent(t *testing.T) {
 		t.Errorf("`bd --help` lists verb(s) TopLevelVerbs is missing: %v\nAdd them to internal/bdflags/verbs.go, then give each a row in cmd/gc's TestGcBdEveryVerbIsGuardedOrCannotFlipClass.", missing)
 	}
 }
+
+// TestBdCommandInventoryCurrent walks the installed bd's whole command tree
+// (`bd <path> --help`, recursively) and fails when bd has a command path, an
+// alias, or a flag the generated inventory (commands_gen.go) is missing. The
+// class guard's allowlist on split cities decides every path and alias in the
+// inventory (cmd/gc TestGcBdSplitAllowlistDecidesEveryCommand), so a new bd
+// command reaches that test through this one.
+func TestBdCommandInventoryCurrent(t *testing.T) {
+	bdPath, err := exec.LookPath("bd")
+	if err != nil {
+		t.Skip("bd not found in PATH; skipping command-inventory freshness check")
+	}
+	known := map[string]bool{}
+	for _, p := range CommandPaths() {
+		known[p] = true
+	}
+	aliases := CommandAliases()
+	var missing []string
+	var walk func(path []string)
+	walk = func(path []string) {
+		out, _ := exec.Command(bdPath, append(append([]string(nil), path...), "--help")...).CombinedOutput()
+		section := ""
+		key := strings.Join(path, " ")
+		parent := strings.Join(path[:max(0, len(path)-1)], " ")
+		var subs []string
+		for _, line := range strings.Split(string(out), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(line, " ") && strings.HasSuffix(trimmed, ":") && trimmed != "" {
+				section = strings.TrimSuffix(trimmed, ":")
+				continue
+			}
+			switch {
+			case section == "Aliases" && trimmed != "" && len(path) > 0:
+				for _, a := range strings.Split(trimmed, ",") {
+					a = strings.TrimSpace(a)
+					if a == "" || a == path[len(path)-1] {
+						continue
+					}
+					full := strings.TrimSpace(parent + " " + a)
+					if aliases[full] != key {
+						missing = append(missing, "alias "+full+" → "+key)
+					}
+				}
+				section = ""
+			case section == "Flags" && len(path) > 0:
+				if m := flagNameRE.FindStringSubmatch(line); m != nil {
+					long := "--" + m[2]
+					found := false
+					for _, f := range append(CommandFlagSpecs(key), GlobalFlagSpecs()...) {
+						if f.Long == long {
+							found = true
+						}
+					}
+					if !found {
+						missing = append(missing, "flag "+key+" "+long)
+					}
+				}
+			case section == "Available Commands" || (len(path) == 0 && section != "" && section != "Flags" && section != "Global Flags" && section != "Usage" && section != "Examples"):
+				if m := helpVerbRE.FindStringSubmatch(line); m != nil {
+					subs = append(subs, m[1])
+				}
+			}
+		}
+		for _, s := range subs {
+			child := strings.TrimSpace(key + " " + s)
+			if !known[child] {
+				missing = append(missing, "path "+child)
+				continue
+			}
+			if len(path) < 3 {
+				walk(append(append([]string(nil), path...), s))
+			}
+		}
+	}
+	walk(nil)
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("the installed bd has %d command path(s), alias(es) or flag(s) the inventory is missing:\n  %s\nRegenerate internal/bdflags/commands_gen.go from `bd <path> --help`, then decide each new path and alias in cmd/gc's split-city allowlist.", len(missing), strings.Join(missing, "\n  "))
+	}
+}

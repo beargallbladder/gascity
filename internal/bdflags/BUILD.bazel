@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "bdargs.go",
         "bdflags.go",
+        "commands.go",
+        "commands_gen.go",
         "scan.go",
         "verbs.go",
     ],
@@ -18,6 +20,7 @@ go_test(
     srcs = [
         "bdargs_test.go",
         "bdflags_test.go",
+        "commands_test.go",
         "freshness_test.go",
         "testenv_import_test.go",
         "update_force_test.go",
