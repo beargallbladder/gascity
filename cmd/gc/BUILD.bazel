@@ -2168,6 +2168,7 @@ go_test(
         "wisp_gc_fenced_delete_test.go",
         "wisp_gc_lane_split_test.go",
         "wisp_gc_round4_split_test.go",
+        "wisp_gc_round5_split_test.go",
         "wisp_gc_split_test.go",
         "wisp_gc_test.go",
         "wisp_gc_workarm_split_test.go",

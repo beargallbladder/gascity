@@ -27,8 +27,9 @@ var wispGCRefusalRecheck = time.Hour
 // A nil *wispGCNotes remembers nothing: every refusal is re-walked and every
 // detail line printed, which is what a one-off caller wants.
 type wispGCNotes struct {
-	refused  map[string]wispGCRefusal
-	reported map[string]struct{}
+	refused map[string]wispGCRefusal
+	// reported is when each per-root line was last printed or seen.
+	reported map[string]time.Time
 	seen     map[string]struct{}
 }
 
@@ -46,7 +47,34 @@ func (n *wispGCNotes) endPass() {
 	if n == nil {
 		return
 	}
-	n.reported, n.seen = n.seen, nil
+	n.reported = make(map[string]time.Time, len(n.seen))
+	for k := range n.seen {
+		n.reported[k] = time.Time{}
+	}
+	n.seen = nil
+}
+
+// endPartialPass is endPass for a pass that reaches only some roots: a line
+// seen this pass is remembered as of now, and a line not seen is forgotten only
+// once wispGCRefusalRecheck has passed since it was last seen, so a root a
+// budgeted pass did not reach is not re-logged on the pass that next reaches
+// it.
+func (n *wispGCNotes) endPartialPass(now time.Time) {
+	if n == nil {
+		return
+	}
+	if n.reported == nil {
+		n.reported = make(map[string]time.Time)
+	}
+	for k := range n.seen {
+		n.reported[k] = now
+	}
+	for k, at := range n.reported {
+		if now.Sub(at) > wispGCRefusalRecheck {
+			delete(n.reported, k)
+		}
+	}
+	n.seen = nil
 }
 
 // detail reports whether the per-root line keyed by key should be printed:

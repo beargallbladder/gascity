@@ -330,9 +330,15 @@ func TestWispGCMemoPruning(t *testing.T) {
 	})
 }
 
+// hasMemo reports whether n remembers id under arm, on any leg (the work
+// arm's memos are named arm@<leg ref>).
 func hasMemo(n wispGCNotes, arm, id string) bool {
-	_, ok := n.refused[arm+"\x00"+id]
-	return ok
+	for key := range n.refused {
+		if (strings.HasPrefix(key, arm+"\x00") || strings.HasPrefix(key, arm+"@")) && strings.HasSuffix(key, "\x00"+id) {
+			return true
+		}
+	}
+	return false
 }
 
 // toggleListStore fails List once told to.
