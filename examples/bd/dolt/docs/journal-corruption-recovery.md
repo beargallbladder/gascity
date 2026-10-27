@@ -150,11 +150,12 @@ On a **split-store city** (one that serves its infrastructure classes from a
 separate binding), `gc bd backup restore` is refused, with no override. gc
 cannot verify a backup's age against the split, and a backup taken before the
 split would bring that time's infrastructure rows back into the work store all
-at once. Restore the backup into a scratch scope with bd directly, `bd export`
-it, and import the export with `gc bd import <file> --skip-infra` (Step 4b).
-If you know the backup was taken after the split, stop the city and run
-`bd backup restore` directly in the scope; the next `gc start` checks the work
-store for stranded rows.
+at once. Restore the backup into a scratch single-store city instead (a
+throwaway `gc init` city with no `[storage]` split, where `gc bd backup
+restore` is forwarded unchanged), `gc bd export` it there, and import the
+export into the split city with `gc bd import <file> --skip-infra` (Step 4b),
+which keeps only the rows the work store holds. The next `gc start` checks the
+work store for stranded rows.
 
 No maintenance order ever runs a restore.
 
@@ -172,8 +173,8 @@ If no backup is configured or the backup itself is corrupt, proceed to Step 4b.
 # Drop the corrupt database directory
 rm -rf /path/to/city/.beads/dolt/<dbname>
 
-# Re-initialize an empty store (on a split-store city, gc bd refuses --db:
-# run `bd init --db <dbname>` directly in the scope with the city stopped)
+# Re-initialize an empty store (on a split-store city, gc bd refuses --db;
+# see "gc bd on split cities" in docs/runbooks/split-storage-classes.md)
 gc bd init --db <dbname>
 
 # Import the latest JSONL archive snapshot of this database (written by the

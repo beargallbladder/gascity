@@ -238,12 +238,28 @@ stranded, and every later routed `gc` command refuses until it is repaired.
 
 How a command gets through:
 
-- **The bd build must be pinned.** gc runs `bd version` and judges against the
-  pinned inventory of exactly that build: bd 1.3.2, or the bd 1.3.0 Enterprise
-  build at commit `77612097cec0`. Any other build is refused. The inventory is
-  bd's own command tree, hidden flags included, dumped from source by
-  `internal/bdflags/inventorygen/generate.sh`; regenerate it for a new bd
-  before a split city uses that bd.
+- **The bd binary's command tree must match a pinned inventory.** gc does
+  not trust the version string: every Enterprise build reports 1.3.0, and an
+  OSS build from main reports 1.3.2 with a tree that differs from the 1.3.2
+  tag's. Instead gc walks the binary's `--help` for every visible command and
+  compares the commands, aliases and flags (shorthand, type, default,
+  no-value default, usage) with the visible projection of each pinned
+  inventory: bd 1.3.2, and the bd 1.3.0 Enterprise build at commit
+  `77612097cec0`. A binary that matches one is judged against that
+  inventory; any other is refused, with a `gc_bd.refused` event and a
+  `gc doctor` error (check `bd-command-inventory`, which `gc start` also
+  warns about). The inventory is bd's own command tree, hidden flags
+  included, dumped from source by `internal/bdflags/inventorygen/generate.sh`
+  with its provenance (commit, build tags, Go, cobra and pflag versions).
+  Hidden commands and flags are not in `--help`, so for those gc relies on
+  the pinned inventory of the build whose visible tree matched.
+- **The verdict is cached per binary.** gc keys the result by the binary's
+  path, size, modification time and sha256 in `.gc/cache/bd-inventory.json`,
+  so the walk runs once per binary; a changed binary is walked again.
+  `gc doctor --fix` writes a vouch, `[storage] gc_bd_inventory =
+  "<inventory>@sha256:<hex>"`, after walking the city's bd and only if its
+  tree matches. A binary with that sha256 is then accepted without a walk;
+  any other binary is walked as usual.
 - **gc resolves the command exactly as bd does,** with a mirror of that tree
   under the same cobra and pflag versions. It refuses any argv where cobra's
   command lookup and pflag's flag parse disagree about which arguments name
@@ -267,7 +283,7 @@ unchanged.
 gc serves its own `release-if-current` itself.
 
 **Writes that change no field the class depends on:** `close`, `reopen`,
-`delete`, `assign`, `priority`, `note`, `comment`, `comments add`,
+`assign`, `priority`, `note`, `comment`, `comments add`,
 `heartbeat`, `unclaim`, `reclaim`, `defer`, `undefer`, `dep remove`,
 `dep unrelate`, `promote`, `purge`, `prune`, `gate resolve`, `gate check`,
 `mol burn`, `mol wisp gc`, `backup sync`, `backup init`, `dolt start`,
@@ -278,8 +294,16 @@ gc serves its own `release-if-current` itself.
 **Writes gc judges:**
 
 - `create` and `q`: the new bead's type, labels and metadata are classified,
-  including a `--metadata @file`, which gc reads. An `--id` inside a class
-  binding's reserved namespace is refused.
+  including a `--metadata @file`, which gc reads, and the labels bd copies
+  from a `--parent` (unless `--no-inherit-labels`). An `--id` inside a class
+  binding's reserved namespace is refused. `create --graph` is refused: a
+  graph plan mints a bead per node and no shipped workflow uses it.
+- `delete` (positionals and `--from-file`): refused when a class-binding bead
+  depends on one of the beads, because that dependency would dangle.
+  `--gc-allow-dangling-edges` (gc's own flag; bd never sees it) deletes
+  anyway.
+- `init`: a `--prefix` inside a class binding's reserved namespace is
+  refused.
 - `update`, `label add`, `label remove`, `tag` and `set-state`: the write is
   judged against the bead its id resolves to. If the id resolves to no bead,
   to a different bead (a short or partial id), or cannot be read, a write that
@@ -299,8 +323,12 @@ gc serves its own `release-if-current` itself.
   `--depends-on`), `dep relate`, `link`, `duplicate` (`--of`), `supersede`
   (`--with`), `gate create` (`--blocks`), `create`/`q`/`update --parent`, `create --deps` and
   `--waits-for`, the `dep add` lines of a `batch`, and the dependencies of an
-  `import` must each name beads of this work store that no class binding
-  holds. `dep add --file` is refused.
+  `import` must each name beads of the city's work stores that no class
+  binding holds. Each endpoint is read in the work store its id prefix names,
+  so a dependency between a rig's bead and the city's (or another rig's) is
+  allowed. An `external:` reference is not a bead and is allowed. Through the
+  by-id door, `update --parent` of a binding resident must name a parent the
+  same binding holds. `dep add --file` is refused.
 
 **Aliases forwarded:** `new` (create), `done` (close), `view` (show), `hb`
 (heartbeat), `stats` (status), `dep rm` (dep remove). Every other alias is
@@ -312,18 +340,23 @@ refused, `mol fart` and `protomolecule` included.
 |---|---|
 | `mol pour`, `mol bond`, `mol wisp` without `--root-only`, `cook --persist`, `swarm` | `gc sling <target> <formula>` or `gc formula cook <formula>`, which put every bead in the store that holds its class |
 | `backup restore` | the split-city path in `examples/bd/dolt/docs/journal-corruption-recovery.md` |
-| `dolt pull`, `vc`, `federation`, `sync`, `branch`, `conflicts`, `migrate`, `admin`, `init --db` | stop the city and run bd directly; the next `gc start` checks the work store |
+| `dolt pull`, `vc`, `federation`, `sync`, `branch`, `conflicts`, `migrate`, `admin`, `init --db` | not available through `gc bd` on a split city: these maintain the store itself, and gc cannot judge what they write. Stop the city (`gc stop`) and have the store's operator carry out the maintenance under that operation's own runbook; then `gc start`, whose boot check refuses to serve if the work store holds an infrastructure row, and `gc doctor` |
 | `serve` | the gc API, which routes writes by class |
 | `create-form`, `edit` | `gc bd create` / `gc bd update` with flags |
 | flags that point bd at another store: `-C`/`--directory`, `--db`, `--database`, `--profile`, `--server-url`, `--global`, `create`/`gate create --repo`, `dolt push --remote`, `cook --search-path`, and init's backend, server and remote flags | `gc bd --rig <rig>` to pick a scope; for anything else, none |
 
-There is no override flag. gc cannot verify a backup's age or a merged
-revision's contents against the split, so these commands stay refused.
+There is no override flag for these. gc cannot verify a backup's age or a
+merged revision's contents against the split, so these commands stay refused.
+No refusal sends you around gc: going around it would skip every check above.
 
-`delete`, `prune` and `purge` remove work beads without asking whether a bead
-in the class binding depends on them. Edges across stores are never written
-through `gc bd`, but rows a migration carried may still hold one, and deleting
-the work end leaves that dependency dangling.
+`prune` and `purge` (the core reaper) remove closed work beads without the
+`delete` check. That is safe while their ages (a week and more) stay far above
+the gate-sweep interval (30 seconds) that releases a binding gate once its
+work dependency closes; `TestReaperPurgeAgeStaysAboveTheGateSweep` pins that.
+
+Every refusal also writes a `gc_bd.refused` event to the city's event log,
+with the command path, the verb, the scope, the caller (`GC_AGENT`) and the
+session, so a script's `|| true` cannot hide one.
 
 **Requesting an addition.** The allowlist lives in
 `cmd/gc/bd_split_allowlist.go`. To add a command, open an issue or a PR that
@@ -331,8 +364,8 @@ names the workflow that needs it and says why the command cannot change a
 bead's class or write a cross-store edge, or how a judge would decide it. Add
 a row and its tests, and add it to this section;
 `TestGcBdSplitAllowlistIsDocumented` checks that this section lists every
-allowlisted command. Until then, run bd directly in the scope after checking
-what it writes.
+allowlisted command. Until then the command is not available through `gc bd`
+on a split city.
 
 ## Upgrading a city migrated by gc 1.5.0
 
