@@ -166,6 +166,17 @@ func (s failingBlockerStore) Get(id string) (beads.Bead, error) {
 	return s.MemStore.Get(id)
 }
 
+// List fails the batched blocker read (an id list naming failGet) the same way
+// Get fails the single read: blockers are read in one batch per leg.
+func (s failingBlockerStore) List(q beads.ListQuery) ([]beads.Bead, error) {
+	for _, id := range q.IDs {
+		if id == s.failGet {
+			return nil, errors.New("blocker read refused")
+		}
+	}
+	return s.MemStore.List(q)
+}
+
 // TestInProgressEnrichmentFailureNamesTheRowAndBlocker pins fail-loud: a blocker
 // the serving leg cannot resolve fails the answer, naming the leg, the blocker
 // and the row, exactly as the per-row walk named them.

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -255,7 +256,7 @@ func TestReadBoundedAnswerRefillsPastAWithheldRow(t *testing.T) {
 	// these; make them premature instead, as bd would, by serving them through
 	// a leg that ignores the edge.
 	served := mustCreate(t, work, beads.Bead{Title: "servable", Type: "task", Priority: &low})
-	legs := []Leg{testLeg("work", externalBlockerStore{work}), {Label: "graph", Store: binding, ClassBinding: true, ReservedPrefixes: []string{"gcg"}}}
+	legs := []Leg{testLeg("work", externalBlockerStore{Store: work}), {Label: "graph", Store: binding, ClassBinding: true, ReservedPrefixes: []string{"gcg"}}}
 	got := readyIDs(t, legs, Query{Limit: 1})
 	if !slices.Equal(got, []string{served.ID}) {
 		t.Fatalf("ready(limit=1) = %v, want [%s]: every higher-priority row is gated by the open graph step %s", got, served.ID, step.ID)
@@ -263,8 +264,10 @@ func TestReadBoundedAnswerRefillsPastAWithheldRow(t *testing.T) {
 }
 
 // externalBlockerStore serves a MemStore's ready set the way bd/Dolt does: a
-// blocker the store does not hold never blocks.
-type externalBlockerStore struct{ *beads.MemStore }
+// blocker the store does not hold never blocks. It embeds the Store interface,
+// not the MemStore, so it does not claim the MemStore's stranding listing
+// (beads.AbsentBlockedReader): bd strands nothing.
+type externalBlockerStore struct{ beads.Store }
 
 func (s externalBlockerStore) Ready(query ...beads.ReadyQuery) ([]beads.Bead, error) {
 	q := beads.ReadyQuery{}
@@ -329,7 +332,236 @@ func (s externalBlockerStore) ReadyOrdered(query beads.ReadyQuery, _ beads.Ready
 	return rows, true, nil
 }
 
-// ReadyBlockedByAbsent is withheld: this store models bd, which strands nothing.
-func (s externalBlockerStore) ReadyBlockedByAbsent(beads.ReadyQuery) ([]beads.Bead, error) {
-	return nil, nil
+// TestReadKeepsBdReadySemanticsOnASingleStoreCityWithRigs is the owner
+// decision's compatibility half: a city with no class binding, with or without
+// rigs, keeps bd's ready answer byte for byte. bd serves a row whose blocking
+// edge names an external:<id>, an external capability or another rig's bead,
+// and so does gc ready — in bd's own order, row for row.
+func TestReadKeepsBdReadySemanticsOnASingleStoreCityWithRigs(t *testing.T) {
+	city := splittest.NewNativeWorkStore(t, "gc")
+	rig := splittest.NewNativeWorkStore(t, "rg")
+	rigBlocker := mustCreate(t, rig, beads.Bead{Title: "rig blocker", Type: "task"})
+	capDep := mustCreate(t, city, beads.Bead{Title: "capability dep", Type: "task"})
+	extID := mustCreate(t, city, beads.Bead{Title: "external id dep", Type: "task"})
+	crossRig := mustCreate(t, city, beads.Bead{Title: "cross-rig dep", Type: "task"})
+	dangling := mustCreate(t, city, beads.Bead{Title: "dangling dep", Type: "task"})
+	mustCreate(t, city, beads.Bead{Title: "clean", Type: "task"})
+	for _, e := range [][2]string{
+		{capDep.ID, "external:rg:some-capability"},
+		{extID.ID, "external:" + rigBlocker.ID},
+		{crossRig.ID, rigBlocker.ID},
+		{dangling.ID, "discovered-from:gc-404"},
+	} {
+		if err := city.DepAdd(e[0], e[1], "blocks"); err != nil {
+			t.Fatalf("DepAdd(%s -> %s): %v", e[0], e[1], err)
+		}
+	}
+	legs := []Leg{testLeg("city", city), testLeg("rig:rg", rig)}
+	if IsSplit(legs) {
+		t.Fatal("fixture: a city with no class binding reads as split")
+	}
+	var want []string
+	for _, leg := range legs {
+		own, err := leg.Store.Ready(beads.ReadyQuery{TierMode: beads.FederatedReadTier})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range own {
+			want = append(want, b.ID)
+		}
+	}
+	for _, id := range []string{capDep.ID, extID.ID, crossRig.ID, dangling.ID} {
+		if !slices.Contains(want, id) {
+			t.Skipf("fixture: this bd does not serve %s itself (own ready %v); nothing to keep", id, want)
+		}
+	}
+	got := readyIDs(t, legs, Query{})
+	if !sameSet(got, want) {
+		t.Fatalf("single-store gc ready = %v, want bd's own answer %v", got, want)
+	}
+	if limited := readyIDs(t, legs, Query{Limit: 2}); len(limited) != 2 {
+		t.Fatalf("single-store gc ready(limit=2) = %v, want two of bd's rows", limited)
+	}
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	x := slices.Clone(a)
+	y := slices.Clone(b)
+	slices.Sort(x)
+	slices.Sort(y)
+	return slices.Equal(x, y)
+}
+
+// TestReadOnASplitCityResolvesExternalRefsAndCrossRigBlockers pins the
+// external: half of the owner decision on a split city with a real bd/Dolt
+// work store and rig: an external:<id> edge names the real bead and holds its
+// row until that bead closes; an external capability never blocks, as in bd; a
+// cross-rig blocker holds its row until it closes in the rig.
+func TestReadOnASplitCityResolvesExternalRefsAndCrossRigBlockers(t *testing.T) {
+	work := splittest.NewNativeWorkStore(t, "gc")
+	rig := splittest.NewNativeWorkStore(t, "rg")
+	binding := sqliteBinding(t)
+	last := 4
+	step := mustCreate(t, binding, beads.Bead{Title: "graph step", Type: "task", Priority: &last})
+	rigBlocker := mustCreate(t, rig, beads.Bead{Title: "rig blocker", Type: "task", Priority: &last})
+	extRow := mustCreate(t, work, beads.Bead{Title: "external id dep", Type: "task"})
+	capRow := mustCreate(t, work, beads.Bead{Title: "capability dep", Type: "task"})
+	rigRow := mustCreate(t, work, beads.Bead{Title: "cross-rig dep", Type: "task"})
+	for _, e := range [][2]string{
+		{extRow.ID, "external:" + step.ID},
+		{capRow.ID, "external:rg:some-capability"},
+		{rigRow.ID, rigBlocker.ID},
+	} {
+		if err := work.DepAdd(e[0], e[1], "blocks"); err != nil {
+			t.Fatalf("DepAdd(%s -> %s): %v", e[0], e[1], err)
+		}
+	}
+	legs := []Leg{testLeg("work", work), testLeg("rig:rg", rig), {Label: "graph", Store: binding, ClassBinding: true, ReservedPrefixes: []string{"gcg"}}}
+	got := readyIDs(t, legs, Query{})
+	if slices.Contains(got, extRow.ID) || slices.Contains(got, rigRow.ID) {
+		t.Fatalf("ready = %v served %s or %s while its blocker is open", got, extRow.ID, rigRow.ID)
+	}
+	if !slices.Contains(got, capRow.ID) {
+		t.Fatalf("ready = %v withholds %s, whose only blocker is an external capability bd never blocks on", got, capRow.ID)
+	}
+	closeBead(t, binding, step.ID)
+	closeBead(t, rig, rigBlocker.ID)
+	got = readyIDs(t, legs, Query{})
+	if !slices.Contains(got, extRow.ID) || !slices.Contains(got, rigRow.ID) {
+		t.Fatalf("ready = %v after both blockers closed, want %s and %s served", got, extRow.ID, rigRow.ID)
+	}
+}
+
+// TestReadHoldsARowUntilItsBlockerReleasesInEveryStore pins the two halves of
+// "closed in every store": a blocker one store holds closed and another holds
+// open blocks; a blocker closed with a failed work outcome
+// (beads.DependencySatisfied) blocks.
+func TestReadHoldsARowUntilItsBlockerReleasesInEveryStore(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, work, binding beads.Store) (row beads.Bead)
+	}{
+		{"a second copy is still open", func(t *testing.T, work, binding beads.Store) beads.Bead {
+			// The same id held twice: closed in the binding, open in a rig
+			// store (an uncleared relic's original).
+			rig := beads.NewMemStore()
+			rig.HonorExplicitIDs = true
+			bl := mustCreate(t, binding, beads.Bead{Title: "relic", Type: "task", Priority: intRef(4)})
+			closeBead(t, binding, bl.ID)
+			if _, err := rig.Create(beads.Bead{ID: bl.ID, Title: "relic original", Type: "task"}); err != nil {
+				t.Fatal(err)
+			}
+			row := mustCreate(t, work, beads.Bead{Title: "row", Type: "task"})
+			if err := work.DepAdd(row.ID, "external:"+bl.ID, "blocks"); err != nil {
+				t.Fatal(err)
+			}
+			extraLegs = []Leg{testLeg("rig:r", rig)}
+			return row
+		}},
+		{"closed with a failed outcome", func(t *testing.T, work, binding beads.Store) beads.Bead {
+			bl := mustCreate(t, binding, beads.Bead{Title: "failed step", Type: "task", Priority: intRef(4)})
+			if err := binding.SetMetadata(bl.ID, "gc.work_outcome", "blocked"); err != nil {
+				t.Fatal(err)
+			}
+			closeBead(t, binding, bl.ID)
+			row := mustCreate(t, work, beads.Bead{Title: "row", Type: "task"})
+			if err := work.DepAdd(row.ID, "external:"+bl.ID, "blocks"); err != nil {
+				t.Fatal(err)
+			}
+			extraLegs = nil
+			return row
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := beads.NewMemStore()
+			binding := sqliteBinding(t)
+			row := tc.setup(t, work, binding)
+			legs := append([]Leg{testLeg("work", externalBlockerStore{Store: work})}, extraLegs...)
+			legs = append(legs, Leg{Label: "graph", Store: binding, ClassBinding: true, ReservedPrefixes: []string{"gcg"}})
+			if got := readyIDs(t, legs, Query{}); slices.Contains(got, row.ID) {
+				t.Fatalf("ready = %v served %s; its blocker has not released in every store", got, row.ID)
+			}
+		})
+	}
+}
+
+// extraLegs carries a case's additional legs into its run (set by setup).
+var extraLegs []Leg
+
+// countingBdLeg counts the round trips a bd-semantics work leg is asked for.
+type countingBdLeg struct {
+	externalBlockerStore
+	gets, lists, depLists atomic.Int64
+}
+
+func (s *countingBdLeg) Get(id string) (beads.Bead, error) {
+	s.gets.Add(1)
+	return s.externalBlockerStore.Get(id)
+}
+
+func (s *countingBdLeg) List(q beads.ListQuery) ([]beads.Bead, error) {
+	s.lists.Add(1)
+	return s.externalBlockerStore.List(q)
+}
+
+func (s *countingBdLeg) DepList(id, d string) ([]beads.Dep, error) {
+	s.depLists.Add(1)
+	return s.externalBlockerStore.DepList(id, d)
+}
+
+func (s *countingBdLeg) DepListBatch(ids []string) (map[string][]beads.Dep, error) {
+	s.depLists.Add(1)
+	out := make(map[string][]beads.Dep, len(ids))
+	for _, id := range ids {
+		deps, err := s.externalBlockerStore.DepList(id, "down")
+		if err != nil {
+			return nil, err
+		}
+		out[id] = deps
+	}
+	return out, nil
+}
+
+// TestReadCrossStoreCostOnASplitCity bounds what the cross-store rule costs a
+// claim-tier read (limit 1) on a split city whose bd work leg serves rows with
+// ordinary closed same-store blockers: one batched edge read and no blocker
+// read at all on the work leg (bd judged same-prefix blockers itself; the
+// binding is asked only whether it holds them, in one local batch).
+func TestReadCrossStoreCostOnASplitCity(t *testing.T) {
+	mem := beads.NewMemStore()
+	work := &countingBdLeg{externalBlockerStore: externalBlockerStore{Store: mem}}
+	for i := 0; i < 50; i++ {
+		b1 := mustCreate(t, mem, beads.Bead{Title: "done", Type: "task"})
+		b2 := mustCreate(t, mem, beads.Bead{Title: "done2", Type: "task"})
+		closeBead(t, mem, b1.ID)
+		closeBead(t, mem, b2.ID)
+		r := mustCreate(t, mem, beads.Bead{Title: "ready", Type: "task"})
+		if err := mem.DepAdd(r.ID, b1.ID, "blocks"); err != nil {
+			t.Fatal(err)
+		}
+		if err := mem.DepAdd(r.ID, b2.ID, "blocks"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legs := []Leg{testLeg("work", work), {Label: "graph", Store: sqliteBinding(t), ClassBinding: true, ReservedPrefixes: []string{"gcg"}}}
+	work.lists.Store(0)
+	rows, err := Read(legs, Query{Limit: 1})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("Read(limit=1) = %v, %v", rows, err)
+	}
+	t.Logf("limit=1 on the work leg: Gets=%d Lists=%d edge reads=%d", work.gets.Load(), work.lists.Load(), work.depLists.Load())
+	if work.gets.Load() != 0 {
+		t.Errorf("the work leg was asked for %d single blocker read(s), want 0", work.gets.Load())
+	}
+	if work.depLists.Load() > 1 {
+		t.Errorf("the work leg was asked for %d edge read(s), want at most 1 batched read", work.depLists.Load())
+	}
+	// Ready itself lists the leg; any further list is a blocker batch read,
+	// and bd already judged these blockers.
+	if work.lists.Load() > 1 {
+		t.Errorf("the work leg was asked for %d list(s), want only Ready's own", work.lists.Load())
+	}
 }
