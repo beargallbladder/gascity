@@ -1,0 +1,8979 @@
+{
+ "version": "1.3.2",
+ "build": "dev",
+ "commands": [
+  {
+   "path": "",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "version",
+     "shorthand": "V",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ],
+   "persistent": [
+    {
+     "name": "actor",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "cpu-profile",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "database",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "db",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "directory",
+     "shorthand": "C",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "dolt-auto-commit",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "format",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "global",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "ignore-schema-skew",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "mem-profile",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "no-color",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "quiet",
+     "shorthand": "q",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "readonly",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "sandbox",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "verbose",
+     "shorthand": "v",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "admin",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "admin cleanup",
+   "runnable": true,
+   "local": [
+    {
+     "name": "cascade",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "ephemeral",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "older-than",
+     "type": "int",
+     "default": "0"
+    }
+   ]
+  },
+  {
+   "path": "admin compact",
+   "runnable": true,
+   "local": [
+    {
+     "name": "actor",
+     "type": "string",
+     "default": "agent"
+    },
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "analyze",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "apply",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "auto",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "batch-size",
+     "type": "int",
+     "default": "10"
+    },
+    {
+     "name": "dolt",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "stats",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "summary",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "tier",
+     "type": "int",
+     "default": "1"
+    },
+    {
+     "name": "workers",
+     "type": "int",
+     "default": "5"
+    }
+   ]
+  },
+  {
+   "path": "admin reset",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ado",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ado projects",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ado pull",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ado push",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ado status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ado sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "area-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "bootstrap-match",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issues",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "iteration-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "no-create",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "prefer-ado",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-local",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-newer",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "project",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "pull-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "push-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reconcile",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "states",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "types",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "assign",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "audit",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "audit label",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "audit record",
+   "runnable": true,
+   "local": [
+    {
+     "name": "error",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "exit-code",
+     "type": "int",
+     "default": "-1"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issue-id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "kind",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "model",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "prompt",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "response",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "stdin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "tool-name",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "backup",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "backup init",
+   "aliases": [
+    "add"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "backup remove",
+   "aliases": [
+    "rm"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "backup restore",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "backup status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "backup sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "batch",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "file",
+     "shorthand": "f",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "message",
+     "shorthand": "m",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "blocked",
+   "runnable": true,
+   "local": [
+    {
+     "name": "exclude-label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "bootstrap",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "non-interactive",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "shorthand": "y",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "branch",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "children",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pretty",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "close",
+   "aliases": [
+    "done"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "claim-next",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "comment",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "continue",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "message",
+     "shorthand": "m",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "no-auto",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "shorthand": "r",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "reason-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "resolution",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "session",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "suggest-next",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "codex-hook",
+   "hidden": true,
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "comment",
+   "runnable": true,
+   "local": [
+    {
+     "name": "file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "stdin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "comments",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "local-time",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "comments add",
+   "runnable": true,
+   "local": [
+    {
+     "name": "author",
+     "shorthand": "a",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "file",
+     "shorthand": "f",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "comments list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "compact",
+   "runnable": true,
+   "local": [
+    {
+     "name": "days",
+     "type": "int",
+     "default": "30"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "completion",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "completion bash",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-descriptions",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "completion fish",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-descriptions",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "completion powershell",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-descriptions",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "completion zsh",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-descriptions",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config apply",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config drift",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config get",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config set",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force-git-tracked",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config set-many",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force-git-tracked",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config show",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "source",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "config unset",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "config validate",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "conflicts",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "conflicts list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "conflicts resolve",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "conclude",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-commit",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "ours",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "strategy",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "table",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "theirs",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "conflicts show",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all-fields",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "table",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "context",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "cook",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "mode",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "persist",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefix",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "search-path",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "var",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "count",
+   "runnable": true,
+   "local": [
+    {
+     "name": "assignee",
+     "shorthand": "a",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "by-assignee",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "by-label",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "by-priority",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "by-status",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "by-type",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "closed-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "closed-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "created-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "created-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "desc-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "empty-description",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "include-infra",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "no-assignee",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-labels",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "notes-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "priority",
+     "shorthand": "p",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "priority-max",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "priority-min",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "title-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "updated-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "updated-before",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "create",
+   "aliases": [
+    "new"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "acceptance",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "allow-empty-description",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "append-notes",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "assignee",
+     "shorthand": "a",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "body",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "body-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "context",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "defer",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "deps",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "description",
+     "shorthand": "d",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "description-file",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "design",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "design-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "due",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "ephemeral",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "estimate",
+     "shorthand": "e",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "event-actor",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "event-category",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "event-payload",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "event-target",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "external-ref",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "file",
+     "shorthand": "f",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "graph",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "label",
+     "type": "stringSlice",
+     "default": "[]",
+     "hidden": true
+    },
+    {
+     "name": "labels",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "message",
+     "shorthand": "m",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "metadata",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "mol-type",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "no-history",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-inherit-labels",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "notes",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "priority",
+     "shorthand": "p",
+     "type": "string",
+     "default": "2"
+    },
+    {
+     "name": "repo",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "silent",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "skills",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "spec-id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "stdin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "storage-class",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": "task"
+    },
+    {
+     "name": "validate",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "waits-for",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "waits-for-gate",
+     "type": "string",
+     "default": "all-children"
+    },
+    {
+     "name": "wisp-type",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "create-form",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "cursor-hook",
+   "hidden": true,
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "db-proxy-child",
+   "hidden": true,
+   "runnable": true,
+   "local": [
+    {
+     "name": "backend",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "config",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "database",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "dolt-bin",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "external-host",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "external-keep-alive",
+     "type": "duration",
+     "default": "0s"
+    },
+    {
+     "name": "external-port",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "external-socket-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "idle-timeout",
+     "type": "duration",
+     "default": "0s"
+    },
+    {
+     "name": "logpath",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "port",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "root",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "stop-epoch",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "defer",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "until",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "delete",
+   "runnable": true,
+   "local": [
+    {
+     "name": "cascade",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "from-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dep",
+   "runnable": true,
+   "local": [
+    {
+     "name": "blocks",
+     "shorthand": "b",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-cycle-check",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dep add",
+   "runnable": true,
+   "local": [
+    {
+     "name": "blocked-by",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "depends-on",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-cycle-check",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": "blocks"
+    }
+   ]
+  },
+  {
+   "path": "dep cycles",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dep list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "direction",
+     "type": "string",
+     "default": "down"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "dep relate",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dep remove",
+   "aliases": [
+    "rm"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dep tree",
+   "runnable": true,
+   "local": [
+    {
+     "name": "direction",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "format",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "max-depth",
+     "shorthand": "d",
+     "type": "int",
+     "default": "50"
+    },
+    {
+     "name": "max-rows",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "reverse",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "show-all-paths",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "status",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "dep unrelate",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "diff",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "doctor",
+   "runnable": true,
+   "local": [
+    {
+     "name": "agent",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "check",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "check-health",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "clean",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "deep",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "fix",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "fix-child-parent",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "interactive",
+     "shorthand": "i",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "migration",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "orchestrator",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "orchestrator-duplicates-threshold",
+     "type": "int",
+     "default": "1000"
+    },
+    {
+     "name": "output",
+     "shorthand": "o",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "perf",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "server",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "verbose",
+     "shorthand": "v",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "shorthand": "y",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt clean-databases",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "purge-dropped",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt commit",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "message",
+     "shorthand": "m",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "dolt killall",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt pull",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "remote",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "strategy",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "dolt push",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-adopt",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "remote",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "yes",
+     "shorthand": "y",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt remote",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt remote add",
+   "runnable": true,
+   "local": [
+    {
+     "name": "allow-git-origin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt remote list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt remote remove",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt remote reset-data",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "shorthand": "y",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt set",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "update-config",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt show",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt start",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt stop",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "dolt test",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "duplicate",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "of",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "duplicates",
+   "runnable": true,
+   "local": [
+    {
+     "name": "auto-merge",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "edit",
+   "runnable": true,
+   "local": [
+    {
+     "name": "acceptance",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "description",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "design",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "notes",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "title",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "epic",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "epic close-eligible",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "shorthand": "r",
+     "type": "string",
+     "default": "All children completed"
+    }
+   ]
+  },
+  {
+   "path": "epic status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "eligible-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "events",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "events export",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "type": "int",
+     "default": "0"
+    }
+   ]
+  },
+  {
+   "path": "events prune",
+   "runnable": true,
+   "local": [
+    {
+     "name": "before",
+     "type": "int64",
+     "default": "0"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "events tail",
+   "runnable": true,
+   "local": [
+    {
+     "name": "follow",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "since",
+     "type": "int64",
+     "default": "0"
+    }
+   ]
+  },
+  {
+   "path": "export",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "exclude-owner",
+     "type": "stringArray",
+     "default": "[]"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-infra",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-memories",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-memories",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true",
+     "hidden": true
+    },
+    {
+     "name": "output",
+     "shorthand": "o",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "scrub",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "verbose",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "federation",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "federation add-peer",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "password",
+     "shorthand": "p",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "sovereignty",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "user",
+     "shorthand": "u",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "federation list-peers",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "federation remove-peer",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "federation status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "peer",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "federation sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "peer",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "strategy",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "find-duplicates",
+   "aliases": [
+    "find-dups"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "shorthand": "n",
+     "type": "int",
+     "default": "50"
+    },
+    {
+     "name": "max-rows",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "method",
+     "type": "string",
+     "default": "mechanical"
+    },
+    {
+     "name": "model",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "threshold",
+     "type": "float64",
+     "default": "0.5"
+    }
+   ]
+  },
+  {
+   "path": "flatten",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "forget",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "formula",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "formula convert",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "delete",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "stdout",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "formula list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "formula schema",
+   "aliases": [
+    "primitives"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "formula show",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gate",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gate add-waiter",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gate check",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "escalate",
+     "shorthand": "e",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "shorthand": "l",
+     "type": "int",
+     "default": "100"
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "gate create",
+   "runnable": true,
+   "local": [
+    {
+     "name": "await-id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "blocks",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "shorthand": "r",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "timeout",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": "human"
+    }
+   ]
+  },
+  {
+   "path": "gate discover",
+   "runnable": true,
+   "local": [
+    {
+     "name": "branch",
+     "shorthand": "b",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "dry-run",
+     "shorthand": "n",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "shorthand": "l",
+     "type": "int",
+     "default": "10"
+    },
+    {
+     "name": "max-age",
+     "shorthand": "a",
+     "type": "duration",
+     "default": "30m0s"
+    }
+   ]
+  },
+  {
+   "path": "gate list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "shorthand": "a",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "shorthand": "n",
+     "type": "int",
+     "default": "50"
+    }
+   ]
+  },
+  {
+   "path": "gate resolve",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "shorthand": "r",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "gate show",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gc",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "full",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "older-than",
+     "type": "int",
+     "default": "90"
+    },
+    {
+     "name": "skip-decay",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "skip-dolt",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "github",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "github pull",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "github push",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "github repos",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "github status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "github sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issues",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "prefer-github",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-local",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-newer",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pull-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "push-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gitlab",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gitlab projects",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gitlab pull",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gitlab push",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gitlab status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "gitlab sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "assignee",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "exclude-type",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issues",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "label",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "milestone",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "no-ephemeral",
+     "type": "bool",
+     "default": "true",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "prefer-gitlab",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-local",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-newer",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "project",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "pull-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "push-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "graph",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "box",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "compact",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dot",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "html",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "max-rows",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "open",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "graph check",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "heartbeat",
+   "aliases": [
+    "hb"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "help",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "doc",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "docs-root",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "list",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "history",
+   "runnable": true,
+   "local": [
+    {
+     "name": "events",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "type": "int",
+     "default": "0"
+    }
+   ]
+  },
+  {
+   "path": "hooks",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "hooks install",
+   "runnable": true,
+   "local": [
+    {
+     "name": "beads",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "chain",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "shared",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "hooks list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "hooks run",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "hooks uninstall",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "human",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "human dismiss",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "human list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "human respond",
+   "runnable": true,
+   "local": [
+    {
+     "name": "file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "response",
+     "shorthand": "r",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "stdin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "human stats",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "import",
+   "runnable": true,
+   "local": [
+    {
+     "name": "allow-stale",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dedup",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "input",
+     "shorthand": "i",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "info",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "schema",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "thanks",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "whats-new",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "init",
+   "runnable": true,
+   "local": [
+    {
+     "name": "agents-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "agents-profile",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "agents-template",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "backend",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "contributor",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "debug",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "destroy-token",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "discard-remote",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "external",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "from-jsonl",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "init-if-missing",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "mysql-database",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "mysql-url",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "non-interactive",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pg-schema",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "pg-url",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "prefix",
+     "shorthand": "p",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "proxied-server-config-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-external-host",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-external-keep-alive",
+     "type": "duration",
+     "default": "0s"
+    },
+    {
+     "name": "proxied-server-external-port",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "proxied-server-external-socket-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-external-tls",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "proxied-server-external-tls-ca-cert-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-external-tls-cert-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-external-tls-key-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-external-tls-server-name",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-external-tls-skip-verify",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "proxied-server-external-user",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-idle-timeout",
+     "type": "duration",
+     "default": "0s"
+    },
+    {
+     "name": "proxied-server-log-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "proxied-server-port",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "proxied-server-root-path",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "quiet",
+     "shorthand": "q",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reinit-local",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "remote",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "role",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "server",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "server-host",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "server-port",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "server-socket",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "server-tls",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "server-user",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "setup-exclude",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "shared-server",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "skip-agents",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "skip-hooks",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "sqlite-path",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "stealth",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "team",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "team-server",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "init-safety",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "jira",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "jira pull",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "jira push",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "jira status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "jira sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "create-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issues",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "prefer-jira",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-local",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "project",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "pull",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "push",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "state",
+     "type": "string",
+     "default": "all"
+    }
+   ]
+  },
+  {
+   "path": "kv",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "kv clear",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "kv get",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "kv list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "kv set",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "label",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "label add",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "label list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "label list-all",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "label propagate",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "label remove",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "linear",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "linear pull",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "relations",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "linear push",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "linear status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "linear sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "create-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "exclude-type",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-ephemeral",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issues",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "milestones",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-wait",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "prefer-linear",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-local",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pull",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pull-if-stale",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "push",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "relations",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "state",
+     "type": "string",
+     "default": "all"
+    },
+    {
+     "name": "team",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "threshold",
+     "type": "duration",
+     "default": "20m0s"
+    },
+    {
+     "name": "type",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "update-refs",
+     "type": "bool",
+     "default": "true",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "linear teams",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "link",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": "blocks"
+    }
+   ]
+  },
+  {
+   "path": "lint",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "assignee",
+     "shorthand": "a",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "brief",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "closed-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "closed-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "created-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "created-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "defer-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "defer-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "deferred",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "deps",
+     "type": "string",
+     "default": "",
+     "no_opt_def_val": "scheduling"
+    },
+    {
+     "name": "desc-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "due-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "due-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "empty-description",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "exclude-label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "exclude-type",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "external-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "external-ref",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "filter-parent",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "flat",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "format",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "has-metadata-key",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "include-ephemeral",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-gates",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-infra",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-templates",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-pattern",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "label-regex",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "limit",
+     "shorthand": "n",
+     "type": "int",
+     "default": "50"
+    },
+    {
+     "name": "long",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "max-rows",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "metadata-field",
+     "type": "stringArray",
+     "default": "[]"
+    },
+    {
+     "name": "mol-type",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "no-assignee",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-labels",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-pager",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-parent",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-pinned",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "notes-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "offset",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "overdue",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "pinned",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pretty",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "priority",
+     "shorthand": "p",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "priority-max",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "priority-min",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "ready",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reverse",
+     "shorthand": "r",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "skip-labels",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "sort",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "spec",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "state",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "title-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "tree",
+     "type": "bool",
+     "default": "true",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "updated-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "updated-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "watch",
+     "shorthand": "w",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "wisp-type",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "mail",
+   "runnable": true,
+   "disable_flag_parsing": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "memories",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "merge-slot",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "merge-slot acquire",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "holder",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "wait",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "merge-slot check",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "merge-slot create",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "merge-slot release",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "holder",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "metrics",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "metrics example",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "metrics off",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "metrics on",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "inspect",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "update-repo-id",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate from-proxied-server-to-server",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate from-proxied-server-to-shared-server",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate from-server-to-proxied-server",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "idle-timeout",
+     "type": "duration",
+     "default": "0s"
+    }
+   ]
+  },
+  {
+   "path": "migrate from-shared-server-to-proxied-server",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "idle-timeout",
+     "type": "duration",
+     "default": "0s"
+    }
+   ]
+  },
+  {
+   "path": "migrate hooks",
+   "runnable": true,
+   "local": [
+    {
+     "name": "apply",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate issues",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "from",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "ids-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "include",
+     "type": "string",
+     "default": "none"
+    },
+    {
+     "name": "label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "priority",
+     "type": "int",
+     "default": "-1"
+    },
+    {
+     "name": "status",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "strict",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "to",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "within-from-only",
+     "type": "bool",
+     "default": "true",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate legacy-sqlite",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "output",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "source-db",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "migrate schema",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate-issues",
+   "hidden": true,
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "from",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "ids-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "include",
+     "type": "string",
+     "default": "none"
+    },
+    {
+     "name": "label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "priority",
+     "type": "int",
+     "default": "-1"
+    },
+    {
+     "name": "status",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "strict",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "to",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "within-from-only",
+     "type": "bool",
+     "default": "true",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "migrate-personal",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "shorthand": "y",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol",
+   "aliases": [
+    "protomolecule"
+   ],
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol bond",
+   "aliases": [
+    "fart"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "as",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "ephemeral",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pour",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "ref",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "default": "sequential"
+    },
+    {
+     "name": "var",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "mol burn",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "yes",
+     "shorthand": "y",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true",
+     "hidden": true
+    }
+   ]
+  },
+  {
+   "path": "mol current",
+   "runnable": true,
+   "local": [
+    {
+     "name": "for",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "range",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "mol distill",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "output",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "var",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "mol last-activity",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol pour",
+   "runnable": true,
+   "local": [
+    {
+     "name": "assignee",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "attach",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "attach-type",
+     "type": "string",
+     "default": "sequential"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "var",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "mol progress",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol ready",
+   "runnable": true,
+   "local": [
+    {
+     "name": "gated",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol seed",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "var",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "mol show",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "parallel",
+     "shorthand": "p",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol squash",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "keep-children",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "summary",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "mol stale",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "blocking",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "unassigned",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol wisp",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "root-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "var",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "mol wisp create",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "root-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "var",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "mol wisp gc",
+   "runnable": true,
+   "local": [
+    {
+     "name": "age",
+     "type": "string",
+     "default": "1h"
+    },
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "closed",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "exclude-type",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "mol wisp list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "note",
+   "runnable": true,
+   "local": [
+    {
+     "name": "file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "stdin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "notion",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "notion connect",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "url",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "notion init",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "default": "Beads Issues"
+    }
+   ]
+  },
+  {
+   "path": "notion pull",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "notion push",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "notion status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "notion sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "create-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issues",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "prefer-local",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "prefer-notion",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pull",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "push",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "state",
+     "type": "string",
+     "default": "all"
+    }
+   ]
+  },
+  {
+   "path": "onboard",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "orphans",
+   "runnable": true,
+   "local": [
+    {
+     "name": "details",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "fix",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "ping",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "preflight",
+   "runnable": true,
+   "local": [
+    {
+     "name": "check",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "fix",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "skip-lint",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "prime",
+   "runnable": true,
+   "local": [
+    {
+     "name": "export",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "full",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "hook-json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "max-memories",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "max-memory-chars",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "mcp",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "memories-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-memories",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "stealth",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "priority",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "promote",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "shorthand": "r",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "provenance",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "provenance by-ref",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "provenance log",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "kind",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "provenance record",
+   "runnable": true,
+   "local": [
+    {
+     "name": "actor",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "at",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "issue",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "kind",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "payload",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "ref",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "ref-kind",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "source",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "prune",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "ignore-references",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "older-than",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "pattern",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "purge",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "shorthand": "f",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "older-than",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "pattern",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "wisps-plane",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "q",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "labels",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "priority",
+     "shorthand": "p",
+     "type": "string",
+     "default": "2"
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": "task"
+    }
+   ]
+  },
+  {
+   "path": "query",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "shorthand": "a",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "limit",
+     "shorthand": "n",
+     "type": "int",
+     "default": "50"
+    },
+    {
+     "name": "long",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "offset",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "parse-only",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reverse",
+     "shorthand": "r",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "sort",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "quickstart",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ready",
+   "runnable": true,
+   "local": [
+    {
+     "name": "assignee",
+     "shorthand": "a",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "brief",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "claim",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "exclude-label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "exclude-type",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "explain",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "gated",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "has-metadata-key",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-deferred",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-ephemeral",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-pattern",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "label-regex",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "limit",
+     "shorthand": "n",
+     "type": "int",
+     "default": "100"
+    },
+    {
+     "name": "max-rows",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "metadata-field",
+     "type": "stringArray",
+     "default": "[]"
+    },
+    {
+     "name": "mol",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "mol-type",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "offset",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "plain",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "pretty",
+     "type": "bool",
+     "default": "true",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "priority",
+     "shorthand": "p",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "sort",
+     "shorthand": "s",
+     "type": "string",
+     "default": "priority"
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "unassigned",
+     "shorthand": "u",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "recall",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "reclaim",
+   "runnable": true,
+   "local": [
+    {
+     "name": "any-replica",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "assignee",
+     "shorthand": "a",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "exclude-label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "older-than",
+     "type": "duration",
+     "default": "10m0s"
+    }
+   ]
+  },
+  {
+   "path": "recompute-blocked",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "remember",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "key",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "rename",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "rename-prefix",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "repair",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "reopen",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "shorthand": "r",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "repo",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "repo add",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "repo list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "repo remove",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "repo sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "verbose",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "restore",
+   "runnable": true,
+   "local": [
+    {
+     "name": "apply",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "json",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "rules",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "rules audit",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "path",
+     "type": "string",
+     "default": ".claude/rules/"
+    },
+    {
+     "name": "threshold",
+     "type": "float64",
+     "default": "0.6"
+    }
+   ]
+  },
+  {
+   "path": "rules compact",
+   "runnable": true,
+   "local": [
+    {
+     "name": "auto",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "group",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "path",
+     "type": "string",
+     "default": ".claude/rules/"
+    }
+   ]
+  },
+  {
+   "path": "schema",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "search",
+   "runnable": true,
+   "local": [
+    {
+     "name": "assignee",
+     "shorthand": "a",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "closed-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "closed-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "created-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "created-before",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "desc-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "empty-description",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "external-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "has-metadata-key",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "limit",
+     "shorthand": "n",
+     "type": "int",
+     "default": "50"
+    },
+    {
+     "name": "long",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "metadata-field",
+     "type": "stringArray",
+     "default": "[]"
+    },
+    {
+     "name": "no-assignee",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-labels",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "notes-contains",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "priority-max",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "priority-min",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "query",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "reverse",
+     "shorthand": "r",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "sort",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "updated-after",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "updated-before",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "send-metrics",
+   "hidden": true,
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "serve",
+   "runnable": true,
+   "local": [
+    {
+     "name": "addr",
+     "type": "string",
+     "default": "127.0.0.1:0"
+    },
+    {
+     "name": "allow-non-loopback",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "allowed-host",
+     "type": "stringArray",
+     "default": "[]"
+    },
+    {
+     "name": "auth-token-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "insecure-no-auth",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "set-state",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "setup",
+   "runnable": true,
+   "local": [
+    {
+     "name": "add",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "check",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "global",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "list",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "output",
+     "shorthand": "o",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "print",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "project",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "remove",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "stealth",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "ship",
+   "runnable": true,
+   "local": [
+    {
+     "name": "dry-run",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "show",
+   "aliases": [
+    "view"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "as-of",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "brief-deps",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "children",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "current",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "id",
+     "type": "stringArray",
+     "default": "[]"
+    },
+    {
+     "name": "include-comments",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "include-dependents",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "local-time",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "long",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "refs",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "short",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "thread",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "watch",
+     "shorthand": "w",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "sql",
+   "runnable": true,
+   "local": [
+    {
+     "name": "csv",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "stale",
+   "runnable": true,
+   "local": [
+    {
+     "name": "days",
+     "shorthand": "d",
+     "type": "int",
+     "default": "30"
+    },
+    {
+     "name": "exclude-label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "label",
+     "shorthand": "l",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "label-any",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "limit",
+     "shorthand": "n",
+     "type": "int",
+     "default": "50"
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "state",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "state list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "status",
+   "aliases": [
+    "stats"
+   ],
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "assigned",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-activity",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-blocked",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "statuses",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "supersede",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "with",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "swarm",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "swarm create",
+   "runnable": true,
+   "local": [
+    {
+     "name": "coordinator",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "swarm list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "swarm status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "swarm validate",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "verbose",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "sync",
+   "runnable": true,
+   "local": [
+    {
+     "name": "attempts",
+     "type": "int",
+     "default": "3"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "no-adopt",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "remote",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "yes",
+     "shorthand": "y",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "tag",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "todo",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "todo add",
+   "runnable": true,
+   "local": [
+    {
+     "name": "description",
+     "shorthand": "d",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "priority",
+     "shorthand": "p",
+     "type": "int",
+     "default": "2"
+    }
+   ]
+  },
+  {
+   "path": "todo done",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "todo list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "all",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "types",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "sections",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "unclaim",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "if-assignee",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "reason",
+     "shorthand": "r",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "undefer",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "update",
+   "runnable": true,
+   "local": [
+    {
+     "name": "acceptance",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "acceptance-criteria",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "add-label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "allow-empty-description",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "append-notes",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "assignee",
+     "shorthand": "a",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "await-id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "body",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "body-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "claim",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "defer",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "description",
+     "shorthand": "d",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "description-file",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "design",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "design-file",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "due",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "ephemeral",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "estimate",
+     "shorthand": "e",
+     "type": "int",
+     "default": "0"
+    },
+    {
+     "name": "external-ref",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "history",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "if-assignee",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "if-status",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "message",
+     "shorthand": "m",
+     "type": "string",
+     "default": "",
+     "hidden": true
+    },
+    {
+     "name": "metadata",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "no-history",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "notes",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "parent",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "persistent",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "priority",
+     "shorthand": "p",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "remove-label",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "session",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "set-labels",
+     "type": "stringSlice",
+     "default": "[]"
+    },
+    {
+     "name": "set-metadata",
+     "type": "stringArray",
+     "default": "[]"
+    },
+    {
+     "name": "spec-id",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "status",
+     "shorthand": "s",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "stdin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "type",
+     "shorthand": "t",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "unset-metadata",
+     "type": "stringArray",
+     "default": "[]"
+    }
+   ]
+  },
+  {
+   "path": "upgrade",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "upgrade ack",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "upgrade review",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "upgrade status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "vc",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "vc commit",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "message",
+     "shorthand": "m",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "stdin",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "vc merge",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "strategy",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  },
+  {
+   "path": "vc status",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "version",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "where",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "worktree",
+   "runnable": false,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "worktree create",
+   "runnable": true,
+   "local": [
+    {
+     "name": "branch",
+     "type": "string",
+     "default": ""
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "worktree info",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "worktree list",
+   "runnable": true,
+   "local": [
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    }
+   ]
+  },
+  {
+   "path": "worktree remove",
+   "runnable": true,
+   "local": [
+    {
+     "name": "force",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "help",
+     "shorthand": "h",
+     "type": "bool",
+     "default": "false",
+     "no_opt_def_val": "true"
+    },
+    {
+     "name": "merged-into",
+     "type": "string",
+     "default": ""
+    }
+   ]
+  }
+ ]
+}

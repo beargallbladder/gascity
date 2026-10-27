@@ -72,41 +72,55 @@ func TestParseArgsMatchesPflag(t *testing.T) {
 	}
 }
 
-// TestCommandInventoryIsConsistent ties the generated command inventory to the
-// hand-pinned top-level verb list and alias map.
-func TestCommandInventoryIsConsistent(t *testing.T) {
-	verbs := map[string]bool{}
-	for _, v := range TopLevelVerbs() {
-		verbs[v] = true
+// TestInventoriesAreWellFormed checks each pinned inventory: a root, every
+// path's parent present, aliases naming real commands, flag types pflag
+// knows, and the build matched by InventoryFor.
+func TestInventoriesAreWellFormed(t *testing.T) {
+	known := map[string]bool{"bool": true, "string": true, "int": true, "int64": true, "float64": true, "duration": true, "stringSlice": true, "stringArray": true}
+	if len(Inventories()) < 2 {
+		t.Fatalf("want the bd 1.3.2 and Enterprise inventories, got %d", len(Inventories()))
 	}
-	hidden := map[string]bool{"codex-hook": true, "cursor-hook": true, "db-proxy-child": true, "send-metrics": true}
-	top := map[string]bool{}
-	for _, p := range CommandPaths() {
-		v, _, _ := strings.Cut(p, " ")
-		top[v] = true
-		if !verbs[v] {
-			t.Errorf("inventory path %q has a top-level verb TopLevelVerbs lacks", p)
+	for _, inv := range Inventories() {
+		if inv.Command("") == nil {
+			t.Errorf("%s has no root command", inv.Name)
 		}
-		if !IsCommandPath(p) {
-			t.Errorf("path %q has no flag entry", p)
+		for _, p := range inv.Paths() {
+			if p == "" {
+				continue
+			}
+			parent, _ := splitParent(p)
+			if inv.Command(parent) == nil {
+				t.Errorf("%s: %q has no parent %q", inv.Name, p, parent)
+			}
+			for _, f := range inv.Flags(p) {
+				if !known[f.Type] {
+					t.Errorf("%s: %q flag --%s has type %q the mirror does not model", inv.Name, p, f.Name, f.Type)
+				}
+			}
+		}
+		for alias, target := range inv.Aliases() {
+			if inv.Command(target) == nil {
+				t.Errorf("%s: alias %q names unknown %q", inv.Name, alias, target)
+			}
 		}
 	}
-	for v := range verbs {
-		if !top[v] && !hidden[v] {
-			t.Errorf("TopLevelVerbs has %q, which the command inventory lacks", v)
+	for line, want := range map[string]string{
+		"bd version 1.3.2 (dev)\n":   "bd-1.3.2",
+		"bd version 1.3.2 (9f2e1a7)": "bd-1.3.2",
+		"bd version 1.3.0 (Enterprise dev, Observer unknown; 77612097cec0: enterprise@77612097cec0)": "bd-1.3.0-enterprise-77612097cec0",
+	} {
+		inv, err := InventoryFor(line)
+		if err != nil || inv.Name != want {
+			t.Errorf("InventoryFor(%q) = %v, %v; want %s", line, inv, err, want)
 		}
 	}
-	for alias, target := range CommandAliases() {
-		if !IsCommandPath(target) {
-			t.Errorf("alias %q names unknown path %q", alias, target)
-		}
-		if !strings.Contains(alias, " ") && TopLevelAliases()[alias] != target {
-			t.Errorf("top-level alias %q → %q disagrees with TopLevelAliases (%q)", alias, target, TopLevelAliases()[alias])
-		}
-	}
-	for alias, target := range TopLevelAliases() {
-		if CommandAliases()[alias] != target {
-			t.Errorf("TopLevelAliases %q → %q is missing from CommandAliases", alias, target)
+	for _, line := range []string{
+		"bd version 1.3.3 (dev)", "bd version 1.1.0 (3ecbf5b)",
+		"bd version 1.3.0 (Enterprise dev, Observer unknown; 0123456789ab: enterprise@0123456789ab)",
+		"bd version 1.3.2 (Enterprise dev; 77612097cec0)", "", "garbage",
+	} {
+		if inv, err := InventoryFor(line); err == nil {
+			t.Errorf("InventoryFor(%q) = %s, want a refusal", line, inv.Name)
 		}
 	}
 }

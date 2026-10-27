@@ -18,60 +18,111 @@ type FlagSpec struct {
 	TakesValue bool
 }
 
-// CommandPaths returns every bd command path the pinned inventory knows
-// ("update", "dep add", "mol wisp create"), sorted. The inventory is the
-// union of bd 1.3.2 and the bd 1.3.0 Enterprise build (commands_gen.go);
-// TestBdCommandInventoryCurrent (integration) fails when the installed bd
-// has a path or alias the inventory is missing.
+// CommandPaths returns every bd command path in any pinned inventory
+// ("update", "dep add", "mol wisp create"), sorted, the root ("") excluded.
 func CommandPaths() []string {
-	return append([]string(nil), commandPaths...)
-}
-
-// CommandAliases returns a copy of the alias-path → command-path map
-// ("mol fart" → "mol bond", "new" → "create").
-func CommandAliases() map[string]string {
-	out := make(map[string]string, len(commandAliases))
-	for k, v := range commandAliases {
-		out[k] = v
-	}
-	return out
-}
-
-// IsCommandPath reports whether path is a bd command path in the inventory.
-func IsCommandPath(path string) bool {
-	_, ok := commandFlags[path]
-	return ok
-}
-
-// SubcommandsOf returns the direct subcommand names of path ("" for the root).
-func SubcommandsOf(path string) []string {
+	seen := map[string]bool{}
 	var out []string
-	prefix := path + " "
-	if path == "" {
-		prefix = ""
-	}
-	for _, p := range commandPaths {
-		if !strings.HasPrefix(p, prefix) {
-			continue
-		}
-		rest := strings.TrimPrefix(p, prefix)
-		if rest != "" && !strings.Contains(rest, " ") {
-			out = append(out, rest)
+	for _, inv := range Inventories() {
+		for _, p := range inv.Paths() {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
 		}
 	}
 	sort.Strings(out)
 	return out
 }
 
-// CommandFlagSpecs returns the flags of command path beyond the global ones,
-// or nil for a path the inventory does not know.
-func CommandFlagSpecs(path string) []FlagSpec {
-	return append([]FlagSpec(nil), commandFlags[path]...)
+// CommandAliases returns the alias-path → command-path map of every pinned
+// inventory ("mol fart" → "mol bond", "new" → "create").
+func CommandAliases() map[string]string {
+	out := map[string]string{}
+	for _, inv := range Inventories() {
+		for k, v := range inv.Aliases() {
+			out[k] = v
+		}
+	}
+	return out
 }
 
-// GlobalFlagSpecs returns the persistent flags every bd command accepts.
+// IsCommandPath reports whether path is a bd command path in any pinned
+// inventory.
+func IsCommandPath(path string) bool {
+	for _, inv := range Inventories() {
+		if inv.Command(path) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// SubcommandsOf returns the direct subcommand names of path ("" for the
+// root) across the pinned inventories.
+func SubcommandsOf(path string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, inv := range Inventories() {
+		for _, s := range inv.Subcommands(path) {
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CommandFlagSpecs returns the union, across the pinned inventories, of the
+// flags path declares itself (its local and own persistent flags).
+func CommandFlagSpecs(path string) []FlagSpec {
+	seen := map[string]bool{}
+	var out []FlagSpec
+	for _, inv := range Inventories() {
+		c := inv.Command(path)
+		if c == nil {
+			continue
+		}
+		for _, f := range append(append([]InventoryFlag(nil), c.Local...), c.Persistent...) {
+			if seen[f.Name] {
+				continue
+			}
+			seen[f.Name] = true
+			short := ""
+			if f.Shorthand != "" {
+				short = "-" + f.Shorthand
+			}
+			out = append(out, FlagSpec{Long: "--" + f.Name, Short: short, TakesValue: f.TakesValue()})
+		}
+	}
+	return out
+}
+
+// GlobalFlagSpecs returns the root's persistent flags (union across the
+// pinned inventories).
 func GlobalFlagSpecs() []FlagSpec {
-	return append([]FlagSpec(nil), globalFlagSpecs...)
+	seen := map[string]bool{}
+	var out []FlagSpec
+	for _, inv := range Inventories() {
+		c := inv.Command("")
+		if c == nil {
+			continue
+		}
+		for _, f := range c.Persistent {
+			if seen[f.Name] {
+				continue
+			}
+			seen[f.Name] = true
+			short := ""
+			if f.Shorthand != "" {
+				short = "-" + f.Shorthand
+			}
+			out = append(out, FlagSpec{Long: "--" + f.Name, Short: short, TakesValue: f.TakesValue()})
+		}
+	}
+	return out
 }
 
 // ParsedFlag is one flag occurrence, named by its long name. Value is the
@@ -232,4 +283,34 @@ func FlagTokenWidth(specs []FlagSpec, args []string) (int, error) {
 	default:
 		return 0, err
 	}
+}
+
+// ClusterTakesNextToken reports whether tok is a run of two or more
+// shorthands ("-qC") whose last flag takes a value and has none attached, so
+// pflag hands it the NEXT argv token. cobra's subcommand pre-scan (stripFlags)
+// does not: it skips the run alone and can read that next token as a
+// subcommand name, so the two disagree about what bd runs.
+func ClusterTakesNextToken(specs []FlagSpec, tok string) bool {
+	if len(tok) < 3 || tok[0] != '-' || tok[1] == '-' {
+		return false
+	}
+	byShort := map[byte]FlagSpec{}
+	for _, s := range specs {
+		if len(s.Short) == 2 {
+			byShort[s.Short[1]] = s
+		}
+	}
+	shorts := tok[1:]
+	for i := 0; i < len(shorts); i++ {
+		spec, ok := byShort[shorts[i]]
+		if !ok {
+			return false
+		}
+		if !spec.TakesValue {
+			continue
+		}
+		// A value flag takes the rest of the run (or "=value") if any is left.
+		return i == len(shorts)-1
+	}
+	return false
 }

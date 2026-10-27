@@ -6,13 +6,21 @@ go_library(
         "bdargs.go",
         "bdflags.go",
         "commands.go",
-        "commands_gen.go",
+        "inventory.go",
         "scan.go",
         "verbs.go",
     ],
+    embedsrcs = [
+        "inventory/bd-1.3.0-enterprise-77612097cec0.json",
+        "inventory/bd-1.3.2.json",
+    ],
     importpath = "github.com/gastownhall/gascity/internal/bdflags",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/beads"],
+    deps = [
+        "//internal/beads",
+        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
+    ],
 )
 
 go_test(
@@ -22,6 +30,7 @@ go_test(
         "bdflags_test.go",
         "commands_test.go",
         "freshness_test.go",
+        "inventory_test.go",
         "testenv_import_test.go",
         "update_force_test.go",
         "verbs_test.go",
@@ -41,7 +50,11 @@ go_test(
         },
         "//conditions:default": {},
     }),
-    deps = ["//internal/testenv"],
+    deps = [
+        "//internal/testenv",
+        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
+    ],
 )
 
 # --- bazel_repo_srcs (managed by tools/bazel/repo_tree.py) ---
