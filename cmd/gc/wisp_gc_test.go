@@ -1601,7 +1601,7 @@ func TestWispGC_ReapDryRunBoundsRootlessProbes(t *testing.T) {
 // TestWispGC_ReapSkipsRootlessTaskWithParentDepOnly pins the dep-row half of
 // the leaf fence. Ownership is carried by the parent_id COLUMN or by a
 // parent-child DEP ROW, and some step beads have only the dep row — which is
-// why collectExpiredBeadClosure walks both. A column-only fence would reap such
+// why collectExpiredBeadClosureStatus walks both. A column-only fence would reap such
 // a row out from under a live parent.
 func TestWispGC_ReapSkipsRootlessTaskWithParentDepOnly(t *testing.T) {
 	withReapOrphansEnforced(t, true)
@@ -1960,7 +1960,7 @@ func TestWispGC_CollectsClosedGraphWorkflowRoot(t *testing.T) {
 // laggingClosureStore models the race the closure purge's set-level strand
 // guard exists for: a step created between the closure collector's List and
 // the guard's live membership read. Its non-live List (what
-// collectExpiredBeadClosure reads) omits hiddenID; the live reader the guard
+// collectExpiredBeadClosureStatus reads) omits hiddenID; the live reader the guard
 // uses sees everything.
 type laggingClosureStore struct {
 	*gcTestStore

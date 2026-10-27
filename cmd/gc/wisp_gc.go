@@ -596,7 +596,7 @@ func closedWispGCEntries(store beads.Store) ([]beads.Bead, error) {
 // is cached so many siblings sharing one dead root cost a single Get. A
 // rootless row needs no such check when it is a plain-task LEAF — no parent and
 // no children by either the parent_id COLUMN or a parent-child DEP ROW, since
-// ownership travels over both (collectExpiredBeadClosure walks both too) —
+// ownership travels over both (collectExpiredBeadClosureStatus walks both too) —
 // because its own closed status is then the entire collectibility fence;
 // deleteWorkflowBead removes a single bead, not a closure, so a rootless row
 // that owns a subtree stays SKIPPED rather than stranding descendants no GC
@@ -694,7 +694,7 @@ func reapOrphanedClosedWisps(store beads.Store, cutoff time.Time, batchCap int) 
 			if len(children) > 0 {
 				continue
 			}
-			// Mirror collectExpiredBeadClosure: ownership is carried by the
+			// Mirror collectExpiredBeadClosureStatus: ownership is carried by the
 			// parent_id COLUMN or by a parent-child DEP ROW, and some step
 			// beads have only the dep row. A column-only fence would reap such
 			// a row out from under a live parent ("down": rows where this bead
@@ -967,7 +967,7 @@ func closedInfraSessionPastCutoff(b beads.Bead, cutoff time.Time) bool {
 // hasParentChildDepEdge reports whether id sits on either end of a parent-child
 // dependency row. The parent_id column is not the only ownership link: some
 // molecule step beads are joined to their parent purely by a dep row (see
-// collectExpiredBeadClosure, which walks both). "down" deps answer "does this
+// collectExpiredBeadClosureStatus, which walks both). "down" deps answer "does this
 // bead have a dep-linked parent", "up" deps answer "does it have dep-linked
 // children" — either makes it a subtree member rather than a free-standing
 // leaf, so the orphan reaper must leave it to the owning root's closure purge.
@@ -1365,7 +1365,7 @@ func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
 	// ownership tree with a single `bd delete … --force`, which deletes exactly
 	// those ids and lets ON DELETE CASCADE drop their edges while orphaning any
 	// external dependents; other stores fall back to per-bead deletion. Because
-	// the delete is not dependent-recursive, collectExpiredBeadClosure must (and
+	// the delete is not dependent-recursive, collectExpiredBeadClosureStatus must (and
 	// does) gather only the ownership closure so live work outside it is never
 	// reached.
 	ids, open, err := collectExpiredBeadClosureWithOpen(store, rootID)
@@ -1385,7 +1385,7 @@ func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
 	return deleteWorkflowBeadsBatch(store, ids)
 }
 
-// collectExpiredBeadClosureWithOpen is collectExpiredBeadClosure plus the ids
+// collectExpiredBeadClosureWithOpen is collectExpiredBeadClosureStatus plus the ids
 // of every collected bead that is not closed. Statuses come from the rows the
 // walk already read; a member reached only through a dependency edge is read
 // live. A member whose status cannot be read counts as open: the purge fails
