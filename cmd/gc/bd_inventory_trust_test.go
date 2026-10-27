@@ -86,7 +86,7 @@ func bumpMtime(t *testing.T, path string) {
 	}
 }
 
-func countLines(t *testing.T, path string) int {
+func bdCountLines(t *testing.T, path string) int {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -141,15 +141,15 @@ func TestBdTrustMatchesTheCommandTreeNotTheVersion(t *testing.T) {
 	if err != nil || v.Inventory != enterprise.Name || v.Source != "walk" {
 		t.Fatalf("verdict = %+v, %v; want %s by walk", v, err, enterprise.Name)
 	}
-	walks := countLines(t, logPath)
+	walks := bdCountLines(t, logPath)
 	if walks < 100 {
 		t.Fatalf("the walk ran bd %d times; the tree looks unwalked", walks)
 	}
 
 	// Cached: no bd call at all.
 	v, _, err = resolveScopeBdInventory(c.city, cfg, target, false)
-	if err != nil || v.Inventory != enterprise.Name || v.Source != "cache" || countLines(t, logPath) != walks {
-		t.Fatalf("second verdict = %+v, %v (bd calls %d → %d); want a cache hit", v, err, walks, countLines(t, logPath))
+	if err != nil || v.Inventory != enterprise.Name || v.Source != "cache" || bdCountLines(t, logPath) != walks {
+		t.Fatalf("second verdict = %+v, %v (bd calls %d → %d); want a cache hit", v, err, walks, bdCountLines(t, logPath))
 	}
 
 	// The binary changes (OSS main's kind of drift): the cache key misses and
@@ -184,8 +184,8 @@ func TestBdTrustVouchAndShaCache(t *testing.T) {
 	run := bdHelpRunnerFor(bin, c.city, os.Environ())
 	cfg := &config.City{Storage: &config.StorageConfig{GCBdInventory: oss.Name + "@sha256:" + sum}}
 	v, err := resolveBdInventory(c.city, cfg, bin, run, false)
-	if err != nil || v.Inventory != oss.Name || v.Source != "vouched" || countLines(t, logPath) != 0 {
-		t.Fatalf("vouched verdict = %+v, %v (bd calls %d); want vouched, no walk", v, err, countLines(t, logPath))
+	if err != nil || v.Inventory != oss.Name || v.Source != "vouched" || bdCountLines(t, logPath) != 0 {
+		t.Fatalf("vouched verdict = %+v, %v (bd calls %d); want vouched, no walk", v, err, bdCountLines(t, logPath))
 	}
 	// A copy at another path: same sha256, cached verdict, no walk.
 	copyPath := filepath.Join(c.scratch, "bd-copy")
@@ -194,8 +194,8 @@ func TestBdTrustVouchAndShaCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	v, err = resolveBdInventory(c.city, &config.City{}, copyPath, bdHelpRunnerFor(copyPath, c.city, os.Environ()), false)
-	if err != nil || v.Inventory != oss.Name || v.Source != "cache" || countLines(t, logPath) != 0 {
-		t.Fatalf("same-bytes verdict = %+v, %v (bd calls %d); want a sha cache hit", v, err, countLines(t, logPath))
+	if err != nil || v.Inventory != oss.Name || v.Source != "cache" || bdCountLines(t, logPath) != 0 {
+		t.Fatalf("same-bytes verdict = %+v, %v (bd calls %d); want a sha cache hit", v, err, bdCountLines(t, logPath))
 	}
 	// A vouch for other bytes is not this binary's.
 	other := &config.City{Storage: &config.StorageConfig{GCBdInventory: oss.Name + "@sha256:" + strings.Repeat("0", 64)}}
