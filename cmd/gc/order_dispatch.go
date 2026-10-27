@@ -342,6 +342,10 @@ type memoryOrderDispatcher struct {
 	// in the order's target work store rather than the graph binding. Guarded
 	// by cacheMu; refreshed by every dispatch, which compiles the recipe anyway.
 	poursWork map[string]bool
+	// poursWorkFailedUntil holds, per scoped order, until when a failed
+	// compile is not retried for the gate (orderPoursWorkFailureTTL). Guarded
+	// by cacheMu.
+	poursWorkFailedUntil map[string]time.Time
 
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
@@ -2381,20 +2385,37 @@ func (m *memoryOrderDispatcher) orderPoursWork(ctx context.Context, a orders.Ord
 		return false
 	}
 	scoped := a.ScopedName()
+	now := time.Now()
 	m.cacheMu.Lock()
 	known, ok := m.poursWork[scoped]
+	failedUntil := m.poursWorkFailedUntil[scoped]
 	m.cacheMu.Unlock()
 	if ok {
 		return known
 	}
+	if now.Before(failedUntil) {
+		return true
+	}
 	recipe, err := formula.CompileWithoutRuntimeVarValidation(ctx, a.Formula, orderFormulaSearchPaths(m.cfg, a), nil)
 	if err != nil {
+		// Remembered briefly, as "keep the work leg", so a broken formula is
+		// not recompiled every tick; never memoized as an answer.
+		m.cacheMu.Lock()
+		if m.poursWorkFailedUntil == nil {
+			m.poursWorkFailedUntil = make(map[string]time.Time)
+		}
+		m.poursWorkFailedUntil[scoped] = now.Add(orderPoursWorkFailureTTL)
+		m.cacheMu.Unlock()
 		return true
 	}
 	pours := recipeCoordClass(recipe) == coordclass.ClassWork
 	m.rememberOrderPoursWork(scoped, pours)
 	return pours
 }
+
+// orderPoursWorkFailureTTL is how long a formula that failed to compile for
+// the gate is not recompiled. The gate keeps the work leg meanwhile.
+var orderPoursWorkFailureTTL = 5 * time.Minute
 
 func (m *memoryOrderDispatcher) rememberOrderPoursWork(scoped string, pours bool) {
 	m.cacheMu.Lock()

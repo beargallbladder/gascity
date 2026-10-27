@@ -236,5 +236,11 @@ func TestOrderGatePoursWorkIsLazyAndFailsSafe(t *testing.T) {
 		if !storeListContains(stores, e.work) {
 			t.Fatal("gate legs omit the work store for an order whose formula did not compile")
 		}
+		m.cacheMu.Lock()
+		until, remembered := m.poursWorkFailedUntil[a.ScopedName()]
+		m.cacheMu.Unlock()
+		if !remembered || !until.After(time.Now()) {
+			t.Fatal("a compile failure is not remembered for a while: a broken formula would recompile every tick")
+		}
 	})
 }
