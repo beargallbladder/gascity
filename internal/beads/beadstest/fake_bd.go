@@ -196,6 +196,17 @@ func (f *FakeBd) create(flags map[string][]string, positional []string) ([]byte,
 			return nil, fmt.Errorf("fake bd create: --metadata: %w", err)
 		}
 	}
+	if v, ok := lastFlag(flags, "--parent"); ok && v != "" {
+		// bd keeps the parent as a parent-child edge, which edges() derives
+		// from ParentID; an unknown parent fails the create, as bd fails it.
+		if _, err := f.store.Get(v); err != nil {
+			return nil, fmt.Errorf("fake bd create: --parent %s: issue not found", v)
+		}
+		b.ParentID = v
+	}
+	if _, ok := flags["--ephemeral"]; ok {
+		b.Ephemeral = true
+	}
 	created, err := f.store.Create(b)
 	if err != nil {
 		return nil, err
