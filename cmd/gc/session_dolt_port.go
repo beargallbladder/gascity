@@ -52,6 +52,15 @@ func scopeDoltPortMirror(scopeRoot string) (string, error) {
 // bd to ~/.beads/shared-server or 3308 instead of the managed server the
 // mirror tracks — is part of the withhold, the same split-brain rule
 // applySessionSharedServerOptOut applies to proxied gc-owned scopes.
+//
+// GC_DOLT_MANAGED_LOCAL=1 records that the target is still the gc-managed local
+// server. Runtimes whose bd does not run on the controller host cannot follow
+// the mirror: the k8s pod adapters rewrite a managed-local target to the
+// in-cluster service, and without the marker a withheld port would read as a
+// scope with no Dolt target, the shape a failed resolution also leaves.
+// sessionBackendEnvWithError seeds the marker empty, so only this withhold sets
+// it. runtimetest.WithheldManagedDoltEnv is the resulting shape, the one the
+// runtime adapters are tested against.
 func withholdMirroredManagedDoltPort(env map[string]string, cityPath, scopeRoot string) {
 	if env == nil {
 		return
@@ -81,5 +90,6 @@ func withholdMirroredManagedDoltPort(env map[string]string, cityPath, scopeRoot 
 	env["GC_DOLT_PORT"] = ""
 	env["BEADS_DOLT_SERVER_PORT"] = ""
 	env["BEADS_DOLT_PORT"] = ""
+	env["GC_DOLT_MANAGED_LOCAL"] = "1"
 	applyProxiedSharedServerOptOut(env)
 }

@@ -2,14 +2,18 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/fsys"
+	"github.com/gastownhall/gascity/internal/runtime/runtimetest"
 )
 
 // writeManagedDirectCityFixture builds the canonical managed-direct city the
@@ -34,7 +38,9 @@ func writeManagedDirectCityFixture(t *testing.T, cityPath string) string {
 // assertWithheldDoltPort checks the withheld-port contract of
 // gastownhall/gascity#1656: the three port keys stay present but empty, so
 // tmux/subprocess providers unset any stale inherited value instead of
-// freezing the spawn-time port into the session for its whole life.
+// freezing the spawn-time port into the session for its whole life, and
+// every Dolt key carries the value runtimetest.WithheldManagedDoltEnv fixes
+// for the runtime adapters that rebuild the target off the controller host.
 func assertWithheldDoltPort(t *testing.T, env map[string]string, livePort string) {
 	t.Helper()
 	for _, key := range []string{"GC_DOLT_PORT", "BEADS_DOLT_SERVER_PORT", "BEADS_DOLT_PORT"} {
@@ -46,6 +52,47 @@ func assertWithheldDoltPort(t *testing.T, env map[string]string, livePort string
 			t.Fatalf("%s = %q, want withheld (empty): the scope mirror .beads/dolt-server.port carries the live port %s", key, value, livePort)
 		}
 	}
+	for key, want := range runtimetest.WithheldManagedDoltEnv() {
+		if got := env[key]; got != want {
+			t.Fatalf("%s = %q, want %q: a withheld session env must match runtimetest.WithheldManagedDoltEnv, the shape the k8s and t3bridge adapters are tested against", key, got, want)
+		}
+	}
+}
+
+// assertNoManagedLocalDoltMarker checks that a session env whose port was not
+// withheld pins GC_DOLT_MANAGED_LOCAL present and empty. passthroughEnv copies
+// every GC_ key of the controller process into the session, so only an explicit
+// empty value keeps an inherited marker from posing as a withheld port.
+func assertNoManagedLocalDoltMarker(t *testing.T, env map[string]string) {
+	t.Helper()
+	value, present := env["GC_DOLT_MANAGED_LOCAL"]
+	if !present || value != "" {
+		t.Fatalf("GC_DOLT_MANAGED_LOCAL = %q (present=%t), want present and empty: only a withheld port marks the session's target managed-local", value, present)
+	}
+}
+
+// resolveWorkerTemplateEnv resolves a city worker's template and returns the
+// env a runtime provider receives for it (runtime.Config.Env is
+// TemplateParams.Env).
+func resolveWorkerTemplateEnv(t *testing.T, cityPath string) map[string]string {
+	t.Helper()
+	params := &agentBuildParams{
+		cityName:   "city",
+		cityPath:   cityPath,
+		workspace:  &config.Workspace{Provider: "test"},
+		providers:  map[string]config.ProviderSpec{"test": {Command: "echo", PromptMode: "none"}},
+		lookPath:   func(string) (string, error) { return "/bin/echo", nil },
+		fs:         fsys.OSFS{},
+		beaconTime: time.Unix(0, 0),
+		beadNames:  make(map[string]string),
+		stderr:     io.Discard,
+	}
+	agent := &config.Agent{Name: "worker"}
+	tp, err := resolveTemplate(params, agent, agent.QualifiedName(), nil)
+	if err != nil {
+		t.Fatalf("resolveTemplate: %v", err)
+	}
+	return tp.Env
 }
 
 // TestSessionBackendEnvWithholdsMirroredCityManagedDoltPort pins AC-1 of
@@ -160,6 +207,48 @@ func TestSessionBackendEnvWithheldPortPinsSharedServerOff(t *testing.T) {
 	}
 }
 
+// TestResolveTemplateWithheldDoltEnvReachesRuntimeProvider pins the env a
+// runtime provider receives for a withheld managed-direct session: the merged
+// template env, not only the backend projection, must match
+// runtimetest.WithheldManagedDoltEnv even when the controller process itself
+// carries stale Dolt values. The k8s pod adapters and the t3bridge thread env
+// read exactly this map; a projection that left the managed-local marker or
+// the shared-server pin to the controller's own env would let them rebuild a
+// target the session never had.
+func TestResolveTemplateWithheldDoltEnvReachesRuntimeProvider(t *testing.T) {
+	cityPath := t.TempDir()
+	writeTemplateResolveCityConfig(t, cityPath, "")
+	livePort := writeManagedDirectCityFixture(t, cityPath)
+	t.Setenv("GC_DOLT_PORT", "9999")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "9999")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+	assertWithheldDoltPort(t, resolveWorkerTemplateEnv(t, cityPath), livePort)
+}
+
+// TestResolveTemplateDropsInheritedManagedLocalDoltMarker guards the marker
+// half of the withhold: GC_DOLT_MANAGED_LOCAL=1 tells the k8s pod adapters that
+// a session with no Dolt port still targets the gc-managed local server, so
+// only the withhold may set it. A controller started from inside a withheld
+// session inherits "1", and passthroughEnv copies every GC_ key into the
+// sessions it spawns; a session whose port is projected (here the mirror is
+// absent) must still end up with the marker empty.
+func TestResolveTemplateDropsInheritedManagedLocalDoltMarker(t *testing.T) {
+	cityPath := t.TempDir()
+	writeTemplateResolveCityConfig(t, cityPath, "")
+	livePort := writeManagedDirectCityFixture(t, cityPath)
+	if err := os.Remove(filepath.Join(cityPath, ".beads", "dolt-server.port")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GC_DOLT_MANAGED_LOCAL", "1")
+
+	env := resolveWorkerTemplateEnv(t, cityPath)
+	if got := env["GC_DOLT_PORT"]; got != livePort {
+		t.Fatalf("GC_DOLT_PORT = %q, want projected %q when no mirror exists", got, livePort)
+	}
+	assertNoManagedLocalDoltMarker(t, env)
+}
+
 // TestSessionBackendEnvKeepsDoltPortWhenMirrorCannotStandIn guards AC-5 of
 // gastownhall/gascity#1656: the port withhold fires only when the scope's own
 // mirror can stand in for the projected port. Every row here is a scope where
@@ -194,6 +283,7 @@ func TestSessionBackendEnvKeepsDoltPortWhenMirrorCannotStandIn(t *testing.T) {
 		if got := env["BEADS_DOLT_SERVER_PORT"]; got != livePort {
 			t.Fatalf("BEADS_DOLT_SERVER_PORT = %q, want projected %q when no mirror exists", got, livePort)
 		}
+		assertNoManagedLocalDoltMarker(t, env)
 	})
 
 	t.Run("rig mirror stale", func(t *testing.T) {
@@ -216,6 +306,7 @@ dolt.auto-start: false
 		if got := env["BEADS_DOLT_SERVER_PORT"]; got != livePort {
 			t.Fatalf("BEADS_DOLT_SERVER_PORT = %q, want projected %q when the mirror reads a stale port", got, livePort)
 		}
+		assertNoManagedLocalDoltMarker(t, env)
 	})
 
 	t.Run("legacy port-only rig", func(t *testing.T) {
@@ -311,6 +402,7 @@ func TestSessionBackendEnvLeavesUnmirroredTopologiesUnchanged(t *testing.T) {
 				t.Fatalf("%s = %q, want empty: this topology projects no managed TCP port", key, got)
 			}
 		}
+		assertNoManagedLocalDoltMarker(t, env)
 	}
 
 	t.Run("proxied server city", func(t *testing.T) {

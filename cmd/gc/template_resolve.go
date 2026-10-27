@@ -841,6 +841,10 @@ func sessionBackendEnvWithError(cityPath, rigRoot string, rigs []config.Rig) (ma
 	// Explicit empty values let tmux unset stale Dolt vars inherited from
 	// the server environment when the current city/rig does not use them.
 	setProjectedDoltEnvEmpty(env)
+	// Only withholdMirroredManagedDoltPort marks a target managed-local. The
+	// explicit empty value also outranks a marker that passthroughEnv copies
+	// from the controller's own environment.
+	env["GC_DOLT_MANAGED_LOCAL"] = ""
 	applySessionSharedServerOptOut(env, cityPath, rigRoot)
 
 	// Session env projection must not trigger provider recovery. Session setup

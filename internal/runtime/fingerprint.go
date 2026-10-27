@@ -326,10 +326,10 @@ var envFingerprintAllow = map[string]bool{
 	// Service connectivity — GC_DOLT_PORT intentionally excluded. The
 	// managed port is ephemeral (changes on every supervisor restart) and
 	// including it causes spurious config-drift drains on every restart.
-	// A session's raw bd follows the scope's .beads/dolt-server.port
-	// mirror because gc withholds the env port for gc-managed mirrored
-	// scopes; scopes that still project a port are external or
-	// operator-pinned endpoints whose ports do not churn.
+	// gc withholds it for gc-managed mirrored scopes, whose raw bd follows
+	// .beads/dolt-server.port. Sessions spawned before that, or while the
+	// mirror disagreed with the published state, keep a port a restart can
+	// move; they recover on respawn, not through this fingerprint.
 
 	// Tool/binary discovery
 	"GC_SKILLS_DIR":      true,

@@ -2342,6 +2342,7 @@ go_test(
         "//internal/runtime/k8s",
         "//internal/runtime/proctable",
         "//internal/runtime/runtimecontract",
+        "//internal/runtime/runtimetest",
         "//internal/runtime/ssh",
         "//internal/runtime/subprocess",
         "//internal/runtime/t3bridge",
