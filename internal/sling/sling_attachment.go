@@ -503,16 +503,19 @@ func checkNoMoleculeChildren(q BeadQuerier, beadID string, scope attachmentScope
 				WorkflowIDs:  []string{attached.ID},
 			}
 		}
-		if parentUnassigned && located.Store != nil && !attachmentHasWorkInProgress(located) {
-			if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
-				if clearErr := clearAttachmentMetadata(scope.work, parent, attached); clearErr != nil {
-					return clearErr
+		var active []string
+		if parentUnassigned && located.Store != nil {
+			if active = attachmentActiveWork(located); len(active) == 0 {
+				if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
+					if clearErr := clearAttachmentMetadata(scope.work, parent, attached); clearErr != nil {
+						return clearErr
+					}
+					result.AutoBurned = append(result.AutoBurned, attached.ID)
+					continue
 				}
-				result.AutoBurned = append(result.AutoBurned, attached.ID)
-				continue
 			}
 		}
-		return &MoleculeAttachedError{BeadID: beadID, Label: AttachmentLabel(attached), AttachmentID: attached.ID}
+		return &MoleculeAttachedError{BeadID: beadID, Label: AttachmentLabel(attached), AttachmentID: attached.ID, ActiveSteps: active}
 	}
 	return nil
 }
@@ -532,25 +535,26 @@ func (e *AttachmentProbeError) Error() string {
 
 func (e *AttachmentProbeError) Unwrap() error { return e.Err }
 
-// attachmentHasWorkInProgress reports whether any bead of the attachment's
-// subtree is in progress (someone is working a step), or the subtree cannot be
+// attachmentActiveWork returns the beads of the attachment's subtree a worker
+// holds (in_progress, or hooked), or a placeholder when the subtree cannot be
 // read. An unassigned source's stale attachment is burned to make room for a
 // new one, but not one a worker is in the middle of: the attach is refused
-// instead. Fails closed: an unreadable subtree counts as in progress.
-func attachmentHasWorkInProgress(a AttachedBead) bool {
+// instead. Fails closed: an unreadable subtree counts as active.
+func attachmentActiveWork(a AttachedBead) []string {
 	if a.Store == nil {
-		return true
+		return []string{a.Bead.ID + " (store unavailable)"}
 	}
 	subtree, err := molecule.ListSubtree(a.Store, a.Bead.ID)
 	if err != nil {
-		return true
+		return []string{a.Bead.ID + " (subtree unreadable: " + err.Error() + ")"}
 	}
+	var active []string
 	for _, b := range subtree {
-		if b.Status == "in_progress" {
-			return true
+		if b.Status == "in_progress" || b.Status == "hooked" {
+			active = append(active, b.ID)
 		}
 	}
-	return false
+	return active
 }
 
 // MoleculeAttachedError reports that a bead already has a live, non-workflow
@@ -565,10 +569,18 @@ type MoleculeAttachedError struct {
 	BeadID       string
 	Label        string // AttachmentLabel(attached), e.g. "molecule" or "wisp"
 	AttachmentID string
+	// ActiveSteps are the attachment's beads a worker holds (in_progress or
+	// hooked), when that is why an unassigned source's attachment was not
+	// burned to make room.
+	ActiveSteps []string
 }
 
 func (e *MoleculeAttachedError) Error() string {
-	return fmt.Sprintf("bead %s already has attached %s %s", e.BeadID, e.Label, e.AttachmentID)
+	msg := fmt.Sprintf("bead %s already has attached %s %s", e.BeadID, e.Label, e.AttachmentID)
+	if len(e.ActiveSteps) > 0 {
+		msg += fmt.Sprintf("; it was not replaced because a worker holds %s. If that step is stale (its worker is gone), release it with `gc bd update <step> --status open --assignee \"\"` or close it with `gc bd close <step>`, then sling again", strings.Join(e.ActiveSteps, ", "))
+	}
+	return msg
 }
 
 // CheckNoMoleculeChildren returns an error if the bead already has an attached
@@ -636,14 +648,21 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, scope a
 				workflowConflicts = append(workflowConflicts, workflowConflict{childID: child.ID, workflowID: attached.ID})
 				continue
 			}
-			if childUnassigned && located.Store != nil && !attachmentHasWorkInProgress(located) {
-				if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
-					if clearErr := clearAttachmentMetadata(scope.work, child, attached); clearErr != nil {
-						return clearErr
+			var active []string
+			if childUnassigned && located.Store != nil {
+				if active = attachmentActiveWork(located); len(active) == 0 {
+					if _, burnErr := CloseAttachedSubtree(located.Store, attached); burnErr == nil {
+						if clearErr := clearAttachmentMetadata(scope.work, child, attached); clearErr != nil {
+							return clearErr
+						}
+						result.AutoBurned = append(result.AutoBurned, attached.ID)
+						continue
 					}
-					result.AutoBurned = append(result.AutoBurned, attached.ID)
-					continue
 				}
+			}
+			if len(active) > 0 {
+				problems = append(problems, fmt.Sprintf("%s (has %s %s, held by %s; release or close a stale step, then sling again)", child.ID, AttachmentLabel(attached), attached.ID, strings.Join(active, ", ")))
+				continue
 			}
 			problems = append(problems, fmt.Sprintf("%s (has %s %s)", child.ID, AttachmentLabel(attached), attached.ID))
 		}

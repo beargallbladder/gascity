@@ -516,3 +516,79 @@ func TestConflictingOnFormulaRuleSkipsWorkflowAttachments(t *testing.T) {
 		t.Fatal("conflictingOnFormulaAttachment on a legacy molecule with another formula = nil, want a conflict")
 	}
 }
+
+// listFailingStore fails the subtree read of one root.
+type listFailingStore struct {
+	beads.Store
+	rootID string
+}
+
+func (s listFailingStore) ListByMetadata(filters map[string]string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	if filters[beadmeta.RootBeadIDMetadataKey] == s.rootID {
+		return nil, errors.New("store unavailable")
+	}
+	return s.Store.ListByMetadata(filters, limit, opts...)
+}
+
+// Re-review round 3: the burn guard fails closed on an unreadable subtree,
+// treats a hooked step as active, covers the batch check too, and tells the
+// operator how to clear a stale step.
+func TestBurnGuardEdges(t *testing.T) {
+	mkAttached := func(t *testing.T, stepStatus string) (beads.Store, beads.Bead, beads.Bead) {
+		work := beads.NewMemStore()
+		root, err := work.Create(beads.Bead{Title: "attached molecule", Type: "molecule"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		step, err := work.Create(beads.Bead{Title: "step", Type: "step", ParentID: root.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stepStatus != "" {
+			if err := work.Update(step.ID, beads.UpdateOpts{Status: &stepStatus}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		src, err := work.Create(beads.Bead{Title: "unassigned source", Type: "task", Metadata: map[string]string{beadmeta.MoleculeIDMetadataKey: root.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return work, src, root
+	}
+	t.Run("unreadable-subtree", func(t *testing.T) {
+		work, src, root := mkAttached(t, "")
+		store := listFailingStore{Store: work, rootID: root.ID}
+		var result SlingResult
+		err := checkNoMoleculeChildren(store, src.ID, singleStoreAttachmentScope(store), &result, false)
+		var molErr *MoleculeAttachedError
+		if !errors.As(err, &molErr) || len(result.AutoBurned) != 0 {
+			t.Fatalf("burn with an unreadable subtree: err=%v burned=%v, want a refusal", err, result.AutoBurned)
+		}
+	})
+	t.Run("hooked-step", func(t *testing.T) {
+		work, src, root := mkAttached(t, "hooked")
+		var result SlingResult
+		err := checkNoMoleculeChildren(work, src.ID, singleStoreAttachmentScope(work), &result, false)
+		var molErr *MoleculeAttachedError
+		if !errors.As(err, &molErr) {
+			t.Fatalf("burn over a hooked step: err=%v, want MoleculeAttachedError", err)
+		}
+		if !strings.Contains(err.Error(), "--status open") || !strings.Contains(err.Error(), "gc bd close") {
+			t.Errorf("refusal does not say how to clear a stale step: %v", err)
+		}
+		if got, _ := work.Get(root.ID); got.Status == "closed" {
+			t.Fatal("the attachment was burned")
+		}
+	})
+	t.Run("batch", func(t *testing.T) {
+		work, src, root := mkAttached(t, "in_progress")
+		var result SlingResult
+		err := checkBatchNoMoleculeChildren(work, []beads.Bead{src}, singleStoreAttachmentScope(work), &result, false)
+		if err == nil || len(result.AutoBurned) != 0 {
+			t.Fatalf("batch burn over an in-progress step: err=%v burned=%v, want a refusal", err, result.AutoBurned)
+		}
+		if got, _ := work.Get(root.ID); got.Status == "closed" {
+			t.Fatal("the batch check burned an attachment a worker holds")
+		}
+	})
+}
