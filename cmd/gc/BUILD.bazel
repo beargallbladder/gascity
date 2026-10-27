@@ -1755,6 +1755,7 @@ go_test(
         "prompt_delivery_test.go",
         "prompt_meta_test.go",
         "prompt_missing_template_test.go",
+        "prompt_query_topology_pins_test.go",
         "prompt_query_topology_test.go",
         "prompt_rollout_boundary_test.go",
         "prompt_test.go",
