@@ -102,8 +102,8 @@ func TestRelicCloseEventAutoclosesItsMoleculeRoot(t *testing.T) {
 				t.Fatal(err)
 			}
 			stores := f.cs.beadEventStores(f.stepID)
-			if len(stores) != 1 || stores[0] != f.binding {
-				t.Errorf("event stores for relic %s = %d store(s), want exactly the binding that holds it", f.stepID, len(stores))
+			if !storesInclude(stores, f.binding) || !storesInclude(stores, f.cs.cityBeadStore) {
+				t.Errorf("event stores for relic %s = %d store(s), want the prefix route's work store AND the binding that holds it", f.stepID, len(stores))
 			}
 			f.cs.applyBeadEventToStores(events.Event{Type: events.BeadClosed, Actor: actor, Subject: f.stepID, Payload: payload})
 			got, err := f.binding.Get(f.rootID)
@@ -165,35 +165,61 @@ func TestWorkIDEventKeepsItsPrefixRouteOnAMigratedCity(t *testing.T) {
 	}
 }
 
-// ga-s1ms9: an event whose id no configured prefix owns (an id-less one
-// included) is broadcast to every store the watcher feeds. The relocated
-// class binding is one of them: it has a controller cache of its own, and a
-// broadcast that skips it leaves that cache stale until its rescan.
-func TestUnownedBeadEventBroadcastIncludesTheBinding(t *testing.T) {
+// ga-s1ms9: an event whose id no configured prefix owns reaches the binding
+// when the binding holds it. The only such id a binding holds is a migrated
+// relic with a foreign prefix, and the residence probe routes it there; the
+// broadcast itself does not include the binding, because the binding cache's
+// namespace filter drops an unowned id and every cache drops an id-less one.
+func TestUnownedBeadEventReachesTheBindingThatHoldsIt(t *testing.T) {
 	f := newRelicEventFixture(t, false)
-	for _, id := range []string{"", "zz-404"} {
-		stores := f.cs.beadEventStores(id)
-		found := 0
-		for _, s := range stores {
-			if s == f.binding {
-				found++
-			}
-		}
-		if found != 1 {
-			t.Errorf("broadcast stores for id %q hold the binding %d time(s), want exactly once (%d stores)", id, found, len(stores))
-		}
-		for _, want := range []beads.Store{f.cs.cityBeadStore, f.cs.beadStores["alpha"]} {
-			has := false
-			for _, s := range stores {
-				if s == want {
-					has = true
-				}
-			}
-			if !has {
-				t.Errorf("broadcast stores for id %q dropped a work store", id)
-			}
+	creator := f.binding.(beads.ForeignIDCreator)
+	if _, err := creator.CreateWithForeignID(beads.Bead{ID: "zz-404", Title: "foreign relic", Type: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = splittest.TakeResidenceViolations(f.binding)
+	if stores := f.cs.beadEventStores("zz-404"); !storesInclude(stores, f.binding) {
+		t.Fatalf("event stores for unowned id zz-404 held by the binding omit the binding (%d stores)", len(stores))
+	}
+	if stores := f.cs.beadEventStores("zz-405"); storesInclude(stores, f.binding) {
+		t.Fatalf("event stores for unowned id zz-405 the binding does not hold include the binding")
+	}
+	if stores := f.cs.beadEventStores(""); storesInclude(stores, f.binding) {
+		t.Fatalf("the id-less broadcast includes the binding, whose cache drops an id-less payload")
+	}
+}
+
+// Review 7: a work bead that reuses a relic's id keeps its own route. Its
+// events reach the work store as well as the binding, and a committed close is
+// autoclosed in the store whose row reads closed.
+func TestRelicIDCollisionKeepsTheWorkRoute(t *testing.T) {
+	f := newRelicEventFixture(t, false)
+	work := f.cs.cityBeadStore
+	creator, ok := work.(beads.ForeignIDCreator)
+	if !ok {
+		t.Skipf("work leaf %T cannot pin an id", work)
+	}
+	if _, err := creator.CreateWithForeignID(beads.Bead{ID: f.openID, Title: "work bead reusing the relic id", Type: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	stores := f.cs.beadEventStores(f.openID)
+	if !storesInclude(stores, work) || !storesInclude(stores, f.binding) {
+		t.Fatalf("event stores for colliding id %s = %d store(s), want the work store and the binding", f.openID, len(stores))
+	}
+	if err := work.Close(f.openID); err != nil {
+		t.Fatal(err)
+	}
+	if owner := committedCloseOwner(stores, f.openID); owner != work {
+		t.Fatalf("committed close owner for %s is not the work store whose row closed", f.openID)
+	}
+}
+
+func storesInclude(stores []beads.Store, want beads.Store) bool {
+	for _, s := range stores {
+		if s == want {
+			return true
 		}
 	}
+	return false
 }
 
 // A city that relocates nothing broadcasts to its work stores exactly as

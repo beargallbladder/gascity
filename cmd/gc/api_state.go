@@ -1059,9 +1059,11 @@ func (cs *controllerState) applyBeadEventToStores(evt events.Event) {
 	cs.mu.RUnlock()
 	relic, residentProven := probe.residentStore(id)
 	if residentProven {
-		// A relic's events belong to the binding that holds it, and its
-		// close is autoclosed there in the ID-only mode relocated ids use.
-		stores, storeRef = []beads.Store{relic}, "" // residency:allow — the one owner the by-id residency plan proved
+		// A relic's events also belong to the binding that holds it. It is
+		// ADDED to the prefix route, not substituted for it: a work bead that
+		// reuses the relic's id (bd reuses ids) keeps its own cache and its own
+		// autoclose, and each close is autoclosed in the store whose row it is.
+		stores = withRelicStore(stores, relic)
 	}
 
 	// A cache event (either actor) carries a CachingStore's own post-absorb
@@ -1076,7 +1078,7 @@ func (cs *controllerState) applyBeadEventToStores(evt events.Event) {
 			// A relic's id is outside every namespace the binding cache
 			// filters events on; its residence was just proved, so the event
 			// is applied past that filter.
-			if residentProven {
+			if residentProven && sameBeadStore(store, relic) {
 				cached.ApplyResidentEventSnapshot(evt.Type, evt.Payload)
 				continue
 			}
@@ -1095,11 +1097,52 @@ func (cs *controllerState) applyBeadEventToStores(evt events.Event) {
 	wake.OnBeadEvent(evt, snapshot)
 	if evt.Type == events.BeadClosed && evt.Subject != "" && len(stores) > 0 {
 		if evt.Actor == cacheLocalActor {
-			cs.applyCommittedClose(evt, stores[0], storeRef)
+			owner := stores[0]
+			if residentProven {
+				owner = committedCloseOwner(stores, evt.Subject)
+			}
+			cs.applyCommittedClose(evt, owner, relicStoreRef(owner, relic, storeRef))
 			return
 		}
-		beadCloseAutocloseDispatch(cs.trackStoreWork(func() { cs.applyInferredClose(evt, stores, storeRef) }))
+		beadCloseAutocloseDispatch(cs.trackStoreWork(func() { cs.applyInferredClose(evt, stores, storeRef, relic) }))
 	}
+}
+
+// withRelicStore returns stores plus relic, the binding the residence probe
+// proved holds the id, unless stores already holds it.
+//
+// residency:allow — appends the one owner the by-id residency plan proved to
+// the watcher's prefix-route apply set; it resolves nothing itself.
+func withRelicStore(stores []beads.Store, relic beads.Store) []beads.Store {
+	for _, s := range stores {
+		if sameBeadStore(s, relic) {
+			return stores
+		}
+	}
+	return append(append(make([]beads.Store, 0, len(stores)+1), stores...), relic)
+}
+
+// relicStoreRef is the autoclose store-ref for a close whose row lives in
+// owner: the ID-only mode ("") relocated ids use when owner is the relic's
+// binding, else the prefix route's own ref.
+func relicStoreRef(owner, relic beads.Store, prefixRef string) string {
+	if relic != nil && sameBeadStore(owner, relic) {
+		return ""
+	}
+	return prefixRef
+}
+
+// committedCloseOwner picks, for a committed close of an id more than one
+// store may hold (a relic and a work bead reusing its id), the store whose
+// row reads closed, in the stores' order; stores[0] when none does or a read
+// fails. stores must be non-empty.
+func committedCloseOwner(stores []beads.Store, id string) beads.Store {
+	for _, store := range stores {
+		if b, err := beads.HandlesFor(store).Live.Get(id); err == nil && b.Status == "closed" {
+			return store
+		}
+	}
+	return stores[0]
 }
 
 // applyCommittedClose runs a committed bead.closed's durable effects: the
@@ -1137,7 +1180,7 @@ func (cs *controllerState) applyCommittedClose(evt events.Event, store beads.Sto
 // fact derives from the live read, never from the payload. A row that is open
 // or gone gets nothing. An unreadable row gets nothing yet: the autoclose
 // sweep re-reads it, and the completions sweep backstops its fact.
-func (cs *controllerState) applyInferredClose(evt events.Event, stores []beads.Store, storeRef string) {
+func (cs *controllerState) applyInferredClose(evt events.Event, stores []beads.Store, storeRef string, relic beads.Store) {
 	if cs.deferIfQuiescent(evt.Subject) {
 		return
 	}
@@ -1145,7 +1188,7 @@ func (cs *controllerState) applyInferredClose(evt events.Event, stores []beads.S
 	switch confirmInferredClose(live, err) {
 	case closeConfirmed:
 		cs.emitCompletedFact(live, evt.Actor)
-		finished := cs.beadCloseAutoclose(evt.Subject, store, storeRef)()
+		finished := cs.beadCloseAutoclose(evt.Subject, store, relicStoreRef(store, relic, storeRef))()
 		cs.autocloseSweepOf().settle(evt.Subject, finished, time.Now())
 	case closeUnconfirmed:
 		cs.autocloseSweepOf().settle(evt.Subject, false, time.Now())
@@ -1280,14 +1323,14 @@ func (cs *controllerState) beadCloseAutoclose(beadID string, store beads.Store, 
 // applied to. It takes cs.mu itself and probes outside it.
 //
 // residency:allow — the event watcher's apply set (beadEventStoresLocked's
-// prefix table) narrowed to the one owner the by-id residency plan proved.
+// prefix table) plus the binding the by-id residency plan proved holds the id.
 func (cs *controllerState) beadEventStores(id string) []beads.Store {
 	cs.mu.RLock()
 	stores := cs.beadEventStoresLocked(id)
 	probe := cs.beadEventRelicProbeLocked(id)
 	cs.mu.RUnlock()
 	if relic, ok := probe.residentStore(id); ok {
-		return []beads.Store{relic} // residency:allow — the one owner the by-id residency plan proved
+		return withRelicStore(stores, relic)
 	}
 	return stores
 }
@@ -1356,35 +1399,21 @@ func (cs *controllerState) beadEventStoresLocked(id string) []beads.Store {
 		}
 	}
 
-	stores := make([]beads.Store, 0, len(cs.beadStores)+2)
+	stores := make([]beads.Store, 0, len(cs.beadStores)+1)
 	for _, s := range cs.beadStores {
 		stores = append(stores, s)
 	}
 	if cs.cityBeadStore != nil {
 		stores = append(stores, cs.cityBeadStore)
 	}
-	// The relocated class binding is a store the watcher feeds too: it has a
-	// controller cache of its own, and a broadcast that skipped it left that
-	// cache stale until its rescan (ga-s1ms9). Each distinct binding once; a
-	// city that relocates nothing adds none.
-	for _, class := range infraMigrationClasses {
-		store, relocated := cs.storageRoutes.storeFor(coordclassFor(string(class))) // residency:allow — extends the watcher's broadcast set with the binding it feeds; resolves no bead
-		if !relocated || store == nil || containsBeadStore(stores, store) {
-			continue
-		}
-		stores = append(stores, store)
-	}
+	// The relocated binding is deliberately not part of this broadcast
+	// (ga-s1ms9). An id-less payload carries nothing any cache can apply
+	// (CachingStore.applyEvent drops a payload with no id), and the binding
+	// cache's namespace filter drops an id no reserved namespace owns. The one
+	// unowned id the binding can hold is a migrated relic, and the residence
+	// probe (beadEventRelicProbeLocked) routes it there with its residence
+	// proved, past that filter.
 	return stores
-}
-
-// containsBeadStore reports whether stores already holds store.
-func containsBeadStore(stores []beads.Store, store beads.Store) bool {
-	for _, s := range stores {
-		if sameBeadStore(s, store) {
-			return true
-		}
-	}
-	return false
 }
 
 func (cs *controllerState) beadEventConfiguredStoreLocked(id string) (beads.Store, bool) {

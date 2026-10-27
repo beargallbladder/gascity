@@ -301,8 +301,9 @@ func (cs *controllerState) runAutocloseSweepPass(now time.Time) autocloseSweepRe
 		storeRef := cs.autocloseStoreRefLocked(id)
 		suspendedStore := cs.anySuspendedRigStoreLocked(stores)
 		cs.mu.RUnlock()
-		if relic, ok := probe.residentStore(id); ok {
-			stores, storeRef, suspendedStore = []beads.Store{relic}, "", false // residency:allow — the one owner the by-id residency plan proved
+		relic, _ := probe.residentStore(id)
+		if relic != nil {
+			stores = withRelicStore(stores, relic)
 		}
 		if len(stores) == 0 {
 			continue
@@ -318,7 +319,7 @@ func (cs *controllerState) runAutocloseSweepPass(now time.Time) autocloseSweepRe
 		switch confirmInferredClose(live, err) {
 		case closeConfirmed:
 			cs.emitCompletedFact(live, autocloseSweepActor)
-			if cs.beadCloseAutoclose(id, store, storeRef)() {
+			if cs.beadCloseAutoclose(id, store, relicStoreRef(store, relic, storeRef))() {
 				res.Ran++
 			} else {
 				res.Retried++
