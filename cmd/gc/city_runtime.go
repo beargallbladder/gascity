@@ -193,6 +193,9 @@ type CityRuntime struct {
 	// clocks below; created on first use.
 	ordersLane     *ordersLane
 	ordersLaneOnce sync.Once
+	// workGCLane runs the wisp GC's work arm off the tick (wisp_gc_work_lane.go).
+	workGCLane     *workGCLane
+	workGCLaneOnce sync.Once
 
 	// inventoryLane lists runtimes at patrol cadence and publishes the
 	// observation cache (runtime_inventory_lane.go). run() creates it; it
@@ -845,6 +848,15 @@ func (cr *CityRuntime) run(ctx context.Context) {
 	defer func() {
 		stopOrdersLane()
 		<-ordersLaneDone
+	}()
+	// The wisp GC's work arm reads work ledgers (bd on a hosted city, one
+	// subprocess per read), so it runs on its own lane; the tick only wakes it
+	// (wisp_gc_work_lane.go).
+	workGCLaneCtx, stopWorkGCLane := context.WithCancel(ctx)
+	workGCLaneDone := cr.startWorkGCLane(workGCLaneCtx)
+	defer func() {
+		stopWorkGCLane()
+		<-workGCLaneDone
 	}()
 
 	// Recover ready work whose canonical pool route was lost or never written
@@ -1876,7 +1888,17 @@ func (cr *CityRuntime) tickWispGC(p *tickPass) bool {
 			legs = cr.workLegs()
 		}
 		purged, gcErr := cr.wg.runGC(legs, graphStore, cr.infraSessionLedger(), cr.mailBeadStore(), time.Now())
-		p.recordPhase(TraceSiteControllerTickPhase, "wisp_gc", phaseStart, map[string]any{"purged": purged})
+		payload := map[string]any{"purged": purged}
+		if legs != nil {
+			// The work arm runs on its own lane; the tick only wakes it and
+			// records how stale its last pass is.
+			lane := cr.workGCLaneOf()
+			lane.wake()
+			if age, ran := lane.lastPassAge(time.Now()); ran {
+				payload["work_arm_last_pass_age_ms"] = age.Milliseconds()
+			}
+		}
+		p.recordPhase(TraceSiteControllerTickPhase, "wisp_gc", phaseStart, payload)
 		if gcErr != nil {
 			for _, line := range strings.Split(gcErr.Error(), "\n") {
 				if line == "" {

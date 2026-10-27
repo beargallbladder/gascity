@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"log"
 	"strings"
 	"testing"
@@ -54,8 +55,8 @@ func runSplitWispGCDefault(t *testing.T, e splitEnv, now time.Time) {
 	t.Helper()
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
-			if _, err := wg.runGC(wispGCLegsFor(e), beads.GraphStore{Store: e.graphStore()}, beads.SessionStore{}, beads.MailStore{}, now); err != nil {
+			wg := newTestGC()
+			if err := wg.pass(wispGCLegsFor(e), e.graphStore(), now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
 		})
@@ -170,9 +171,9 @@ func TestWispGCPurgesAnExpiredWorkClassMoleculeRoot(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		wg := newWispGC(5*time.Minute, time.Hour, 0)
+		wg := newTestGC()
 		withWorkMoleculesEnforced(t, func() {
-			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+			if err := wg.pass(legs, graph, time.Now().Add(2*time.Hour)); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
 		})
@@ -253,9 +254,9 @@ func TestWispGCPurgeRefusesAClosureWithALiveStep(t *testing.T) {
 		if err := work.Update(step.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
 			t.Fatal(err)
 		}
-		wg := newWispGC(5*time.Minute, time.Hour, 0)
+		wg := newTestGC()
 		withWorkMoleculesEnforced(t, func() {
-			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+			if err := wg.pass(legs, graph, time.Now().Add(2*time.Hour)); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
 		})
@@ -296,8 +297,8 @@ func TestWispGCWorkArmIsDryRunByDefault(t *testing.T) {
 	}
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
-			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+			wg := newTestGC()
+			if err := wg.pass(legs, graph, time.Now().Add(2*time.Hour)); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
 		})
@@ -321,9 +322,9 @@ func TestWispGCWorkArmSkipsProtoTemplates(t *testing.T) {
 	if err := work.Close(proto.ID); err != nil {
 		t.Fatal(err)
 	}
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newTestGC()
 	withWorkMoleculesEnforced(t, func() {
-		if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(2*time.Hour)); err != nil {
+		if err := wg.pass(legs, graph, time.Now().Add(2*time.Hour)); err != nil {
 			t.Fatalf("runGC: %v", err)
 		}
 	})
@@ -355,8 +356,8 @@ func TestWispGCHolderGuardLeavesARootOpenWhileARigIsSuspended(t *testing.T) {
 	}
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
-			if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(30*time.Minute)); err != nil {
+			wg := newTestGC()
+			if err := wg.pass(legs, graph, time.Now().Add(30*time.Minute)); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
 		})
@@ -388,8 +389,8 @@ func TestWispGCHolderGuardFailsClosedOnUnreadableLegs(t *testing.T) {
 	}
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
-			if _, err := wg.runGC(unreadableLegs{}, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(30*time.Minute)); err != nil {
+			wg := newTestGC()
+			if err := wg.pass(unreadableLegs{}, graph, time.Now().Add(30*time.Minute)); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
 		})
@@ -408,9 +409,9 @@ func TestWispGCWorkArmDryRunOnARigShapedLikeMaintainerCity(t *testing.T) {
 	rig := newBatchDeleteWorkStore()
 	mcShapedRigFixture(t, rig)
 	before := len(allBeads(t, rig))
-	prevCap := wispGCWorkArmWalkCap
-	wispGCWorkArmWalkCap = 100
-	t.Cleanup(func() { wispGCWorkArmWalkCap = prevCap })
+	prevBudget := wispGCWorkArmWalkBudget
+	wispGCWorkArmWalkBudget = 100
+	t.Cleanup(func() { wispGCWorkArmWalkBudget = prevBudget })
 
 	var logs bytes.Buffer
 	prevOut, prevFlags := log.Writer(), log.Flags()
@@ -419,11 +420,11 @@ func TestWispGCWorkArmDryRunOnARigShapedLikeMaintainerCity(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
 	legs := workLegsFromCensus(e.cityPath, e.cfg, cityWorkLegOf(beads.WorkStore{Store: e.work}), map[string]beads.Store{e.rigName: rig})
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newTestGC()
 	runPass := func() {
 		withCloseAbandonedEnforced(t, func() {
 			withCloseAbandonedTTL(t, 5*time.Minute, func() {
-				if _, err := wg.runGC(legs, beads.GraphStore{Store: e.graphStore()}, beads.SessionStore{}, beads.MailStore{}, time.Now().Add(48*time.Hour)); err != nil {
+				if err := wg.pass(legs, e.graphStore(), time.Now().Add(48*time.Hour)); err != nil {
 					t.Logf("runGC: %v", err)
 				}
 			})
@@ -459,4 +460,31 @@ func TestWispGCWorkArmDryRunOnARigShapedLikeMaintainerCity(t *testing.T) {
 	if !strings.Contains(again, "(0 walked this pass, 1 remembered)") {
 		t.Errorf("second pass summary does not report the remembered refusal")
 	}
+}
+
+// testGC runs both wisp GC arms the way production does — the graph arm on
+// the tick (runGC) and the work arm on its lane (workMoleculeGC.pass) — with
+// state that persists across passes, as both trackers' does.
+type testGC struct {
+	wg   wispGC
+	work *workMoleculeGC
+}
+
+func newTestGC() *testGC {
+	return &testGC{wg: newWispGC(5*time.Minute, time.Hour, 0), work: newWorkMoleculeGC()}
+}
+
+func (g *testGC) pass(legs wispGCLegs, graph beads.Store, now time.Time) error {
+	_, err := g.wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, now)
+	_, werr := g.work.pass(legs, graph, time.Hour, now)
+	return errors.Join(err, werr)
+}
+
+// withWorkArmBudget runs fn with the work arm's per-pass walk budget set to n.
+func withWorkArmBudget(t *testing.T, n int, fn func()) {
+	t.Helper()
+	prev := wispGCWorkArmWalkBudget
+	wispGCWorkArmWalkBudget = n
+	defer func() { wispGCWorkArmWalkBudget = prev }()
+	fn()
 }

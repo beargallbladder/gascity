@@ -36,8 +36,8 @@ func runGCWithLegs(t *testing.T, legs wispGCLegs, graph beads.Store, now time.Ti
 	log.SetFlags(0)
 	defer func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
 	withCloseAbandonedTTL(t, 5*time.Minute, func() {
-		wg := newWispGC(5*time.Minute, time.Hour, 0)
-		if _, err := wg.runGC(legs, beads.GraphStore{Store: graph}, beads.SessionStore{}, beads.MailStore{}, now); err != nil {
+		wg := newTestGC()
+		if err := wg.pass(legs, graph, now); err != nil {
 			t.Logf("runGC: %v", err)
 		}
 	})

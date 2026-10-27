@@ -55,6 +55,8 @@ type WorkLegs struct {
 	// suspended names the declared, open rigs left out of rigs because they
 	// are suspended (servingRigStores).
 	suspended []string
+	// cityName is the name a "city:<name>" store ref of this city carries.
+	cityName string
 }
 
 // errNoWorkStore: a WorkLegs minted without a city work store, which answers
@@ -71,6 +73,9 @@ func workLegsFromCensus(cityPath string, cfg *config.City, work cityWorkLeg, rig
 	l := WorkLegs{cfg: cfg, work: work.store}
 	if work.store == nil {
 		return l
+	}
+	if cfg != nil {
+		l.cityName = loadedCityName(cfg, cityPath)
 	}
 	suspendedPaths := buildSuspendedRigPathsForCity(cfg, cityPath)
 	l.rigs = servingRigStores(cfg, rigs, suspendedPaths)
@@ -95,11 +100,16 @@ func (l WorkLegs) suspendedRigs() []string { return l.suspended }
 // binding ref, the rig's store for a serving rig. A suspended rig reports
 // suspended=true (it is not a leg, and is not read); any other ref, ok=false.
 func (l WorkLegs) storeForRef(ref string) (beads.Store, bool, bool) {
+	ref = strings.TrimSpace(ref)
 	rig, ok := storeref.ScopeRigContext(ref)
-	if !ok {
+	if !ok || storeref.IsClassRef(ref) {
 		return nil, false, false
 	}
 	if rig == "" {
+		// Only THIS city's ref names the city work store.
+		if l.cityName == "" || ref != "city:"+l.cityName {
+			return nil, false, false
+		}
 		return l.work, false, l.work != nil
 	}
 	for _, name := range l.suspended {

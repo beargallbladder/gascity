@@ -2396,7 +2396,7 @@ func (m *memoryOrderDispatcher) orderPoursWork(ctx context.Context, a orders.Ord
 	if now.Before(failedUntil) {
 		return true
 	}
-	recipe, err := formula.CompileWithoutRuntimeVarValidation(ctx, a.Formula, orderFormulaSearchPaths(m.cfg, a), nil)
+	recipe, err := orderGateCompile(ctx, a.Formula, orderFormulaSearchPaths(m.cfg, a), nil)
 	if err != nil {
 		// Remembered briefly, as "keep the work leg", so a broken formula is
 		// not recompiled every tick; never memoized as an answer.
@@ -2412,6 +2412,10 @@ func (m *memoryOrderDispatcher) orderPoursWork(ctx context.Context, a orders.Ord
 	m.rememberOrderPoursWork(scoped, pours)
 	return pours
 }
+
+// orderGateCompile compiles an order's formula for the gate's class question.
+// Package var so tests can count compiles.
+var orderGateCompile = formula.CompileWithoutRuntimeVarValidation
 
 // orderPoursWorkFailureTTL is how long a formula that failed to compile for
 // the gate is not recompiled. The gate keeps the work leg meanwhile.

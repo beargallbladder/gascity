@@ -35,6 +35,9 @@ type wispGCNotes struct {
 type wispGCRefusal struct {
 	updatedAt time.Time
 	until     time.Time
+	// reason is the outcome last reported for the root; a new refusal with
+	// the same reason is not logged again, even after the recheck expired.
+	reason string
 }
 
 // endPass rolls the per-root detail memo over: what this pass reported is
@@ -73,15 +76,34 @@ func (n *wispGCNotes) refusedNow(arm string, root beads.Bead, now time.Time) boo
 	return ok && r.updatedAt.Equal(root.UpdatedAt) && now.Before(r.until)
 }
 
-// noteRefusal records that root's closure was refused at now.
-func (n *wispGCNotes) noteRefusal(arm string, root beads.Bead, now time.Time) {
+// noteRefusal records that root was refused at now for reason, and reports
+// whether the reason differs from the one last recorded for it (a new outcome,
+// worth a log line). A recheck that finds the same outcome is not.
+func (n *wispGCNotes) noteRefusal(arm string, root beads.Bead, now time.Time, reason string) (changed bool) {
 	if n == nil {
-		return
+		return true
 	}
 	if n.refused == nil {
 		n.refused = make(map[string]wispGCRefusal)
 	}
-	n.refused[arm+"\x00"+root.ID] = wispGCRefusal{updatedAt: root.UpdatedAt, until: now.Add(wispGCRefusalRecheck)}
+	key := arm + "\x00" + root.ID
+	prev, had := n.refused[key]
+	n.refused[key] = wispGCRefusal{updatedAt: root.UpdatedAt, until: now.Add(wispGCRefusalRecheck), reason: reason}
+	return !had || prev.reason != reason || gcDebugEnabled()
+}
+
+// pruneRefusals drops arm's refusals for roots not in present: roots deleted
+// or closed elsewhere, which would otherwise be remembered forever.
+func (n *wispGCNotes) pruneRefusals(arm string, present map[string]bool) {
+	if n == nil {
+		return
+	}
+	prefix := arm + "\x00"
+	for key := range n.refused {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix && !present[key[len(prefix):]] {
+			delete(n.refused, key)
+		}
+	}
 }
 
 // forgetRefusal drops root's refusal, after its closure was purged.

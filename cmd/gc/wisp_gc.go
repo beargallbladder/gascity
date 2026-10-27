@@ -20,6 +20,7 @@ import (
 	"github.com/gastownhall/gascity/internal/molecule"
 	"github.com/gastownhall/gascity/internal/sling"
 	"github.com/gastownhall/gascity/internal/sourceworkflow"
+	"github.com/gastownhall/gascity/internal/storeref"
 )
 
 // closeAbandonedEnv is the opt-in environment variable that enables the
@@ -40,7 +41,7 @@ const reapOrphansEnv = "GC_WISP_GC_REAP_ORPHANS"
 // workMoleculesEnv is the opt-in environment variable that lets the wisp GC's
 // WORK arm mutate a work ledger: closing abandoned v1 poured molecule roots
 // and purging expired closed ones on the work legs of a split city
-// (collectWorkClassMoleculeRoots). Like reapOrphansEnv it DEFAULTS TO DRY-RUN:
+// (workMoleculeGC, wisp_gc_work_lane.go). Like reapOrphansEnv it DEFAULTS TO DRY-RUN:
 // unset (or not truthy), the arm only logs the roots it WOULD close or purge.
 // A work ledger holds the operator's own records, so this is opt-in on its
 // own, separately from the graph-class sweeps. The abandoned-root closes it
@@ -96,14 +97,6 @@ var wispGCReapOrphanProbeCap = 500
 // a failing delete backend, drain across successive ticks instead of one
 // unbounded pass. Package var so tests can shrink it.
 var wispGCClosurePurgeBatchCap = 500
-
-// wispGCWorkArmWalkCap bounds how many roots one ENFORCED work-arm pass walks
-// per work leg — subtree reads for the abandoned close, closure reads for the
-// purge. A work leg served by bd answers each read with a subprocess, so an
-// unbounded walk of a backlog would stall the controller tick; the remainder
-// is walked on later passes. A refusal remembered by wispGCNotes costs no
-// walk. Package var so tests can shrink it.
-var wispGCWorkArmWalkCap = 5
 
 // infraSessionPurgeAgeDefault is how long a closed infra session bead is kept.
 // Three days, not the Dolt reaper's 30-day SESSION_PURGE_AGE: these rows are
@@ -336,9 +329,7 @@ func (m *memoryWispGC) runGC(legs wispGCLegs, graphStore beads.GraphStore, sessi
 		// same close-then-collect pass, over v1 poured molecule roots only. A
 		// work ledger holds no other root this GC owns, and nothing else on it
 		// is ever enumerated, so a plain work bead is never touched.
-		workPurged, workErr := m.collectWorkClassMoleculeRoots(legs, store, now, cutoff)
-		purged += workPurged
-		deleteErr = errors.Join(deleteErr, workErr)
+		m.notes.pruneRefusals("graph", rootIDSet(entries))
 		m.notes.endPass()
 	}
 
@@ -378,104 +369,6 @@ func (m *memoryWispGC) runGC(legs wispGCLegs, graphStore beads.GraphStore, sessi
 	}
 
 	return purged, deleteErr
-}
-
-// collectWorkClassMoleculeRoots closes abandoned and collects expired v1
-// poured molecule roots on every leg other than the graph-class store. With no
-// legs (a single-store city) the graph-class pass above already covered them,
-// because the graph store IS the work store.
-//
-// Dry-run (the default, GC_WISP_GC_WORK_MOLECULES unset) only LISTS and counts:
-// it walks no subtree and no closure, because on a work leg served by bd every
-// walk is a burst of subprocesses and a dry run removes nothing, so it would
-// pay that burst every pass forever. Enforcing, it walks at most
-// wispGCWorkArmWalkCap roots per leg per pass and remembers refusals.
-//
-// Its holder guard reads only the root's own leg and the graph store: a v1
-// poured molecule is attached by `gc formula cook --attach` in the store it
-// was poured into, so another rig's suspension says nothing about it.
-func (m *memoryWispGC) collectWorkClassMoleculeRoots(legs wispGCLegs, graph beads.Store, now, cutoff time.Time) (int, error) {
-	if legs == nil || legs.unusable() != nil {
-		return 0, nil
-	}
-	enforce := workMoleculesEnforced()
-	purged := 0
-	idle, expired := 0, 0
-	var errs error
-	legs.each(func(work beads.Store) {
-		if work == nil || sameBeadStore(work, graph) {
-			return
-		}
-		open, err := enumerateWorkClassMoleculeRoots(work, "open", "in_progress")
-		switch {
-		case err != nil:
-			errs = errors.Join(errs, fmt.Errorf("listing open work-class molecule roots for abandoned-root sweep: %w", err))
-		case !enforce:
-			idle += countIdleAbandonedCandidates(open, now)
-		default:
-			holders := wispGCHolders{graph: graph, own: work}
-			if err := closeAbandonedRootCandidatesMode(work, open, holders, now, abandonedCloseMode{
-				enforce:    closeAbandonedEnforced(),
-				dryRunHint: fmt.Sprintf("set %s=1 to enforce", closeAbandonedEnv),
-				label:      "work-class molecule root",
-				walkCap:    wispGCWorkArmWalkCap,
-				notes:      &m.notes,
-			}); err != nil {
-				errs = errors.Join(errs, err)
-			}
-		}
-		closed, err := enumerateWorkClassMoleculeRoots(work, "closed")
-		if err != nil {
-			errs = errors.Join(errs, fmt.Errorf("listing closed work-class molecule roots: %w", err))
-			return
-		}
-		if !enforce {
-			for _, root := range closed {
-				if workArmPurgeAge(root).Before(cutoff) {
-					expired++
-				}
-			}
-			return
-		}
-		n, err := purgeExpiredBeadClosuresWith(work, closed, closurePurgeOpts{
-			cutoff:   cutoff,
-			batchCap: wispGCClosurePurgeBatchCap,
-			walkCap:  wispGCWorkArmWalkCap,
-			age:      workArmPurgeAge,
-			arm:      "work",
-			notes:    &m.notes,
-			now:      now,
-		})
-		purged += n
-		errs = errors.Join(errs, err)
-	})
-	if !enforce && (idle > 0 || expired > 0) {
-		log.Printf("wisp gc: work arm (dry-run; set %s=1 to enforce): %d open work-class molecule root(s) idle past %s, %d closed root(s) past retention; subtrees and closures not inspected",
-			workMoleculesEnv, idle, wispGCCloseAbandonedTTL, expired)
-	}
-	return purged, errs
-}
-
-// workArmPurgeAge is the clock a closed work-class molecule root ages on: its
-// last update, which its close stamps, not its creation. A long-lived v1
-// molecule closed a minute ago is not past retention because it was poured
-// long ago.
-func workArmPurgeAge(root beads.Bead) time.Time {
-	return beadLastActivity(root)
-}
-
-// countIdleAbandonedCandidates counts, from a listing alone, the roots the
-// abandoned-root closer would go on to inspect: in scope, not exempt, not
-// terminal, idle past the TTL. It reads nothing.
-func countIdleAbandonedCandidates(roots []beads.Bead, now time.Time) int {
-	cutoff := now.Add(-wispGCCloseAbandonedTTL)
-	n := 0
-	for _, root := range roots {
-		if isAbandonedRootCandidate(root) && !convoycore.IsTerminalStatus(root.Status) && !isGCExempt(root) && beadLastActivity(root).Before(cutoff) {
-			n++
-		}
-	}
-	return n
 }
 
 // enumerateWorkClassMoleculeRoots lists the v1 poured molecule roots on a work
@@ -1128,11 +1021,19 @@ type abandonedCloseMode struct {
 	enforce    bool
 	dryRunHint string
 	label      string
-	// walkCap bounds how many candidates have their subtree read this pass
-	// (0: unbounded).
-	walkCap int
+	// budget bounds the subtree reads this pass, shared with the rest of the
+	// pass (nil: unbounded).
+	budget *wispGCBudget
 	// notes print a per-root dry-run line only when it is new (nil: always).
 	notes *wispGCNotes
+	// memo, when set, remembers a "not closable" outcome (a live subtree, a
+	// claimed or held stepless root, a failed close) under memoArm, so the
+	// root is not walked again until it changes or the recheck passes.
+	memo    *wispGCNotes
+	memoArm string
+	// onWalk is told each root whose subtree the pass read, in order (the
+	// caller's rotation cursor).
+	onWalk func(rootID string)
 }
 
 // closeAbandonedRootCandidatesMode is closeAbandonedRoots over candidates
@@ -1141,7 +1042,11 @@ type abandonedCloseMode struct {
 func closeAbandonedRootCandidatesMode(store beads.Store, candidates []beads.Bead, holders wispGCHolders, now time.Time, mode abandonedCloseMode) error {
 	enforce := mode.enforce
 	cutoff := now.Add(-wispGCCloseAbandonedTTL)
-	walked := 0
+	keep := func(root beads.Bead, reason string) {
+		if mode.memo != nil {
+			mode.memo.noteRefusal(mode.memoArm, root, now, reason)
+		}
+	}
 
 	var closeErr error
 	closed := 0
@@ -1164,18 +1069,25 @@ func closeAbandonedRootCandidatesMode(store beads.Store, candidates []beads.Bead
 		if !beadLastActivity(root).Before(cutoff) {
 			continue
 		}
-		if mode.walkCap > 0 && walked >= mode.walkCap {
+		if mode.memo != nil && mode.memo.refusedNow(mode.memoArm, root, now) {
+			continue
+		}
+		if !mode.budget.take() {
 			break
 		}
-		walked++
+		if mode.onWalk != nil {
+			mode.onWalk(root.ID)
+		}
 		terminal, descendants := subtreeTerminalExcludingRoot(store, root.ID)
 		if !terminal {
+			keep(root, "subtree not terminal")
 			continue
 		}
 		// Guard 2: a stepless root is only closable once it is provably
 		// unclaimed AND no live source bead is still attached to it — see
 		// steplessRootIsAbandoned and wispGCHolders.liveAttachmentSource.
 		if descendants == 0 && (!steplessRootIsAbandoned(root) || holders.liveAttachmentSource(root)) {
+			keep(root, "stepless root claimed or held")
 			continue
 		}
 
@@ -1189,6 +1101,7 @@ func closeAbandonedRootCandidatesMode(store beads.Store, candidates []beads.Bead
 		}
 
 		if err := closeMoleculeWithReason(store, root.ID, abandonedRootCloseReason); err != nil {
+			keep(root, "close failed: "+err.Error())
 			closeErr = errors.Join(closeErr, fmt.Errorf("closing abandoned root %s: %w", root.ID, err))
 			continue
 		}
@@ -1302,18 +1215,34 @@ func (h wispGCHolders) liveAttachmentSource(root beads.Bead) bool {
 	}
 	// An attached root-only wisp records its one source (sling stamps
 	// gc.source_bead_id / gc.source_store_ref): ask that source, and leave the
-	// root open only when the source is live or sits in a suspended rig.
-	if src := strings.TrimSpace(root.Metadata[beadmeta.SourceBeadIDMetadataKey]); src != "" {
-		if h.sourceIsLive(root, src) {
+	// root open when the source is live, unreadable, or in a suspended rig. A
+	// pointer whose store ref names no store this city serves (empty, a bare
+	// or foreign city ref, a class ref, an undeclared or renamed rig) proves
+	// nothing, and the root takes the no-pointer path below.
+	src := strings.TrimSpace(root.Metadata[beadmeta.SourceBeadIDMetadataKey])
+	pointerUsable := false
+	if src != "" {
+		store, suspended, ok := h.sourceStore(root)
+		if ok {
+			pointerUsable = true
+			if suspended {
+				h.pass.noteSuspended([]string{strings.TrimPrefix(strings.TrimSpace(root.Metadata[beadmeta.SourceStoreRefMetadataKey]), "rig:")})
+				return true
+			}
+			if sourceIsLiveIn(store, root, src) {
+				return true
+			}
+		}
+	}
+	if !pointerUsable {
+		if suspended := h.suspendedRigs(); len(suspended) > 0 && beads.IsMoleculeType(root.Type) {
+			// A molecule-typed root with no usable pointer may be an attached
+			// root-only wisp whose source a suspended rig holds unread. A
+			// task-typed root is a standalone wisp or workflow root, which no
+			// v1 attach produces, so suspension says nothing about it.
+			h.pass.noteSuspended(suspended)
 			return true
 		}
-	} else if suspended := h.suspendedRigs(); len(suspended) > 0 && beads.IsMoleculeType(root.Type) {
-		// A molecule-typed root with no source pointer may be an attached
-		// root-only wisp from before sling recorded one; a suspended rig can
-		// hold its source unread. A task-typed root is a standalone wisp,
-		// which nothing attaches, so suspension says nothing about it.
-		h.pass.noteSuspended(suspended)
-		return true
 	}
 	if h.graph != nil && storeHoldsLiveAttachmentSource(h.graph, rootID) {
 		return true
@@ -1337,25 +1266,28 @@ func (h wispGCHolders) suspendedRigs() []string {
 	return h.legs.suspendedRigs()
 }
 
-// sourceIsLive reports whether root's recorded source bead may still hold it:
-// it is open, it cannot be read, or it sits in a suspended rig (not read). A
-// source that is terminal or gone holds nothing. Fails CLOSED.
-func (h wispGCHolders) sourceIsLive(root beads.Bead, src string) bool {
+// sourceStore resolves root's gc.source_store_ref to the store its source
+// lives in. ok=false when the ref names no store this city serves. On a
+// single-store city (no legs) only a city ref resolves, to the graph store,
+// which is the city store there.
+func (h wispGCHolders) sourceStore(root beads.Bead) (beads.Store, bool, bool) {
 	ref := strings.TrimSpace(root.Metadata[beadmeta.SourceStoreRefMetadataKey])
-	store := h.graph
-	if h.legs != nil {
-		resolved, suspended, ok := h.legs.storeForRef(ref)
-		switch {
-		case suspended:
-			h.pass.noteSuspended([]string{strings.TrimPrefix(ref, "rig:")})
-			return true
-		case ok:
-			store = resolved
+	if ref == "" {
+		return nil, false, false
+	}
+	if h.legs == nil {
+		if rig, ok := storeref.ScopeRigContext(ref); ok && rig == "" && !storeref.IsClassRef(ref) && h.graph != nil {
+			return h.graph, false, true
 		}
+		return nil, false, false
 	}
-	if store == nil {
-		return true
-	}
+	return h.legs.storeForRef(ref)
+}
+
+// sourceIsLiveIn reports whether root's source src, read from store, may still
+// hold it: it is open, or it cannot be read. A source that is terminal or gone
+// holds nothing. Fails CLOSED.
+func sourceIsLiveIn(store beads.Store, root beads.Bead, src string) bool {
 	b, err := store.Get(src)
 	switch {
 	case errors.Is(err, beads.ErrNotFound):
@@ -1440,8 +1372,17 @@ type closurePurgeOpts struct {
 	cutoff time.Time
 	// batchCap bounds delete attempts (0: unbounded); a refusal is not one.
 	batchCap int
-	// walkCap bounds closures walked, refusals included (0: unbounded).
-	walkCap int
+	// budget bounds closures walked this pass, shared with the rest of the
+	// pass; a remembered refusal costs none (nil: unbounded).
+	budget *wispGCBudget
+	// memoFailures also remembers a delete that failed, so a closure whose
+	// delete keeps failing does not take a walk every pass.
+	memoFailures bool
+	// onWalk is told each root whose closure the pass walked, in order.
+	onWalk func(rootID string)
+	// prefetch reads the live rows of the roots this pass can walk in one
+	// batched read, instead of one live read per root.
+	prefetch bool
 	// age is the clock an entry ages on (nil: CreatedAt).
 	age func(beads.Bead) time.Time
 	// arm names the caller for the notes' keys and the summary line.
@@ -1458,7 +1399,8 @@ func purgeExpiredBeadClosuresWith(store beads.Store, entries []beads.Bead, opts 
 	if age == nil {
 		age = func(b beads.Bead) time.Time { return b.CreatedAt }
 	}
-	purged, attempted, walked, refused, remembered := 0, 0, 0, 0, 0
+	purged, attempted, refused, remembered := 0, 0, 0, 0
+	var prefetched map[string]beads.Bead
 	var deleteErr error
 	for _, entry := range entries {
 		if opts.batchCap > 0 && attempted >= opts.batchCap {
@@ -1472,11 +1414,20 @@ func purgeExpiredBeadClosuresWith(store beads.Store, entries []beads.Bead, opts 
 			remembered++
 			continue
 		}
-		if opts.walkCap > 0 && walked >= opts.walkCap {
+		if !opts.budget.take() {
 			break
 		}
-		walked++
-		err := deleteExpiredBeadClosure(store, entry.ID)
+		if opts.onWalk != nil {
+			opts.onWalk(entry.ID)
+		}
+		if opts.prefetch && prefetched == nil {
+			prefetched = prefetchLiveRoots(store, entries, opts)
+		}
+		var row *beads.Bead
+		if b, ok := prefetched[entry.ID]; ok {
+			row = &b
+		}
+		err := deleteExpiredBeadClosureFrom(store, entry.ID, row)
 		if errors.Is(err, errWorkflowDeleteLiveDescendants) {
 			// The strand guard refused the closure delete: an open member still
 			// holds the root. That is a skip, not a sweep failure — the root
@@ -1487,8 +1438,7 @@ func purgeExpiredBeadClosuresWith(store beads.Store, entries []beads.Bead, opts 
 			// remembered so the closure is not walked again until its root
 			// changes.
 			refused++
-			opts.notes.noteRefusal(opts.arm, entry, opts.now)
-			if opts.notes.detail("refused\x00" + opts.arm + "\x00" + entry.ID) {
+			if opts.notes.noteRefusal(opts.arm, entry, opts.now, err.Error()) {
 				log.Printf("wisp gc: not purging closed root %s: %v", entry.ID, err)
 			}
 			continue
@@ -1497,6 +1447,9 @@ func purgeExpiredBeadClosuresWith(store beads.Store, entries []beads.Bead, opts 
 		if err != nil {
 			if errors.Is(err, errBeadNoLongerEligible) {
 				continue
+			}
+			if opts.memoFailures {
+				opts.notes.noteRefusal(opts.arm, entry, opts.now, "delete failed: "+err.Error())
 			}
 			deleteErr = errors.Join(deleteErr, fmt.Errorf("deleting expired bead %q: %w", entry.ID, err))
 			continue
@@ -1509,7 +1462,7 @@ func purgeExpiredBeadClosuresWith(store beads.Store, entries []beads.Bead, opts 
 		if label == "" {
 			label = "closure"
 		}
-		log.Printf("wisp gc: %s purge left %d closed root(s) whose closure holds a bead that is not closed (%d walked this pass, %d remembered)", label, refused+remembered, refused, remembered)
+		log.Printf("wisp gc: %s purge left %d closed root(s) whose closure holds a bead that is not closed, or whose delete failed (%d walked this pass, %d remembered)", label, refused+remembered, refused, remembered)
 	}
 	return purged, deleteErr
 }
@@ -1520,14 +1473,23 @@ func purgeExpiredBeadClosuresWith(store beads.Store, entries []beads.Bead, opts 
 // it as either purged or an error.
 var errBeadNoLongerEligible = errors.New("bead skipped: no longer eligible for deletion")
 
-func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
+// deleteExpiredBeadClosureFrom deletes rootID's ownership closure, given, when
+// the caller prefetched it from the live backing in one batched read, the
+// root's live row (nil: read it here).
+func deleteExpiredBeadClosureFrom(store beads.Store, rootID string, prefetched *beads.Bead) error {
 	// closedWispGCEntries can answer from a stale cached snapshot. A root
 	// reopened (live work resumed) inside the cache window — after the
 	// snapshot was taken but before this purge reaches it — is no longer
 	// gc-eligible; re-verify against the live store immediately before the
 	// destructive batch delete. A root that is already gone has nothing to
 	// delete.
-	live, err := beads.HandlesFor(store).Live.Get(rootID)
+	var live beads.Bead
+	var err error
+	if prefetched != nil {
+		live = *prefetched
+	} else {
+		live, err = beads.HandlesFor(store).Live.Get(rootID)
+	}
 	switch {
 	case errors.Is(err, beads.ErrNotFound):
 		// Root already gone — nothing to delete.
@@ -1549,7 +1511,7 @@ func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
 	// the delete is not dependent-recursive, collectExpiredBeadClosureStatus must (and
 	// does) gather only the ownership closure so live work outside it is never
 	// reached.
-	ids, open, err := collectExpiredBeadClosureWithOpen(store, live)
+	ids, open, rows, err := collectExpiredBeadClosureWithOpen(store, live)
 	if err != nil {
 		return err
 	}
@@ -1562,7 +1524,33 @@ func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
 	if len(open) > 0 {
 		return workflowDeleteRefusal(rootID, open)
 	}
-	return deleteWorkflowBeadsBatch(store, ids)
+	// Every member's own status was just checked. The set-level strand guard
+	// reads LIVE where the walk may have read a lagging cache, and adds an
+	// open bead recorded against a nested root, so it is asked about the root
+	// and every member that can be a root (a workflow, wisp or molecule); a
+	// plain step costs no extra read.
+	if err := assertWorkflowDeleteSetLeavesNothingStrandedFor(store, ids, nestedRootCandidates(ids, rows, rootID)); err != nil {
+		return err
+	}
+	return deleteWorkflowBeadsBatchGuarded(store, ids)
+}
+
+// nestedRootCandidates are the root and the closure members that could own
+// gc.root_bead_id members of their own. A member whose row the walk did not
+// read is included (fail closed).
+func nestedRootCandidates(ids []string, rows map[string]beads.Bead, rootID string) []string {
+	var out []string
+	for _, id := range ids {
+		if id == rootID {
+			out = append(out, id)
+			continue
+		}
+		b, ok := rows[id]
+		if !ok || sourceworkflow.IsWorkflowRoot(b) || beads.IsMoleculeType(b.Type) || isWispPolicyMetadata(b.Metadata) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // collectExpiredBeadClosureWithOpen is collectExpiredBeadClosureStatus plus the ids
@@ -1575,10 +1563,10 @@ func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
 //
 // root is the root's own row, already read live by the caller, so it is not
 // read again.
-func collectExpiredBeadClosureWithOpen(store beads.Store, root beads.Bead) ([]string, []string, error) {
+func collectExpiredBeadClosureWithOpen(store beads.Store, root beads.Bead) ([]string, []string, map[string]beads.Bead, error) {
 	ids, rows, err := collectExpiredBeadClosureStatus(store, root.ID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	rows[root.ID] = root
 	reader := beads.HandlesFor(store).Live
@@ -1595,12 +1583,13 @@ func collectExpiredBeadClosureWithOpen(store beads.Store, root beads.Bead) ([]st
 				continue
 			}
 			b = got
+			rows[id] = got
 		}
 		if b.Status != "closed" && !isTransientNotificationBead(b) {
 			open = append(open, id)
 		}
 	}
-	return ids, open, nil
+	return ids, open, rows, nil
 }
 
 // collectExpiredBeadClosureStatus walks rootID's ownership closure and returns
@@ -1624,6 +1613,10 @@ func collectExpiredBeadClosureStatus(store beads.Store, rootID string) ([]string
 			rootOwned = append(rootOwned, bead.ID)
 			status[bead.ID] = bead
 		}
+	}
+
+	if childrenFollowParentChildDeps(store) {
+		return collectClosureByLevel(store, rootID, rootOwned, status)
 	}
 
 	seen := make(map[string]struct{}, len(rootOwned)+1)
@@ -1685,9 +1678,136 @@ func collectExpiredBeadClosureStatus(store beads.Store, rootID string) ([]string
 	return ids, status, nil
 }
 
+// childrenFollowParentChildDeps reports whether store's batched children read
+// answers a closure level completely: a bd store keeps a bead's parent as a
+// parent-child dependency, and its ChildrenOfAny reads exactly those edges, so
+// one batched read per level covers both the ParentID and the dependency-only
+// children the per-node walk asks for separately. Other stores (in-memory,
+// file, SQLite) keep the two apart, and keep the per-node walk.
+func childrenFollowParentChildDeps(store beads.Store) bool {
+	inner, _, _ := unwrapBeadPolicyStore(store)
+	if cache, ok := inner.(*beads.CachingStore); ok {
+		inner, _, _ = unwrapBeadPolicyStore(cache.Backing())
+	}
+	_, ok := inner.(*beads.BdStore)
+	return ok
+}
+
+// collectClosureByLevel is the ownership-closure walk one level at a time,
+// with one batched children read per level (beads.ChildrenOfAny): a couple of
+// bd calls per level instead of two per member. ids come back deepest level
+// first and the root last, the order a per-bead delete needs.
+func collectClosureByLevel(store beads.Store, rootID string, rootOwned []string, status map[string]beads.Bead) ([]string, map[string]beads.Bead, error) {
+	seen := map[string]bool{rootID: true}
+	levels := [][]string{{rootID}}
+	frontier := []string{rootID}
+	for _, id := range rootOwned {
+		if !seen[id] {
+			seen[id] = true
+			frontier = append(frontier, id)
+		}
+	}
+	if len(frontier) > 1 {
+		levels = append(levels, frontier[1:])
+	}
+	for len(frontier) > 0 {
+		children, err := beads.ChildrenOfAny(store, frontier, beads.WithBothTiers)
+		if err != nil {
+			return nil, nil, fmt.Errorf("list children of %d closure member(s) under %s: %w", len(frontier), rootID, err)
+		}
+		var next []string
+		for _, child := range children {
+			if child.ID == "" || seen[child.ID] {
+				continue
+			}
+			seen[child.ID] = true
+			status[child.ID] = child
+			next = append(next, child.ID)
+		}
+		if len(next) > 0 {
+			levels = append(levels, next)
+		}
+		frontier = next
+	}
+	var ids []string
+	for i := len(levels) - 1; i >= 0; i-- {
+		ids = append(ids, levels[i]...)
+	}
+	return ids, status, nil
+}
+
 func gcRetentionTTLString(d time.Duration) string {
 	if d%time.Hour == 0 {
 		return fmt.Sprintf("%dh", int(d/time.Hour))
 	}
 	return d.String()
+}
+
+// rootIDSet is the set of the ids in roots.
+func rootIDSet(roots []beads.Bead) map[string]bool {
+	out := make(map[string]bool, len(roots))
+	for _, r := range roots {
+		out[r.ID] = true
+	}
+	return out
+}
+
+// wispGCBudget bounds one pass's walks (subtree and closure reads): a count
+// shared across every leg and arm of the pass, and a wall-clock deadline. A
+// nil budget is unbounded.
+type wispGCBudget struct {
+	walks    int
+	deadline time.Time
+}
+
+// take spends one walk, or reports that the pass is out of budget.
+func (b *wispGCBudget) take() bool {
+	if b == nil {
+		return true
+	}
+	if b.walks <= 0 || (!b.deadline.IsZero() && !time.Now().Before(b.deadline)) {
+		return false
+	}
+	b.walks--
+	return true
+}
+
+// exhausted reports whether the pass has no walk left.
+func (b *wispGCBudget) exhausted() bool {
+	return b != nil && (b.walks <= 0 || (!b.deadline.IsZero() && !time.Now().Before(b.deadline)))
+}
+
+// prefetchLiveRoots reads, in one batched read of the live backing, the rows of
+// the entries this purge can still walk (past the cutoff, not remembered, at
+// most the budget's remaining walks). A store with no batched exact read
+// answers nothing, and each root is then read on its own.
+func prefetchLiveRoots(store beads.Store, entries []beads.Bead, opts closurePurgeOpts) map[string]beads.Bead {
+	age := opts.age
+	if age == nil {
+		age = func(b beads.Bead) time.Time { return b.CreatedAt }
+	}
+	limit := len(entries)
+	if opts.budget != nil && opts.budget.walks+1 < limit {
+		limit = opts.budget.walks + 1
+	}
+	var ids []string
+	for _, entry := range entries {
+		if len(ids) >= limit {
+			break
+		}
+		at := age(entry)
+		if at.IsZero() || !at.Before(opts.cutoff) || opts.notes.refusedNow(opts.arm, entry, opts.now) {
+			continue
+		}
+		ids = append(ids, entry.ID)
+	}
+	backing, _, _ := unwrapBeadPolicyStore(store)
+	if cache, ok := backing.(*beads.CachingStore); ok {
+		backing = cache.Backing()
+	}
+	rows, err := beads.PrefetchExact(backing, ids)
+	if err != nil {
+		return map[string]beads.Bead{}
+	}
+	return rows
 }
