@@ -565,3 +565,99 @@ func TestReadCrossStoreCostOnASplitCity(t *testing.T) {
 		t.Errorf("the work leg was asked for %d list(s), want only Ready's own", work.lists.Load())
 	}
 }
+
+// TestReadInProgressKeepsBdSemanticsOnASingleStoreCity: on a city with no
+// class binding the crash-recovery tier's blocked_by is bd's answer. bd never
+// blocks on an external: target, a capability, or a cross-rig id the serving
+// store does not hold, so those rows carry no blocker; a same-store open
+// blocker still reads as one (the control).
+func TestReadInProgressKeepsBdSemanticsOnASingleStoreCity(t *testing.T) {
+	city := splittest.NewNativeWorkStore(t, "gc")
+	rig := splittest.NewNativeWorkStore(t, "rg")
+	rb := mustCreate(t, rig, beads.Bead{Title: "rig blocker", Type: "task"})
+	own := mustCreate(t, city, beads.Bead{Title: "own open blocker", Type: "task"})
+	mk := func(title, target string) string {
+		t.Helper()
+		b := mustCreate(t, city, beads.Bead{Title: title, Type: "task"})
+		setInProgress(t, city, b.ID, "w1")
+		if target != "" {
+			if err := city.DepAdd(b.ID, target, "blocks"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return b.ID
+	}
+	external := []string{mk("ext id", "external:"+rb.ID), mk("cross rig", rb.ID), mk("cap", "external:rg:cap")}
+	held := mk("own blocker", own.ID)
+	legs := []Leg{testLeg("city", city), testLeg("rig:rg", rig)}
+	rows, err := Read(legs, Query{Status: StatusInProgress, Assignee: "w1"})
+	if err != nil {
+		t.Fatalf("in-progress tier: %v", err)
+	}
+	byID := map[string]ReadyBead{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	for _, id := range external {
+		if r, ok := byID[id]; !ok || len(r.BlockedBy) != 0 {
+			t.Errorf("row %s blocked_by = %+v (served %v), want served with no blocker: bd never blocks on it", id, r.BlockedBy, ok)
+		}
+	}
+	if r := byID[held]; len(r.BlockedBy) != 1 || r.BlockedBy[0].Status != "open" {
+		t.Errorf("row %s blocked_by = %+v, want its same-store open blocker", held, r.BlockedBy)
+	}
+}
+
+// TestReadHoldsARowWhoseLaterCopyIsStillOpen pins every copy, not the first:
+// the blocker's first copy in leg order is closed and a later one is open.
+func TestReadHoldsARowWhoseLaterCopyIsStillOpen(t *testing.T) {
+	work := beads.NewMemStore()
+	rig := beads.NewMemStore()
+	rig.HonorExplicitIDs = true
+	binding := sqliteBinding(t)
+	bl := mustCreate(t, binding, beads.Bead{Title: "relic", Type: "task", Priority: intRef(4)})
+	if _, err := rig.Create(beads.Bead{ID: bl.ID, Title: "closed copy", Type: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	closeBead(t, rig, bl.ID)
+	row := mustCreate(t, work, beads.Bead{Title: "row", Type: "task"})
+	if err := work.DepAdd(row.ID, "external:"+bl.ID, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	legs := []Leg{
+		testLeg("work", externalBlockerStore{Store: work}),
+		testLeg("rig:r", rig), // the closed copy, first in leg order
+		{Label: "graph", Store: binding, ClassBinding: true, ReservedPrefixes: []string{"gcg"}}, // the open copy
+	}
+	if got := readyIDs(t, legs, Query{}); slices.Contains(got, row.ID) {
+		t.Fatalf("ready = %v served %s; its blocker is still open in the graph store", got, row.ID)
+	}
+}
+
+// TestReadHoldsABdRowOnAMigratedRelicTheBindingHoldsOpen: a bd row's
+// same-prefix blocker that the work store no longer holds — a relic the
+// migration moved into the binding — is read by bd as a missing same-prefix
+// target and never blocks. gc's reader asks the binding and holds the row.
+func TestReadHoldsABdRowOnAMigratedRelicTheBindingHoldsOpen(t *testing.T) {
+	work := beads.NewMemStore()
+	binding := sqliteBinding(t)
+	relic, err := binding.(beads.ForeignIDCreator).CreateWithForeignID(beads.Bead{ID: "gc-relic-1", Title: "relic step", Type: "task", Priority: intRef(4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := mustCreate(t, work, beads.Bead{Title: "row", Type: "task"})
+	if beads.BdIDPrefix(row.ID) != beads.BdIDPrefix(relic.ID) {
+		t.Fatalf("fixture: %s and %s do not share bd's prefix", row.ID, relic.ID)
+	}
+	if err := work.DepAdd(row.ID, relic.ID, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	legs := []Leg{testLeg("work", externalBlockerStore{Store: work}), {Label: "graph", Store: binding, ClassBinding: true, ReservedPrefixes: []string{"gcg"}}}
+	if got := readyIDs(t, legs, Query{}); slices.Contains(got, row.ID) {
+		t.Fatalf("ready = %v served %s while its relic blocker %s is open in the binding", got, row.ID, relic.ID)
+	}
+	closeBead(t, binding, relic.ID)
+	if got := readyIDs(t, legs, Query{}); !slices.Contains(got, row.ID) {
+		t.Fatalf("ready = %v withholds %s after its relic blocker closed", got, row.ID)
+	}
+}

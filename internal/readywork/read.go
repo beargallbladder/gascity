@@ -426,11 +426,12 @@ func readLegBlockers(ctx context.Context, cs *crossStore, legs []Leg, own int, i
 				blockers = nil
 				break
 			}
-			target, capability := beads.ExternalBlockerTarget(dep.DependsOnID)
-			if capability {
+			v, ok := verdicts[dep.DependsOnID]
+			if !ok {
+				// Not a blocker of this row (blockerStatuses): a capability
+				// ref, or on a city with no binding one bd never blocks on.
 				continue
 			}
-			v := verdicts[target]
 			blockers = append(blockers, ReadyBeadBlocker{ID: dep.DependsOnID, Status: v.status, Reason: v.reason})
 		}
 		if _, failed := out.errs[id]; !failed {

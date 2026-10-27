@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/dispatch"
 	"github.com/gastownhall/gascity/internal/doctor"
 )
@@ -123,5 +125,118 @@ func TestCrossStoreGatesCheckReportsUnresolvedGates(t *testing.T) {
 	res := check.Run(nil)
 	if res.Status != doctor.StatusWarning || len(res.Details) != 1 || !strings.Contains(res.Details[0], gate.ID) {
 		t.Fatalf("Run = %+v, want a warning naming gate %s", res, gate.ID)
+	}
+}
+
+// TestDanglingBlockingEdgesFixSparesBlockersInUnreadRigs: --fix acts only on
+// targets proven absent from EVERY store. A blocker in the namespace of a
+// suspended rig, or of a rig whose store will not open, is undecided — even a
+// hyphenated rig prefix ("gc-ops") is matched whole — and while any store was
+// skipped --fix touches nothing at all.
+func TestDanglingBlockingEdgesFixSparesBlockersInUnreadRigs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		prefix    string
+		suspended bool
+		openFails bool
+	}{
+		{name: "suspended rig", prefix: "rg", suspended: true},
+		{name: "rig store fails to open", prefix: "rg", openFails: true},
+		{name: "suspended rig with a hyphenated prefix", prefix: "gc-ops", suspended: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cityPath := t.TempDir()
+			sessionSplitRoutes(t, cityPath)
+			work := beads.NewMemStore()
+			rig := beads.NewMemStore()
+			rig.HonorExplicitIDs = true
+			rb, err := rig.Create(beads.Bead{ID: tc.prefix + "-77", Title: "open rig blocker", Type: "task"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, err := work.Create(beads.Bead{Title: "row", Type: "task"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := work.DepAdd(row.ID, rb.ID, "blocks"); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.City{Rigs: []config.Rig{{Name: "rg", Path: "rigs/rg", Prefix: tc.prefix, Suspended: tc.suspended}}}
+			check := newDanglingBlockingEdgesCheck(cfg, cityPath, func(p string) (beads.Store, error) {
+				if p == "rigs/rg" {
+					if tc.openFails {
+						return nil, errors.New("dolt server restarting")
+					}
+					return rig, nil
+				}
+				return work, nil
+			})
+			if edges, _ := check.collect(); len(edges) != 0 {
+				t.Fatalf("dangling edges = %+v; %s is in an unread rig's namespace and is undecided", edges, rb.ID)
+			}
+			ferr := check.Fix(nil)
+			if tc.openFails && ferr == nil {
+				t.Fatal("Fix succeeded although a rig store could not be read")
+			}
+			if deps, _ := work.DepList(row.ID, "down"); len(deps) != 1 {
+				t.Fatalf("deps of %s after --fix = %+v; the edge to %s, held by an unread rig, was touched", row.ID, deps, rb.ID)
+			}
+		})
+	}
+}
+
+// TestDanglingBlockingEdgesFixRewritesAMalformedDiscoveredFromLiteral is the
+// maintainer-city shape (ga-26jnu, ga-0wmnm, ga-dsazz): a blocks edge to the
+// literal "discovered-from:<id>" whose <id> the row's own store holds. --fix
+// rewrites it as the real discovered-from edge in that store; nothing blocks
+// afterwards. A literal whose <id> only another store holds is left for the
+// operator, because rewriting it would write a cross-store edge.
+func TestDanglingBlockingEdgesFixRewritesAMalformedDiscoveredFromLiteral(t *testing.T) {
+	cityPath := t.TempDir()
+	binding := sessionSplitRoutes(t, cityPath)
+	work := beads.NewMemStore()
+	origin, err := work.Create(beads.Bead{Title: "where it was discovered", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := binding.Create(beads.Bead{Title: "graph-side origin", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := work.Create(beads.Bead{Title: "discovered work", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cross, err := work.Create(beads.Bead{Title: "discovered from the graph", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.DepAdd(row.ID, "discovered-from:"+origin.ID, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	if err := work.DepAdd(cross.ID, "discovered-from:"+elsewhere.ID, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	check := newDanglingBlockingEdgesCheck(nil, cityPath, func(string) (beads.Store, error) { return work, nil })
+	edges, skipped := check.collect()
+	if len(skipped) != 0 || len(edges) != 2 {
+		t.Fatalf("edges = %+v, skipped = %v; want the two malformed literals", edges, skipped)
+	}
+	if err := check.Fix(nil); err != nil {
+		t.Fatalf("Fix: %v", err)
+	}
+	deps, err := work.DepList(row.ID, "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 1 || deps[0].DependsOnID != origin.ID || deps[0].Type != "discovered-from" {
+		t.Fatalf("deps of %s after --fix = %+v; want one discovered-from edge to %s and no blocks edge", row.ID, deps, origin.ID)
+	}
+	crossDeps, err := work.DepList(cross.ID, "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(crossDeps) != 1 || crossDeps[0].DependsOnID != "discovered-from:"+elsewhere.ID {
+		t.Fatalf("deps of %s after --fix = %+v; want the literal left for the operator (its id lives in another store)", cross.ID, crossDeps)
 	}
 }

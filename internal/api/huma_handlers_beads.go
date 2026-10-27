@@ -637,7 +637,11 @@ func (s *Server) humaHandleBeadReady(ctx context.Context, input *BeadReadyInput)
 		for i := range legs {
 			gated, err := readywork.GateLegReady(ctx, federated, i, legs[i].rows, readyFederationQuery())
 			if err != nil {
+				// A leg whose blockers could not be judged serves nothing: an
+				// ungated row may be one a blocker still holds. The response
+				// says it is short, as it does for a leg that failed to read.
 				pa.record(legs[i].leg.Label, fmt.Errorf("cross-store blockers: %w", err))
+				legs[i].rows = nil
 				continue
 			}
 			legs[i].rows = gated

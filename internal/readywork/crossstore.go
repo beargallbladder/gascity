@@ -484,19 +484,37 @@ func (cs *crossStore) gate(ctx context.Context, owners map[string]int, items []b
 }
 
 // blockerStatuses resolves, for the in-progress tier, each target of a row
-// served by legs[own]: through that leg first, and — on a split city — through
-// the other legs for a target it does not hold. A capability ref is omitted.
-// On a city with no binding a target the serving leg does not hold is reported
-// unresolved, without reading any other leg.
+// served by legs[own], keyed by the target as written. A target with no entry
+// is not a blocker of the row and is omitted from blocked_by.
+//
+// On a split city a target is read through the serving leg first and through
+// the other legs when that leg does not hold it; "external:<id>" is the bead
+// <id>; a capability ref is omitted; a target no store holds is unresolved.
+//
+// On a city with no binding the answer is bd's: bd never blocks on an
+// "external:" target, nor on a target the serving store does not hold, so both
+// are omitted and no other leg is read.
 func blockerStatuses(ctx context.Context, cs *crossStore, legs []Leg, own int, targets []string) (map[string]blockerVerdict, error) {
 	out := make(map[string]blockerVerdict, len(targets))
 	ids := make([]string, 0, len(targets))
+	rawFor := make(map[string][]string, len(targets))
 	for _, raw := range targets {
+		if cs == nil && strings.HasPrefix(strings.TrimSpace(raw), "external:") {
+			continue
+		}
 		target, capability := beads.ExternalBlockerTarget(raw)
 		if capability {
 			continue
 		}
-		ids = append(ids, target)
+		if _, seen := rawFor[target]; !seen {
+			ids = append(ids, target)
+		}
+		rawFor[target] = append(rawFor[target], raw)
+	}
+	set := func(id string, v blockerVerdict) {
+		for _, raw := range rawFor[id] {
+			out[raw] = v
+		}
 	}
 	if len(ids) == 0 {
 		return out, nil
@@ -508,18 +526,12 @@ func blockerStatuses(ctx context.Context, cs *crossStore, legs []Leg, own int, t
 	var absent []string
 	for _, id := range ids {
 		if b, ok := own0[id]; ok {
-			out[id] = blockerVerdict{status: b.Status, satisfied: beads.DependencySatisfied(b.Status, beads.ReadinessWorkOutcome(b.Metadata))}
+			set(id, blockerVerdict{status: b.Status, satisfied: beads.DependencySatisfied(b.Status, beads.ReadinessWorkOutcome(b.Metadata))})
 			continue
 		}
 		absent = append(absent, id)
 	}
-	if len(absent) == 0 {
-		return out, nil
-	}
-	if cs == nil {
-		for _, id := range absent {
-			out[id] = blockerVerdict{status: BlockerUnresolved, reason: fmt.Sprintf("blocker %s is not held by the %s store", id, legs[own].Label)}
-		}
+	if len(absent) == 0 || cs == nil {
 		return out, nil
 	}
 	others := make([]Leg, 0, len(legs)-1)
@@ -533,7 +545,7 @@ func blockerStatuses(ctx context.Context, cs *crossStore, legs []Leg, own int, t
 		return nil, err
 	}
 	for _, id := range absent {
-		out[id] = verdictOfCopies(id, copies[id])
+		set(id, verdictOfCopies(id, copies[id]))
 	}
 	return out, nil
 }
