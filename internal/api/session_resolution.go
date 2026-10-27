@@ -201,23 +201,28 @@ func (s *Server) reassignContinuityIneligibleNamedSessionState(ctx context.Conte
 }
 
 // retiredSessionWorkStores lists, once each, every store that can hold work
-// assigned to a session: the city work store, each rig work store in rig-name
-// order, the graph store (whose steps are assigned to sessions), and the
-// sessions store the caller resolved the session through.
+// assigned to a session.
 //
-// The sessions store alone is not enough (write-audit B7). On a split city it
-// is the class binding, which holds graph steps but no task: listing work there
-// moved the retired session's graph steps to its successor and left every task
-// in the city and rig work stores assigned to an id no session answers to.
-// Named-session work is not pool-routed, so the orphan lane never rescues it.
-// On a single-store city every one of these is the same store, which is read
-// once, exactly as before. cmd/gc's controller twin
-// (reassignWorkAssignedToRetiredSessionBead) sweeps the same work legs.
+// On a city that relocates nothing it is the sessions store alone — the one
+// store this sweep always read, exactly as before, rigs or no rigs.
+//
+// On a split city the sessions store is the class binding, which holds graph
+// steps but no task: listing work there alone moved the retired session's graph
+// steps to its successor and left every task in the city and rig work stores
+// assigned to an id no session answers to (write-audit B7). Named-session work
+// is not pool-routed, so the orphan lane never rescues it. So a split city
+// sweeps the city work store, every rig work store that is not suspended (a
+// suspended rig is left untouched; its work is reassigned when it resumes and
+// the controller's twin sweeps it, reassignWorkAssignedToRetiredSessionBead),
+// the graph store and the sessions store.
 //
 // residency:allow — a write sweep over every store that can hold work assigned
 // to one session id, not a residency answer: each store is listed by assignee,
 // so a store that holds nothing for the id costs one query and changes nothing.
 func (s *Server) retiredSessionWorkStores(sessions beads.Store) []beads.Store {
+	if relocatedGraphStore(s.state) == nil {
+		return []beads.Store{sessions} // residency:allow — a city that relocates nothing sweeps the one sessions store it always swept
+	}
 	var out []beads.Store
 	add := func(store beads.Store) {
 		if store == nil || slices.Contains(out, store) {
@@ -226,8 +231,19 @@ func (s *Server) retiredSessionWorkStores(sessions beads.Store) []beads.Store {
 		out = append(out, store)
 	}
 	add(s.state.CityBeadStore())
+	suspended := make(map[string]bool)
+	if cfg := s.state.Config(); cfg != nil {
+		for _, rig := range cfg.Rigs {
+			if rig.Suspended {
+				suspended[rig.Name] = true
+			}
+		}
+	}
 	stores := s.state.BeadStores() // residency:allow — the reassign sweep above: every store that can hold the retired session's work
 	for _, rigName := range sortedRigNames(stores) {
+		if suspended[rigName] {
+			continue
+		}
 		add(stores[rigName])
 	}
 	add(s.state.GraphBeadStore().Store)

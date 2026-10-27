@@ -72,7 +72,7 @@ func gatherDemand(env demandGatherEnv, reads demandReads) (v demandView, err err
 	defer recoverLeg(&err, "demand gather", stderr)
 	targets := buildDemandTargets(env.CityName, env.CityPath, env.Cfg, env.CityStore, env.RigStores, env.SuspendedRigPaths,
 		env.OpenSessions, noProbeEnv, stderr)
-	cache := newReadyDemandCacheWithReads(reads)
+	cache := newReadyDemandCacheWithReads(reads).withCrossStoreGate(env.CityPath, env.Cfg, env.CityStore, env.RigStores, env.SuspendedRigPaths)
 
 	v.AssignedWork, v.AssignedStores, v.AssignedStoreRefs, v.ReadyAssigned, v.StorePartial = collectAssignedWorkBeadsWithStores(
 		env.CityPath, env.Cfg, env.CityStore, env.RigStores, env.SuspendedRigPaths, env.Sessions, cache)

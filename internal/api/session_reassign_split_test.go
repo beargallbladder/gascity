@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beads"
@@ -91,4 +92,28 @@ func mustCreateAssigned(t *testing.T, store beads.Store, title, assignee string)
 		t.Fatalf("Create(%s): %v", title, err)
 	}
 	return b
+}
+
+// TestRetiredSessionWorkStoresIsTheSessionsStoreAloneOnASingleStoreCity: a
+// city that relocates nothing sweeps exactly the one store it always swept,
+// rigs or no rigs; a split city skips suspended rigs.
+func TestRetiredSessionWorkStoresIsTheSessionsStoreAloneOnASingleStoreCity(t *testing.T) {
+	fs := newSessionFakeState(t)
+	city := fs.cityBeadStore
+	fs.stores = map[string]beads.Store{"myrig": beads.NewMemStore()}
+	if got := New(fs).retiredSessionWorkStores(city); len(got) != 1 || got[0] != city {
+		t.Fatalf("single-store sweep = %v, want only the sessions store", got)
+	}
+
+	binding := beads.NewMemStore()
+	fs.sessionsBeadStore = binding
+	fs.graphBeadStore = binding
+	fs.cfg.Rigs[0].Suspended = true
+	got := New(fs).retiredSessionWorkStores(binding)
+	if slices.Contains(got, fs.stores["myrig"]) {
+		t.Fatal("the split sweep reads the suspended rig's store")
+	}
+	if !slices.Contains(got, city) || !slices.Contains(got, beads.Store(binding)) {
+		t.Fatalf("split sweep = %v, want the city store and the binding", got)
+	}
 }
