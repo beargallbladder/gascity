@@ -30,8 +30,18 @@ func readGoBuildInfo(path string) (*debug.BuildInfo, error) {
 	for {
 		n, rerr := io.ReadFull(f, buf[carry:])
 		data := buf[:carry+n]
-		if i := bytes.Index(data, goBuildInfoMagic); i >= 0 {
-			return parseGoBuildInfoAt(f, off-int64(carry)+int64(i))
+		// The linker aligns the blob to 16 bytes (as debug/buildinfo
+		// assumes); an unaligned copy of the magic is some other data.
+		for from := 0; ; {
+			i := bytes.Index(data[from:], goBuildInfoMagic)
+			if i < 0 {
+				break
+			}
+			at := off - int64(carry) + int64(from+i)
+			if at%16 == 0 {
+				return parseGoBuildInfoAt(f, at)
+			}
+			from += i + 1
 		}
 		if rerr != nil {
 			if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {

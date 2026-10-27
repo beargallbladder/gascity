@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -78,12 +80,12 @@ cat %q/"$key".txt
 }
 
 // resolveScopeBdInventory resolves the verdict for target's bd binary.
-func resolveScopeBdInventory(cityPath string, cfg *config.City, target execStoreTarget) (bdTrustVerdict, error) {
+func resolveScopeBdInventory(cityPath string, target execStoreTarget) (bdTrustVerdict, error) {
 	bdPath, err := resolveBdBinaryForScope(cityPath, target.ScopeRoot)
 	if err != nil {
 		return bdTrustVerdict{}, err
 	}
-	return resolveBdInventory(cityPath, cfg, bdPath, bdTrustOpts{})
+	return resolveBdInventory(cityPath, bdPath, bdTrustOpts{})
 }
 
 // bumpMtime moves a rewritten binary's mtime forward, as any replacement on
@@ -148,7 +150,7 @@ func TestBdTrustMatchesTheCommandTreeNotTheVersion(t *testing.T) {
 	if err != nil || resolvedBin != bin {
 		t.Fatalf("the [workspace.env] PATH pin resolved %q (%v), want %q", resolvedBin, err, bin)
 	}
-	v, err := resolveScopeBdInventory(c.city, cfg, target)
+	v, err := resolveScopeBdInventory(c.city, target)
 	if err != nil || v.Inventory != enterprise.Name || v.Source != "walk" {
 		t.Fatalf("verdict = %+v, %v; want %s by walk", v, err, enterprise.Name)
 	}
@@ -158,7 +160,7 @@ func TestBdTrustMatchesTheCommandTreeNotTheVersion(t *testing.T) {
 	}
 
 	// Cached: no bd call at all.
-	v, err = resolveScopeBdInventory(c.city, cfg, target)
+	v, err = resolveScopeBdInventory(c.city, target)
 	if err != nil || v.Inventory != enterprise.Name || v.Source != "cache" || bdCountLines(t, logPath) != walks {
 		t.Fatalf("second verdict = %+v, %v (bd calls %d → %d); want a cache hit", v, err, walks, bdCountLines(t, logPath))
 	}
@@ -167,7 +169,7 @@ func TestBdTrustMatchesTheCommandTreeNotTheVersion(t *testing.T) {
 	// the new tree is refused.
 	writeFakeTreeBd(t, bin, filepath.Join(c.scratch, "help2"), logPath, withoutFlag(enterprise.HelpTree(), "update", "--claim"))
 	bumpMtime(t, bin)
-	v, err = resolveScopeBdInventory(c.city, cfg, target)
+	v, err = resolveScopeBdInventory(c.city, target)
 	if err != nil || v.Inventory != "" || v.Source != "walk" || len(v.Diffs) == 0 {
 		t.Fatalf("changed binary verdict = %+v, %v; want a refusal by walk", v, err)
 	}
@@ -193,8 +195,11 @@ func TestBdTrustVouchAndShaCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.City{Storage: &config.StorageConfig{GCBdInventory: oss.Name + "@sha256:" + sum}}
-	v, err := resolveBdInventory(c.city, cfg, bin, bdTrustOpts{})
+	binID, _ := statBdBinary(bin)
+	if err := writeBdVouch(c.city, bdVouch{BinaryPath: binID.Path, SHA256: sum, Inventory: oss.Name}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := resolveBdInventory(c.city, bin, bdTrustOpts{})
 	if err != nil || v.Inventory != oss.Name || v.Source != "vouched" || !v.Vouched || bdCountLines(t, logPath) != 0 {
 		t.Fatalf("vouched verdict = %+v, %v (bd calls %d); want vouched, no walk", v, err, bdCountLines(t, logPath))
 	}
@@ -207,16 +212,18 @@ func TestBdTrustVouchAndShaCache(t *testing.T) {
 	if err := os.WriteFile(copyPath, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	v, err = resolveBdInventory(c.city, &config.City{}, copyPath, bdTrustOpts{})
+	v, err = resolveBdInventory(c.city, copyPath, bdTrustOpts{})
 	if err != nil || v.Inventory != oss.Name || v.Source != "cache" || bdCountLines(t, logPath) != 0 {
 		t.Fatalf("same-bytes verdict = %+v, %v (bd calls %d); want a sha cache hit", v, err, bdCountLines(t, logPath))
 	}
 	// A vouch for other bytes is not this binary's.
-	other := &config.City{Storage: &config.StorageConfig{GCBdInventory: oss.Name + "@sha256:" + strings.Repeat("0", 64)}}
+	if err := writeBdVouch(c.city, bdVouch{BinaryPath: binID.Path, SHA256: strings.Repeat("0", 64), Inventory: oss.Name}); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(bdTrustCachePath(c.city), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	v, err = resolveBdInventory(c.city, other, bin, bdTrustOpts{})
+	v, err = resolveBdInventory(c.city, bin, bdTrustOpts{})
 	if err != nil || v.Source != "walk" || v.Inventory != oss.Name || v.Vouched {
 		t.Fatalf("mismatched vouch verdict = %+v, %v; want a walk", v, err)
 	}
@@ -259,7 +266,7 @@ func TestBdTrustWalkIgnoresTheCallersEnvironment(t *testing.T) {
 	t.Setenv("CLICOLOR_FORCE", "1")
 	t.Setenv("BD_NAME", "bd2")
 	t.Setenv("BEADS_DIR", dir)
-	v, err := resolveBdInventory(city, nil, bin, bdTrustOpts{})
+	v, err := resolveBdInventory(city, bin, bdTrustOpts{})
 	if err != nil || v.Inventory != oss.Name {
 		t.Fatalf("verdict under a hostile caller env = %+v, %v; want %s", v, err, oss.Name)
 	}
@@ -275,7 +282,7 @@ func TestBdTrustNeverCachesAnInconclusiveWalk(t *testing.T) {
 	bin := filepath.Join(dir, "bd")
 	logPath := filepath.Join(dir, "log")
 	writeScriptBd(t, bin, fmt.Sprintf("printf '%%s\\n' \"$*\" >> %q\nprintf 'Usage:\\n  bd [flags]\\n'\n", logPath))
-	if _, err := resolveBdInventory(city, nil, bin, bdTrustOpts{}); err == nil || !strings.Contains(err.Error(), "listed no commands") {
+	if _, err := resolveBdInventory(city, bin, bdTrustOpts{}); err == nil || !strings.Contains(err.Error(), "listed no commands") {
 		t.Fatalf("an empty root: %v; want an inconclusive-walk error", err)
 	}
 	for _, e := range loadBdTrustCache(city).Entries {
@@ -284,7 +291,7 @@ func TestBdTrustNeverCachesAnInconclusiveWalk(t *testing.T) {
 		}
 	}
 	walks := bdCountLines(t, logPath)
-	if _, err := resolveBdInventory(city, nil, bin, bdTrustOpts{}); err == nil || !strings.Contains(err.Error(), "failed") || bdCountLines(t, logPath) != walks {
+	if _, err := resolveBdInventory(city, bin, bdTrustOpts{}); err == nil || !strings.Contains(err.Error(), "failed") || bdCountLines(t, logPath) != walks {
 		t.Fatalf("within the TTL: %v (walks %d -> %d); want the remembered error, no walk", err, walks, bdCountLines(t, logPath))
 	}
 	cache := loadBdTrustCache(city)
@@ -292,14 +299,14 @@ func TestBdTrustNeverCachesAnInconclusiveWalk(t *testing.T) {
 		cache.Entries[i].ErrorUntil = time.Now().Add(-time.Second)
 	}
 	saveBdTrustCache(city, cache)
-	if _, err := resolveBdInventory(city, nil, bin, bdTrustOpts{}); err == nil || bdCountLines(t, logPath) == walks {
+	if _, err := resolveBdInventory(city, bin, bdTrustOpts{}); err == nil || bdCountLines(t, logPath) == walks {
 		t.Fatalf("after the TTL: %v; want a fresh walk", err)
 	}
 
 	// A bd that fails outright: an error, not a refusal.
 	writeScriptBd(t, bin, "exit 3\n")
 	bumpMtime(t, bin)
-	if v, err := resolveBdInventory(city, nil, bin, bdTrustOpts{}); err == nil || v.Inventory != "" || len(v.Diffs) != 0 {
+	if v, err := resolveBdInventory(city, bin, bdTrustOpts{}); err == nil || v.Inventory != "" || len(v.Diffs) != 0 {
 		t.Fatalf("a failing bd = %+v, %v; want an error", v, err)
 	}
 
@@ -307,7 +314,7 @@ func TestBdTrustNeverCachesAnInconclusiveWalk(t *testing.T) {
 	oss := bdflags.InventoryByName("bd-1.3.2")
 	writeFakeTreeBd(t, bin, filepath.Join(dir, "help"), logPath, oss.HelpTree())
 	bumpMtime(t, bin)
-	if v, err := resolveBdInventory(city, nil, bin, bdTrustOpts{}); err != nil || v.Inventory != oss.Name {
+	if v, err := resolveBdInventory(city, bin, bdTrustOpts{}); err != nil || v.Inventory != oss.Name {
 		t.Fatalf("the repaired bd = %+v, %v", v, err)
 	}
 }
@@ -329,7 +336,7 @@ func TestBdTrustCacheKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, err := resolveBdInventory(city, nil, bin, bdTrustOpts{}); err != nil || v.Source != "walk" || v.Inventory != oss.Name {
+	if v, err := resolveBdInventory(city, bin, bdTrustOpts{}); err != nil || v.Source != "walk" || v.Inventory != oss.Name {
 		t.Fatalf("first verdict = %+v, %v", v, err)
 	}
 	// Same size, mtime restored: only ctime moved.
@@ -342,7 +349,7 @@ func TestBdTrustCacheKey(t *testing.T) {
 	if after.Size != before.Size || after.MTime != before.MTime || after.Ino != before.Ino {
 		t.Fatalf("the fixture did not keep size, mtime and inode: %+v vs %+v", before, after)
 	}
-	v, err := resolveBdInventory(city, nil, bin, bdTrustOpts{})
+	v, err := resolveBdInventory(city, bin, bdTrustOpts{})
 	if err != nil || v.Source != "walk" || v.Inventory != "" {
 		t.Fatalf("an mtime-preserving replacement = %+v, %v; want a fresh walk that refuses", v, err)
 	}
@@ -353,7 +360,7 @@ func TestBdTrustCacheKey(t *testing.T) {
 	if err := os.Rename(next, bin); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := resolveBdInventory(city, nil, bin, bdTrustOpts{}); err != nil || v.Inventory != oss.Name {
+	if v, err := resolveBdInventory(city, bin, bdTrustOpts{}); err != nil || v.Inventory != oss.Name {
 		t.Fatalf("after a rename into place = %+v, %v", v, err)
 	}
 	walks := bdCountLines(t, logPath)
@@ -369,7 +376,7 @@ func TestBdTrustCacheKey(t *testing.T) {
 			mutate(&cache.Entries[i])
 		}
 		saveBdTrustCache(city, cache)
-		v, err := resolveBdInventory(city, nil, bin, bdTrustOpts{})
+		v, err := resolveBdInventory(city, bin, bdTrustOpts{})
 		if err != nil || v.Source != "walk" || v.Inventory != oss.Name || bdCountLines(t, logPath) == walks {
 			t.Fatalf("a stale cache entry = %+v, %v; want a re-walk", v, err)
 		}
@@ -405,26 +412,49 @@ func TestBdTrustBuildInfo(t *testing.T) {
 	}
 	script := filepath.Join(t.TempDir(), "bd")
 	writeScriptBd(t, script, "exec /usr/local/bin/bd \"$@\"\n")
-	if err := bdBuildInfoCheck(script, inv); err == nil || !strings.Contains(err.Error(), "not a Go build") {
+	if err := bdBuildInfoCheck(script, inv); err == nil || !strings.Contains(err.Error(), "could not read Go build info") {
 		t.Fatalf("a wrapper script: %v", err)
 	}
 }
 
-// TestBdTrustWalkKillsAHungBd: a bd that hangs (and leaves a child holding
-// its output) is killed with its process group, and the walk errors.
+// TestBdTrustWalkKillsAHungBd: a bd that hangs, and leaves a child holding
+// its output, is killed with its whole process group (the child included),
+// and the walk errors promptly.
 func TestBdTrustWalkKillsAHungBd(t *testing.T) {
 	prev := bdWalkCommandTimeout
 	bdWalkCommandTimeout = 500 * time.Millisecond
 	t.Cleanup(func() { bdWalkCommandTimeout = prev })
-	bin := filepath.Join(t.TempDir(), "bd")
-	writeScriptBd(t, bin, "sleep 30 &\nsleep 30\n")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bd")
+	pidFile := filepath.Join(dir, "child.pid")
+	writeScriptBd(t, bin, fmt.Sprintf("sleep 30 &\necho $! > %q\nsleep 30\n", pidFile))
 	start := time.Now()
-	_, err := resolveBdInventory(t.TempDir(), nil, bin, bdTrustOpts{})
+	_, err := resolveBdInventory(t.TempDir(), bin, bdTrustOpts{})
 	if err == nil {
 		t.Fatal("a hung bd produced a verdict")
 	}
 	if took := time.Since(start); took > 10*time.Second {
 		t.Fatalf("the hung walk took %s", took)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("the fake bd never started its child: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The kill is asynchronous; poll until the child is gone.
+	poll := time.NewTicker(20 * time.Millisecond)
+	defer poll.Stop()
+	deadline := time.After(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		select {
+		case <-deadline:
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("the hung bd's child %d outlived the walk", pid)
+		case <-poll.C:
+		}
 	}
 }
 
@@ -457,29 +487,41 @@ func TestBdTrustCacheLockIsExclusive(t *testing.T) {
 	}
 }
 
-// TestBdInventoryDoctorCheckAndFix: the check reports a scope whose bd has no
-// inventory; the fix vouches only after a real walk matched.
-func TestBdInventoryDoctorCheckAndFix(t *testing.T) {
+// TestBdVouchCommand: `gc storage vouch-bd` walks the scope's bd for real,
+// refuses (and writes nothing) on a mismatch, and on a match records the
+// binary in .gc/bd-inventory-vouch.json. city.toml is never touched, so a
+// gc that predates the vouch loads the city as before. The doctor check has
+// no fix: the doctor framework only fixes failing checks, and vouching is an
+// explicit operator act.
+func TestBdVouchCommand(t *testing.T) {
 	c := newBdParityCity(t, bdParityOpts{storage: bdSQLRefusalSplitStorage})
 	pinBdBuildInfoForTest(t)
 	cfg, err := loadBdPassthroughConfig(c.city, os.Stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cityTOML, _ := os.ReadFile(filepath.Join(c.city, "city.toml"))
 	enterprise := bdflags.InventoryByName("bd-1.3.0-enterprise-77612097cec0")
 	bin := filepath.Join(c.bin, "bd")
 	logPath := filepath.Join(c.scratch, "walk.log")
+	target := bdCityScopeTarget(c.city, cfg)
 
 	writeFakeTreeBd(t, bin, filepath.Join(c.scratch, "bad"), logPath, withoutFlag(enterprise.HelpTree(), "close", "--reason"))
 	check := newBdInventoryCheck(c.city, cfg)
+	if check.CanFix() {
+		t.Fatal("the check must not offer a fix: vouching is the explicit gc storage vouch-bd")
+	}
 	if r := check.Run(&doctor.CheckContext{CityPath: c.city}); r.Status != doctor.StatusError || !strings.Contains(strings.Join(r.Details, "\n"), "matches no pinned") {
 		t.Fatalf("un-inventoried bd: %+v", r)
 	}
-	if err := check.Fix(&doctor.CheckContext{CityPath: c.city}); err == nil || !strings.Contains(err.Error(), "refusing to vouch") {
-		t.Fatalf("Fix on a mismatched tree: %v", err)
+	if _, err := vouchBdForScope(c.city, target); err == nil || !strings.Contains(err.Error(), "refusing to vouch") || !strings.Contains(err.Error(), `"close" flags differ`) {
+		t.Fatalf("vouching a mismatched tree: %v", err)
+	}
+	if _, err := os.Stat(bdVouchPath(c.city)); !os.IsNotExist(err) {
+		t.Fatalf("a refused vouch wrote %s (%v)", bdVouchPath(c.city), err)
 	}
 	// A starting controller records the finding as a gc_bd.uninventoried
-	// event (review must-fix 3: loud, not just a doctor line).
+	// event.
 	ev := bdInventoryStartFinding(check)
 	if ev == nil || ev.Type != bdUninventoriedEvent || !strings.Contains(string(ev.Payload), "matches no pinned") {
 		t.Fatalf("controller-start finding = %+v", ev)
@@ -487,107 +529,57 @@ func TestBdInventoryDoctorCheckAndFix(t *testing.T) {
 	if bdInventoryStartFinding(newBdInventoryCheck(c.city, &config.City{})) != nil {
 		t.Fatal("a single-store city produced a controller-start finding")
 	}
-	if data, _ := os.ReadFile(filepath.Join(c.city, "city.toml")); strings.Contains(string(data), "gc_bd_inventory") {
-		t.Fatal("Fix wrote a vouch for a mismatched tree")
-	}
 
 	writeFakeTreeBd(t, bin, filepath.Join(c.scratch, "good"), logPath, enterprise.HelpTree())
 	bumpMtime(t, bin)
-	if err := check.Fix(&doctor.CheckContext{CityPath: c.city}); err != nil {
-		t.Fatalf("Fix on a matching tree: %v", err)
-	}
-	reloaded, err := loadBdPassthroughConfig(c.city, os.Stderr)
+	walks := bdCountLines(t, logPath)
+	vouch, err := vouchBdForScope(c.city, target)
 	if err != nil {
-		t.Fatalf("city.toml after the fix does not load: %v", err)
+		t.Fatalf("vouching a matching tree: %v", err)
+	}
+	if bdCountLines(t, logPath) == walks {
+		t.Fatal("the vouch did not walk the binary")
 	}
 	sum, _ := fileSHA256(bin)
-	if reloaded.Storage == nil || reloaded.Storage.GCBdInventory != enterprise.Name+"@sha256:"+sum {
-		t.Fatalf("vouch = %+v, want %s@sha256:%s", reloaded.Storage, enterprise.Name, sum)
+	vouches, err := loadBdVouches(c.city)
+	if err != nil || len(vouches) != 1 || vouches[0].SHA256 != sum || vouches[0].Inventory != enterprise.Name || vouches[0].BinaryPath != vouch.BinaryPath || vouches[0].WrittenAt.IsZero() {
+		t.Fatalf("vouch file = %+v, %v", vouches, err)
 	}
-	if r := newBdInventoryCheck(c.city, reloaded).Run(&doctor.CheckContext{CityPath: c.city}); r.Status != doctor.StatusOK {
-		t.Fatalf("after the fix: %+v", r)
+	if after, _ := os.ReadFile(filepath.Join(c.city, "city.toml")); string(after) != string(cityTOML) {
+		t.Fatalf("vouching edited city.toml:\n%s", after)
 	}
-	if ev := bdInventoryStartFinding(newBdInventoryCheck(c.city, reloaded)); ev != nil {
+	if _, err := loadBdPassthroughConfig(c.city, os.Stderr); err != nil {
+		t.Fatalf("the city does not load with a vouch present: %v", err)
+	}
+	// The vouch admits the binary without a walk, with an event.
+	if err := os.Remove(bdTrustCachePath(c.city)); err != nil {
+		t.Fatal(err)
+	}
+	walks = bdCountLines(t, logPath)
+	v, err := resolveBdInventory(c.city, bin, bdTrustOpts{})
+	if err != nil || !v.Vouched || v.Inventory != enterprise.Name || bdCountLines(t, logPath) != walks {
+		t.Fatalf("vouched verdict = %+v, %v (walks %d -> %d)", v, err, walks, bdCountLines(t, logPath))
+	}
+	if data, _ := os.ReadFile(filepath.Join(c.city, ".gc", "events.jsonl")); !strings.Contains(string(data), `"type":"`+bdVouchUsedEvent+`"`) {
+		t.Fatalf("no %s event:\n%s", bdVouchUsedEvent, data)
+	}
+	if r := newBdInventoryCheck(c.city, cfg).Run(&doctor.CheckContext{CityPath: c.city}); r.Status != doctor.StatusOK {
+		t.Fatalf("after the vouch: %+v", r)
+	}
+	if ev := bdInventoryStartFinding(newBdInventoryCheck(c.city, cfg)); ev != nil {
 		t.Fatalf("a matching bd produced a controller-start finding: %+v", ev)
 	}
-	if !newBdInventoryCheck(c.city, reloaded).WarmupEligible() {
-		t.Fatal("the check must run in gc start's warm-up, which is the controller-start warning")
+	if !check.WarmupEligible() {
+		t.Fatal("the check must run in gc start's warm-up, which is the start warning")
 	}
-	if r := newBdInventoryCheck(c.city, &config.City{}).Run(&doctor.CheckContext{CityPath: c.city}); r.Status != doctor.StatusOK {
-		t.Fatalf("a single-store city: %+v", r)
-	}
-}
-
-// TestWriteGCBdInventoryVouchShapes covers where the vouch lands in city.toml.
-func TestWriteGCBdInventoryVouchShapes(t *testing.T) {
-	sum := strings.Repeat("a", 64)
-	for name, c := range map[string]struct{ in, want string }{
-		"storage table":         {"[storage]\nfoo = 1\n", "[storage]\ngc_bd_inventory = \"x@sha256:" + sum + "\"\nfoo = 1\n"},
-		"replace":               {"[storage]\ngc_bd_inventory = \"old\"\n", "[storage]\ngc_bd_inventory = \"x@sha256:" + sum + "\"\n"},
-		"subtables only":        {"[workspace]\nname = \"d\"\n\n[storage.classes]\nwork = \"work\"\n", "[workspace]\nname = \"d\"\n\n[storage]\ngc_bd_inventory = \"x@sha256:" + sum + "\"\n\n[storage.classes]\nwork = \"work\"\n"},
-		"no storage at all":     {"[workspace]\nname = \"d\"\n", "[workspace]\nname = \"d\"\n\n\n[storage]\ngc_bd_inventory = \"x@sha256:" + sum + "\"\n"},
-		"header with a comment": {"[storage]  # the split\nfoo = 1\n", "[storage]  # the split\ngc_bd_inventory = \"x@sha256:" + sum + "\"\nfoo = 1\n"},
-		"spaced header":         {"[ storage ]\nfoo = 1\n", "[ storage ]\ngc_bd_inventory = \"x@sha256:" + sum + "\"\nfoo = 1\n"},
-		"header inside a multi-line string": {
-			"[workspace]\nnote = \"\"\"\n[storage]\n\"\"\"\n\n[storage.classes]\nwork = \"work\"\n",
-			"[workspace]\nnote = \"\"\"\n[storage]\n\"\"\"\n\n[storage]\ngc_bd_inventory = \"x@sha256:" + sum + "\"\n\n[storage.classes]\nwork = \"work\"\n",
-		},
-		// maintainer-city's shape: [storage.classes] and [storage.bindings.*]
-		// with no bare [storage] table.
-		"maintainer-city": {
-			"[workspace]\nname = \"mc\"\n\n[storage.classes]\nwork = \"work\"\ngraph = \"infra\"\n\n[storage.bindings.infra]\nprovider = \"sqlite-beads\"\n",
-			"[workspace]\nname = \"mc\"\n\n[storage]\ngc_bd_inventory = \"x@sha256:" + sum + "\"\n\n[storage.classes]\nwork = \"work\"\ngraph = \"infra\"\n\n[storage.bindings.infra]\nprovider = \"sqlite-beads\"\n",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			p := filepath.Join(t.TempDir(), "city.toml")
-			if err := os.WriteFile(p, []byte(c.in), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := writeGCBdInventoryVouch(p, "x@sha256:"+sum); err != nil {
-				t.Fatal(err)
-			}
-			got, _ := os.ReadFile(p)
-			if string(got) != c.want {
-				t.Fatalf("got:\n%s\nwant:\n%s", got, c.want)
-			}
-		})
-	}
-}
-
-// TestWriteGCBdInventoryVouchRefusesWhatItCannotEditSafely: a shape the
-// text edit cannot handle is refused and city.toml is left byte for byte.
-func TestWriteGCBdInventoryVouchRefusesWhatItCannotEditSafely(t *testing.T) {
-	value := "x@sha256:" + strings.Repeat("a", 64)
-	for name, in := range map[string]string{
-		"dotted storage key":           "storage.foo = 1\n[workspace]\nname = \"d\"\n",
-		"inline storage":               "storage = { foo = 1 }\n",
-		"does not parse":               "[storage\nfoo = \n",
-		"array of storage":             "[[storage]]\nfoo = 1\n",
-		"dotted keys beside subtables": "storage.foo = 1\n[storage.classes]\nwork = \"work\"\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			p := filepath.Join(t.TempDir(), "city.toml")
-			if err := os.WriteFile(p, []byte(in), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			err := writeGCBdInventoryVouch(p, value)
-			got, _ := os.ReadFile(p)
-			if string(got) != in {
-				t.Fatalf("city.toml changed (err %v):\n%s", err, got)
-			}
-			if err == nil {
-				// Only a shape whose edit verified may succeed, and none of
-				// these leave the file unchanged on success.
-				t.Fatal("a shape gc cannot edit safely was accepted")
-			}
-		})
+	if _, err := vouchBdTarget(c.city, cfg, "no-such-rig"); err == nil {
+		t.Fatal("vouching an unknown rig was accepted")
 	}
 }
 
 // TestBdInventoryDoctorRewalksVouchedBinaries: the vouch is a convenience,
 // not a security boundary, so the doctor walks a vouched binary and reports
-// a mismatch; a malformed vouch is a warning and never fails config load.
+// a mismatch; an unreadable vouch file is a warning and is ignored.
 func TestBdInventoryDoctorRewalksVouchedBinaries(t *testing.T) {
 	c := newBdParityCity(t, bdParityOpts{storage: bdSQLRefusalSplitStorage})
 	pinBdBuildInfoForTest(t)
@@ -599,25 +591,103 @@ func TestBdInventoryDoctorRewalksVouchedBinaries(t *testing.T) {
 	bin := filepath.Join(c.bin, "bd")
 	writeFakeTreeBd(t, bin, filepath.Join(c.scratch, "bad"), filepath.Join(c.scratch, "log"), withoutFlag(enterprise.HelpTree(), "close", "--reason"))
 	sum, _ := fileSHA256(bin)
-	cfg.Storage.GCBdInventory = enterprise.Name + "@sha256:" + sum
+	// A vouch someone wrote by hand for a binary that does not match.
+	binID, _ := statBdBinary(bin)
+	if err := writeBdVouch(c.city, bdVouch{BinaryPath: binID.Path, SHA256: sum, Inventory: enterprise.Name}); err != nil {
+		t.Fatal(err)
+	}
 	r := newBdInventoryCheck(c.city, cfg).Run(&doctor.CheckContext{CityPath: c.city})
 	if r.Status != doctor.StatusError || !strings.Contains(strings.Join(r.Details, "\n"), "is vouched for as "+enterprise.Name+", but its command tree matches no pinned inventory") {
 		t.Fatalf("a vouched binary whose tree does not match: %+v", r)
 	}
 
-	// A malformed vouch: the config still loads, and the doctor warns.
 	writeFakeTreeBd(t, bin, filepath.Join(c.scratch, "good"), filepath.Join(c.scratch, "log"), enterprise.HelpTree())
 	bumpMtime(t, bin)
-	if err := writeGCBdInventoryVouch(filepath.Join(c.city, "city.toml"), "not-a-vouch"); err != nil {
+	if err := os.WriteFile(bdVouchPath(c.city), []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := loadBdPassthroughConfig(c.city, os.Stderr)
-	if err != nil {
-		t.Fatalf("a malformed vouch failed config load: %v", err)
+	if v, err := resolveBdInventory(c.city, bin, bdTrustOpts{}); err != nil || v.Inventory != enterprise.Name || v.Vouched {
+		t.Fatalf("with a malformed vouch file = %+v, %v; want a walked match", v, err)
 	}
-	r = newBdInventoryCheck(c.city, loaded).Run(&doctor.CheckContext{CityPath: c.city})
+	r = newBdInventoryCheck(c.city, cfg).Run(&doctor.CheckContext{CityPath: c.city})
 	if r.Status != doctor.StatusWarning || !strings.Contains(strings.Join(r.Details, "\n"), "is ignored") {
-		t.Fatalf("a malformed vouch: %+v", r)
+		t.Fatalf("a malformed vouch file: %+v", r)
+	}
+}
+
+// TestBdTrustWalkScratchAndReadOnlyCity: bd's HOME, cwd and TMPDIR are a
+// scratch directory under the city's .gc/cache/tmp, never the caller's
+// TMPDIR; on a city whose .gc cannot be written the binary is walked
+// without the cache instead of refused.
+func TestBdTrustWalkScratchAndReadOnlyCity(t *testing.T) {
+	pinBdBuildInfoForTest(t)
+	oss := bdflags.InventoryByName("bd-1.3.2")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bd")
+	envLog := filepath.Join(dir, "env")
+	writeFakeTreeBd(t, bin, filepath.Join(dir, "help"), filepath.Join(dir, "log"), oss.HelpTree())
+	data, _ := os.ReadFile(bin)
+	script := strings.Replace(string(data), "key=\"\"\n", fmt.Sprintf("printf '%%s %%s\\n' \"$TMPDIR\" \"$HOME\" >> %q\nkey=\"\"\n", envLog), 1)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", filepath.Join(dir, "callers-tmp"))
+	city := t.TempDir()
+	if v, err := resolveBdInventory(city, bin, bdTrustOpts{}); err != nil || v.Inventory != oss.Name {
+		t.Fatalf("verdict = %+v, %v", v, err)
+	}
+	logged, _ := os.ReadFile(envLog)
+	want := filepath.Join(city, ".gc", "cache", "tmp") + string(filepath.Separator)
+	for _, line := range strings.Split(strings.TrimSpace(string(logged)), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 || !strings.HasPrefix(f[0], want) || f[0] != f[1] {
+			t.Fatalf("bd ran with TMPDIR/HOME %q; want one scratch dir under %s", line, want)
+		}
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	ro := t.TempDir()
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ro, 0o755) })
+	t.Setenv("TMPDIR", dir)
+	if v, err := resolveBdInventory(ro, bin, bdTrustOpts{}); err != nil || v.Inventory != oss.Name || v.Source != "walk" {
+		t.Fatalf("a read-only city = %+v, %v; want an uncached walked match", v, err)
+	}
+}
+
+// TestBdTrustWalkStopsAtTheFirstMismatchedLevel: a root that matches no
+// inventory ends the walk there, so no subcommand (including one no
+// inventory knows, which bd may not even parse --help for) is run.
+func TestBdTrustWalkStopsAtTheFirstMismatchedLevel(t *testing.T) {
+	pinBdBuildInfoForTest(t)
+	tree := bdflags.HelpTree{}
+	for p, v := range bdflags.InventoryByName("bd-1.3.2").HelpTree() {
+		tree[p] = v
+	}
+	root := tree[""]
+	root.Subcommands = append(append([]string(nil), root.Subcommands...), "zz-unknown")
+	tree[""] = root
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bd")
+	logPath := filepath.Join(dir, "log")
+	writeFakeTreeBd(t, bin, filepath.Join(dir, "help"), logPath, tree)
+	v, err := resolveBdInventory(t.TempDir(), bin, bdTrustOpts{})
+	if err != nil || v.Inventory != "" || len(v.Diffs) == 0 {
+		t.Fatalf("verdict = %+v, %v; want a refusal", v, err)
+	}
+	if n := bdCountLines(t, logPath); n != 1 {
+		t.Fatalf("the walk ran bd %d times; want only the root", n)
+	}
+	if !bdflags.SkipUnpinnedOrUnparsed("zz-unknown") || bdflags.SkipUnpinnedOrUnparsed("show") || !bdflags.SkipUnpinnedOrUnparsed("mail") {
+		t.Fatal("the walk's skip must refuse unknown and unparsed commands and allow pinned ones")
+	}
+	// The refusal carries the difference itself, not just a headline.
+	if !strings.Contains(strings.Join(v.Diffs, "\n"), "zz-unknown") {
+		t.Fatalf("diffs do not show the difference: %v", v.Diffs)
 	}
 }
 

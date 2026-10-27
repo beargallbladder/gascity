@@ -82,6 +82,7 @@ go_library(
         "bd_env_proxied.go",
         "bd_env_proxied_native.go",
         "bd_inventory_trust.go",
+        "bd_inventory_vouch.go",
         "bd_mistyped_metadata.go",
         "bd_passthrough_config.go",
         "bd_relocated_classes.go",

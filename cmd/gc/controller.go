@@ -1542,7 +1542,7 @@ func runController(
 	rec.Record(events.Event{Type: events.ControllerStarted, Actor: "gc"})
 	telemetry.RecordControllerLifecycle(context.Background(), "started")
 	fmt.Fprintln(stdout, "Controller started.") //nolint:errcheck // best-effort stdout
-	warnBdInventoryAtControllerStart(cityPath, cfg, rec, stderr)
+	warnBdInventoryAtControllerStart(cityPath, cfg, rec)
 
 	cr, err := newCityRuntime(wiring.runtimeParams(CityRuntimeParams{
 		CityPath:                cityPath,

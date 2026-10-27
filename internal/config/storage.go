@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -84,29 +83,6 @@ type StorageConfig struct {
 	// Bindings defines named provider-backed bindings. The reserved work
 	// binding is synthesized and must not appear here.
 	Bindings map[string]StorageBindingConfig `toml:"bindings,omitempty"`
-	// GCBdInventory vouches for one bd binary on a split city: "<inventory-id>@sha256:<hex>"
-	// names the pinned gc bd inventory (internal/bdflags/inventory) whose
-	// command tree that exact binary has. `gc doctor --fix` writes it after a
-	// structural walk of the binary matches the inventory; gc bd then trusts
-	// that binary without walking it. A binary with any other sha256 is
-	// walked and matched as usual. A malformed value is ignored (gc doctor
-	// warns); it never fails the config load.
-	GCBdInventory string `toml:"gc_bd_inventory,omitempty"`
-}
-
-// ParseGCBdInventory splits a gc_bd_inventory value into the inventory id and
-// the binary's sha256 (hex). ok is false for an empty or malformed value.
-func ParseGCBdInventory(value string) (id, sha256Hex string, ok bool) {
-	id, rest, found := strings.Cut(strings.TrimSpace(value), "@sha256:")
-	if !found || strings.TrimSpace(id) == "" || len(rest) != 64 {
-		return "", "", false
-	}
-	for _, r := range rest {
-		if !strings.ContainsRune("0123456789abcdef", r) {
-			return "", "", false
-		}
-	}
-	return id, rest, true
 }
 
 // StorageClasses is the closed set of semantic storage assignments; when
@@ -307,8 +283,6 @@ func ValidateStorageConfig(cfg *City) error {
 	if cfg == nil || cfg.Storage == nil {
 		return nil
 	}
-	// A malformed gc_bd_inventory is not an error: the vouch is a
-	// convenience, so gc ignores it and gc doctor warns (bd-command-inventory).
 	storage := cfg.Storage
 	for _, class := range storageConfigClassOrder() {
 		binding := storage.Classes.BindingFor(class)

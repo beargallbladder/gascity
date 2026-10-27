@@ -5025,6 +5025,7 @@ gc storage
 | [gc storage recover-stranded](#gc-storage-recover-stranded) | Copy stranded infrastructure beads from the work store into the converged binding |
 | [gc storage repair-sequence](#gc-storage-repair-sequence) | Inspect or raise a SQLite bead store's id-sequence floor |
 | [gc storage status](#gc-storage-status) | Report this city's storage-class layout (read-only) |
+| [gc storage vouch-bd](#gc-storage-vouch-bd) | Walk a scope's bd and, if it matches a pinned gc bd inventory, vouch for it |
 
 ## gc storage migrate
 
@@ -5202,6 +5203,28 @@ every check the migration makes without migrating.
 ```
 gc storage status
 ```
+
+## gc storage vouch-bd
+
+On a split city, gc bd judges commands only for a bd binary whose command
+tree matches a pinned gc bd inventory. It walks each new binary's --help tree
+once and caches the verdict. This command walks the city's bd (or a rig's, with
+--rig) for real and, only if the tree matches, records a vouch for that exact
+binary (by sha256) in .gc/bd-inventory-vouch.json, so gc bd admits it without
+walking it again. A binary whose tree matches no inventory is refused and
+nothing is written. city.toml is never edited.
+
+The vouch is a convenience, not a security boundary: gc doctor re-walks
+vouched binaries and reports a mismatch, and every admission by a vouch
+records a gc_bd.vouch_used event.
+
+```
+gc storage vouch-bd [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--rig` | string |  | vouch for this rig's bd instead of the city's |
 
 ## gc supervisor
 

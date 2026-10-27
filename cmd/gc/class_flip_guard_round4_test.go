@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/bdflags"
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -134,7 +135,7 @@ func TestGcBdSplitDeleteRefusesABindingDependency(t *testing.T) {
 func TestBdOpenCrossStoreGatesNaming(t *testing.T) {
 	store := beads.NewMemStore()
 	mk := func(blocker string, closed bool) string {
-		b, err := store.Create(beads.Bead{Title: "gate", Type: "gate", Metadata: map[string]string{bdCrossStoreBlockerKey: blocker}})
+		b, err := store.Create(beads.Bead{Title: "gate", Type: "gate", Labels: []string{bdCrossStoreGateLabel}, Metadata: map[string]string{beadmeta.CrossStoreBlockerMetadataKey: blocker}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,6 +147,10 @@ func TestBdOpenCrossStoreGatesNaming(t *testing.T) {
 		return b.ID
 	}
 	open := mk("demo-1", false)
+	// An unlabeled bead carrying the key is not a gate (#8360's query).
+	if _, err := store.Create(beads.Bead{Title: "not a gate", Metadata: map[string]string{beadmeta.CrossStoreBlockerMetadataKey: "demo-1"}}); err != nil {
+		t.Fatal(err)
+	}
 	mk("demo-1", true)
 	mk("demo-2", false)
 	got, err := bdOpenCrossStoreGatesNaming(store, "demo-1")
@@ -363,5 +368,31 @@ func TestBdByIDUpdateParentStaysInTheBinding(t *testing.T) {
 	code, handled = maybeRouteBdByID(cityPath, "", []string{"update", child.ID, "--parent", parent.ID}, &stdout, &stderr)
 	if !handled || code != 0 {
 		t.Fatalf("an in-binding reparent = (%d, %t): %s", code, handled, stderr.String())
+	}
+}
+
+// TestBdBindingDependentsListsOpenDrainGates is the delete guard's open-gate
+// half end to end: on a city whose classes live in a binding, an open
+// cross-store drain gate in the binding naming a work bead makes that bead a
+// binding dependent, so gc bd delete refuses it; a released gate does not.
+func TestBdBindingDependentsListsOpenDrainGates(t *testing.T) {
+	cityPath, classStore := foreignProviderCity(t)
+	work, err := workStoreFor(t, cityPath).Create(beads.Bead{Title: "blocker", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := mustCreateClassBead(t, classStore, beads.Bead{Title: "waits", Type: "gate", Labels: []string{bdCrossStoreGateLabel}, Metadata: map[string]string{beadmeta.CrossStoreBlockerMetadataKey: work.ID}})
+	deps, err := bdBindingDependents(cityPath, []string{work.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slicesContainsString(deps[work.ID], gate.ID) {
+		t.Fatalf("binding dependents of %s = %v, want the open gate %s", work.ID, deps[work.ID], gate.ID)
+	}
+	if err := classStore.Close(gate.ID); err != nil {
+		t.Fatal(err)
+	}
+	if deps, err = bdBindingDependents(cityPath, []string{work.ID}); err != nil || len(deps[work.ID]) != 0 {
+		t.Fatalf("after the gate was released: %v, %v", deps[work.ID], err)
 	}
 }

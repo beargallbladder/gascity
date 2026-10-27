@@ -8,8 +8,9 @@ import (
 	"testing"
 )
 
-// fakeGoBinary writes a file with a Go 1.18+ build-info blob for mod at an
-// unaligned offset past the first read chunk boundary.
+// fakeGoBinary writes a file with a Go 1.18+ build-info blob for mod at a
+// 16-byte-aligned offset straddling the first read chunk boundary, after a
+// decoy copy of the magic at an unaligned offset.
 func fakeGoBinary(t *testing.T, vers, mod string) string {
 	t.Helper()
 	var blob []byte
@@ -22,7 +23,9 @@ func fakeGoBinary(t *testing.T, vers, mod string) string {
 		blob = binary.AppendUvarint(blob, uint64(len(s)))
 		blob = append(blob, s...)
 	}
-	data := append(make([]byte, (1<<20)-7), blob...)
+	data := make([]byte, (1<<20)-16)
+	copy(data[101:], goBuildInfoMagic) // unaligned decoy
+	data = append(data, blob...)
 	data = append(data, make([]byte, 4096)...)
 	p := filepath.Join(t.TempDir(), "bd")
 	if err := os.WriteFile(p, data, 0o755); err != nil {

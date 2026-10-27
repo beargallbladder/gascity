@@ -40,14 +40,18 @@ import (
 //     processes), keyed by the binary's resolved path, device, inode, size,
 //     mtime and ctime and by the embedded inventory set: a hit answers
 //     without reading the binary.
-//  2. The city's vouch, [storage] gc_bd_inventory = "<id>@sha256:<hex>",
-//     which `gc doctor --fix` writes after a structural walk matched: a binary
-//     with exactly that sha256 is admitted as that inventory without a walk,
-//     and a gc_bd.vouch_used event says so. The vouch is a convenience, not a
-//     security boundary; the doctor re-walks vouched binaries.
+//  2. The city's vouch (.gc/bd-inventory-vouch.json, bd_inventory_vouch.go),
+//     which `gc storage vouch-bd` writes after a structural walk matched: the
+//     binary at exactly that path with exactly that sha256 is admitted as that
+//     inventory without a walk, and a gc_bd.vouch_used event says so. The
+//     vouch is a convenience, not a security boundary; the doctor re-walks
+//     vouched binaries. It is never in city.toml, which every older gc must
+//     still load.
 //  3. A cached verdict for the same sha256 under another path.
-//  4. A structural walk of the binary's --help tree (bdflags.WalkHelp) in a
-//     fixed minimal environment, matched against every pinned inventory, plus
+//  4. A structural walk of the binary's --help tree (bdflags.WalkHelpUntil)
+//     in a scratch directory under .gc/cache/tmp with a fixed minimal
+//     environment, stopping at the first level no inventory matches and
+//     never running a command no inventory knows, matched against every pinned inventory, plus
 //     a build-info check (bd's cmd/bd, the inventory's cobra and pflag). Only
 //     a conclusive verdict is cached; a failed or empty walk is an error,
 //     remembered for a minute.
@@ -63,7 +67,7 @@ type bdTrustVerdict struct {
 	Inventory string   `json:"inventory,omitempty"`
 	Diffs     []string `json:"diffs,omitempty"`
 	SHA256    string   `json:"sha256"`
-	// Vouched reports that the city's gc_bd_inventory vouch, not a walk,
+	// Vouched reports that the city's vouch file, not a walk,
 	// admitted the binary. The doctor re-walks vouched binaries.
 	Vouched bool `json:"vouched,omitempty"`
 	// Source is how the verdict was reached: vouched, cache, walk.
@@ -195,19 +199,23 @@ func lockBdTrustCache(cityPath string) (func(), error) {
 		}
 		if !time.Now().Before(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("another gc process is still checking the bd binary (%s held)", path)
+			return nil, errBdTrustCacheBusy
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// errBdTrustCacheBusy is a lock still held after the longest walk: another
+// gc process is wedged, which is worth reporting, not working around.
+var errBdTrustCacheBusy = errors.New("another gc process has been checking the bd binary for longer than a walk can take")
 
 // bdHelpRunner runs `bd <path...> --help` for a structural walk.
 type bdHelpRunner func(ctx context.Context, path []string) (string, error)
 
 // bdTrustOpts selects how much of the cache and vouch a resolution may use.
 type bdTrustOpts struct {
-	// forceWalk ignores the cache and the vouch: the doctor's fix and its
-	// re-check of a vouched binary walk for real.
+	// forceWalk ignores the cache and the vouch: `gc storage vouch-bd` and
+	// the doctor's re-check of a vouched binary walk for real.
 	forceWalk bool
 }
 
@@ -218,7 +226,7 @@ type bdTrustOpts struct {
 var bdBuildInfoCheck = func(path string, inv *bdflags.Inventory) error {
 	bi, err := readGoBuildInfo(path)
 	if err != nil {
-		return fmt.Errorf("%s is not a Go build of bd (%w); point PATH at the real bd binary, not a shim or wrapper", path, err)
+		return fmt.Errorf("gc could not read Go build info from %s (%w): it must be bd's own Go binary, as built (a shim, a wrapper script and a packed binary all hide it)", path, err)
 	}
 	return checkBdBuildInfo(bi, inv)
 }
@@ -250,6 +258,13 @@ func checkBdBuildInfo(bi *debug.BuildInfo, inv *bdflags.Inventory) error {
 	return nil
 }
 
+// bdWalkSetupError is a failure of gc's own preparation for a walk (its
+// scratch directory), not of the bd binary: it is never remembered.
+type bdWalkSetupError struct{ err error }
+
+func (e bdWalkSetupError) Error() string { return e.err.Error() }
+func (e bdWalkSetupError) Unwrap() error { return e.err }
+
 // resolveBdInventory returns the verdict for the bd binary at bdPath, walking
 // it (when it must) with a fixed minimal environment.
 //
@@ -257,8 +272,9 @@ func checkBdBuildInfo(bi *debug.BuildInfo, inv *bdflags.Inventory) error {
 // matched or not. A walk that fails, times out or parses to an empty root is
 // an error the caller reports (and remembered for bdWalkErrorTTL), never a
 // cached refusal, so one caller's broken environment cannot disable gc bd for
-// the city.
-func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts bdTrustOpts) (bdTrustVerdict, error) {
+// the city. When the city's .gc cannot be written (a read-only mount), the
+// binary is walked without the cache rather than refused.
+func resolveBdInventory(cityPath, bdPath string, opts bdTrustOpts) (bdTrustVerdict, error) {
 	id, err := statBdBinary(bdPath)
 	if err != nil {
 		return bdTrustVerdict{}, err
@@ -266,12 +282,20 @@ func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts b
 	set := bdflags.InventorySetFingerprint()
 	bdTrustCacheMu.Lock()
 	defer bdTrustCacheMu.Unlock()
+	cached := true
 	unlock, err := lockBdTrustCache(cityPath)
-	if err != nil {
+	switch {
+	case errors.Is(err, errBdTrustCacheBusy):
 		return bdTrustVerdict{}, err
+	case err != nil:
+		cached = false // read-only .gc: walk uncached
+	default:
+		defer unlock()
 	}
-	defer unlock()
-	cache := loadBdTrustCache(cityPath)
+	var cache bdTrustCache
+	if cached {
+		cache = loadBdTrustCache(cityPath)
+	}
 	now := time.Now()
 	same := func(e bdTrustCacheEntry) bool { return e.bdBinaryID == id && e.InventorySet == set }
 	if !opts.forceWalk {
@@ -294,6 +318,9 @@ func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts b
 		}
 	}
 	record := func(e bdTrustCacheEntry) {
+		if !cached {
+			return
+		}
 		e.bdBinaryID, e.InventorySet, e.CheckedAt = id, set, time.Now().UTC()
 		kept := make([]bdTrustCacheEntry, 0, len(cache.Entries)+1)
 		for _, old := range cache.Entries {
@@ -310,21 +337,18 @@ func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts b
 		return bdTrustVerdict{}, err
 	}
 	if !opts.forceWalk {
-		if cfg != nil && cfg.Storage != nil {
-			if invID, vouched, ok := config.ParseGCBdInventory(cfg.Storage.GCBdInventory); ok && vouched == sum {
-				if inv := bdflags.InventoryByName(invID); inv != nil {
-					v := bdTrustVerdict{Inventory: invID, SHA256: sum, Vouched: true}
-					if err := bdBuildInfoCheck(id.Path, inv); err != nil {
-						v = bdTrustVerdict{SHA256: sum, Diffs: []string{"build info: " + err.Error()}}
-					}
-					record(bdTrustCacheEntry{bdTrustVerdict: v})
-					if v.Vouched {
-						recordBdVouchUsed(cityPath, id.Path, sum, invID)
-					}
-					v.Source = "vouched"
-					return v, nil
-				}
+		if vouch, ok := findBdVouch(cityPath, id.Path, sum); ok {
+			inv := bdflags.InventoryByName(vouch.Inventory)
+			v := bdTrustVerdict{Inventory: vouch.Inventory, SHA256: sum, Vouched: true}
+			if err := bdBuildInfoCheck(id.Path, inv); err != nil {
+				v = bdTrustVerdict{SHA256: sum, Diffs: []string{"build info: " + err.Error()}}
 			}
+			record(bdTrustCacheEntry{bdTrustVerdict: v})
+			if v.Vouched {
+				recordBdVouchUsed(cityPath, id.Path, sum, vouch.Inventory)
+			}
+			v.Source = "vouched"
+			return v, nil
 		}
 		for _, e := range cache.Entries {
 			if e.InventorySet == set && e.WalkError == "" && e.SHA256 == sum && (e.Inventory == "" || bdflags.InventoryByName(e.Inventory) != nil) {
@@ -335,7 +359,11 @@ func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts b
 			}
 		}
 	}
-	tree, walkErr := walkBdHelpTree(id.Path)
+	tree, depth, stopped, walkErr := walkBdHelpTree(cityPath, id.Path)
+	var setup bdWalkSetupError
+	if errors.As(walkErr, &setup) {
+		return bdTrustVerdict{}, fmt.Errorf("preparing to check %s: %w", id.Path, walkErr)
+	}
 	if walkErr == nil && len(tree[""].Subcommands) == 0 {
 		walkErr = errors.New("bd's root help listed no commands, so the walk proves nothing")
 	}
@@ -344,7 +372,14 @@ func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts b
 		return bdTrustVerdict{}, fmt.Errorf("checking %s's command tree: %w", id.Path, walkErr)
 	}
 	v := bdTrustVerdict{SHA256: sum}
-	if inv, diffs := bdflags.MatchHelpTree(tree); inv != nil {
+	var inv *bdflags.Inventory
+	var diffs map[string][]string
+	if stopped {
+		inv, diffs = bdflags.MatchHelpTreeToDepth(tree, depth)
+	} else {
+		inv, diffs = bdflags.MatchHelpTree(tree)
+	}
+	if inv != nil {
 		if err := bdBuildInfoCheck(id.Path, inv); err != nil {
 			v.Diffs = []string{"build info: " + err.Error()}
 		} else {
@@ -356,7 +391,7 @@ func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts b
 				if i >= 3 {
 					break
 				}
-				v.Diffs = append(v.Diffs, bdTruncateUTF8(name+": "+bdFirstLine(d), 240))
+				v.Diffs = append(v.Diffs, bdTruncateUTF8(name+": "+d, bdDiffDetailCap))
 			}
 		}
 	}
@@ -365,22 +400,43 @@ func resolveBdInventory(cityPath string, cfg *config.City, bdPath string, opts b
 	return v, nil
 }
 
-// walkBdHelpTree walks the binary's --help tree under one total deadline.
-func walkBdHelpTree(bdPath string) (bdflags.HelpTree, error) {
+// bdDiffDetailCap bounds one difference's text in a verdict (a flags block
+// can run to dozens of lines).
+const bdDiffDetailCap = 1200
+
+// bdWalkScratchDir creates the walk's HOME, cwd and TMPDIR: under the city's
+// .gc/cache/tmp, else (a read-only .gc) under the system temp directory.
+// bd never sees the caller's TMPDIR.
+func bdWalkScratchDir(cityPath string) (string, error) {
+	base := filepath.Join(cityPath, ".gc", "cache", "tmp")
+	if err := os.MkdirAll(base, 0o755); err == nil {
+		if dir, err := os.MkdirTemp(base, "bd-walk-"); err == nil {
+			return dir, nil
+		}
+	}
+	return os.MkdirTemp("", "gc-bd-walk-")
+}
+
+// walkBdHelpTree walks the binary's --help tree under one total deadline,
+// stopping at the first level no pinned inventory matches.
+func walkBdHelpTree(cityPath, bdPath string) (bdflags.HelpTree, int, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), bdWalkDeadline)
 	defer cancel()
-	home, err := os.MkdirTemp("", "gc-bd-walk-")
+	home, err := bdWalkScratchDir(cityPath)
 	if err != nil {
-		return nil, err
+		return nil, 0, false, bdWalkSetupError{fmt.Errorf("creating a scratch directory for the walk: %w", err)}
 	}
 	defer os.RemoveAll(home) //nolint:errcheck // best-effort cleanup
 	help := bdHelpRunnerFor(bdPath, home)
-	return bdflags.WalkHelp(func(path []string) (string, error) {
+	return bdflags.WalkHelpUntil(func(path []string) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("the walk exceeded %s", bdWalkDeadline)
 		}
 		return help(ctx, path)
-	}, bdflags.SkipUnparsedHelp, 8)
+	}, bdflags.SkipUnpinnedOrUnparsed, 8, func(tree bdflags.HelpTree, depth int) bool {
+		inv, _ := bdflags.MatchHelpTreeToDepth(tree, depth)
+		return inv == nil
+	})
 }
 
 // bdTruncateUTF8 cuts s to at most n bytes on a rune boundary.
@@ -423,12 +479,13 @@ func fileSHA256(path string) (string, error) {
 }
 
 // bdHelpRunnerFor runs the bd binary at bdPath for a structural walk, in
-// home, with a fixed minimal environment (PATH, HOME and TMPDIR only). The
-// caller's environment never reaches the walk: CLICOLOR_FORCE, BD_NAME, a
-// BEADS_DIR or a scope's config can all change what --help prints. Each run
-// is its own process group, killed whole on timeout.
+// home, with a fixed minimal environment: PATH, and HOME and TMPDIR both the
+// walk's scratch directory. The caller's environment never reaches the walk:
+// CLICOLOR_FORCE, BD_NAME, TMPDIR, a BEADS_DIR or a scope's config can all
+// change what --help prints. Each run is its own process group, killed whole
+// on timeout.
 func bdHelpRunnerFor(bdPath, home string) bdHelpRunner {
-	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + os.TempDir()}
+	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + home}
 	return func(ctx context.Context, path []string) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, bdWalkCommandTimeout)
 		defer cancel()
@@ -459,12 +516,12 @@ var bdSplitInventoryResolver = bdInventoryForScope
 
 // bdInventoryForScope returns the pinned inventory the scope's bd binary
 // matches, or an error wrapping errBdUninventoried that says what differed.
-func bdInventoryForScope(cityPath string, cfg *config.City, target execStoreTarget) (*bdflags.Inventory, error) {
+func bdInventoryForScope(cityPath string, _ *config.City, target execStoreTarget) (*bdflags.Inventory, error) {
 	bdPath, err := resolveBdBinaryForScope(cityPath, target.ScopeRoot)
 	if err != nil {
 		return nil, err
 	}
-	v, err := resolveBdInventory(cityPath, cfg, bdPath, bdTrustOpts{})
+	v, err := resolveBdInventory(cityPath, bdPath, bdTrustOpts{})
 	if err != nil {
 		return nil, err
 	}
@@ -475,9 +532,9 @@ func bdInventoryForScope(cityPath string, cfg *config.City, target execStoreTarg
 	return inv, nil
 }
 
-// bdVouchUsedEvent is recorded whenever the city's gc_bd_inventory vouch,
+// bdVouchUsedEvent is recorded whenever the city's vouch file,
 // not a walk, admits a bd binary. The vouch is the owner's convenience, not a
-// security boundary (anyone who can write city.toml can write it), so its
+// security boundary (anyone who can write .gc can write it), so its
 // use is visible.
 const bdVouchUsedEvent = "gc_bd.vouch_used"
 
@@ -649,29 +706,33 @@ func bdBindingDependents(cityPath string, ids []string) (map[string][]string, er
 	return out, nil
 }
 
-// bdCrossStoreBlockerKey is the S3b drain gate's metadata key naming the
-// bead it waits on. The key is declared here exactly as #8360 declares it.
-// TODO(#8360): use #8360's "open gates naming id X" helper once it lands;
-// bdOpenCrossStoreGatesNaming is the local equivalent.
-const bdCrossStoreBlockerKey = beadmeta.CrossStoreBlockerMetadataKey
+// bdCrossStoreGateLabel labels an S3b cross-store drain gate
+// (dispatch.CrossStoreGateLabel in #8360).
+const bdCrossStoreGateLabel = "gc:cross-store-gate"
 
-// bdOpenCrossStoreGatesNaming lists the open beads in store whose
-// gc.cross_store_blocker names id.
-func bdOpenCrossStoreGatesNaming(store beads.Store, id string) ([]string, error) {
+// bdOpenCrossStoreGatesNaming returns the ids of the open cross-store gates
+// in store that wait on blockerID. It is the same query as #8360's
+// dispatch.OpenCrossStoreGatesNaming (label, open status, the
+// gc.cross_store_blocker metadata, live, both tiers).
+// TODO(#8360): call dispatch.OpenCrossStoreGatesNaming once #8360 is on main.
+func bdOpenCrossStoreGatesNaming(store beads.Store, blockerID string) ([]string, error) {
+	blockerID = strings.TrimSpace(blockerID)
+	if store == nil || blockerID == "" {
+		return nil, nil
+	}
 	gates, err := store.List(beads.ListQuery{
-		Metadata: map[string]string{bdCrossStoreBlockerKey: id},
+		Label:    bdCrossStoreGateLabel,
 		Status:   "open",
+		Metadata: map[string]string{beadmeta.CrossStoreBlockerMetadataKey: blockerID},
 		Live:     true,
 		TierMode: beads.TierBoth,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("listing the binding's open gates waiting on %s: %w", id, err)
+		return nil, fmt.Errorf("listing the binding's open gates waiting on %s: %w", blockerID, err)
 	}
-	var out []string
+	out := make([]string, 0, len(gates))
 	for _, g := range gates {
-		if g.Status != "closed" && strings.TrimSpace(g.Metadata[bdCrossStoreBlockerKey]) == id {
-			out = append(out, g.ID)
-		}
+		out = append(out, g.ID)
 	}
 	return out, nil
 }
