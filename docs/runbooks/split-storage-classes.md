@@ -253,13 +253,31 @@ How a command gets through:
   with its provenance (commit, build tags, Go, cobra and pflag versions).
   Hidden commands and flags are not in `--help`, so for those gc relies on
   the pinned inventory of the build whose visible tree matched.
-- **The verdict is cached per binary.** gc keys the result by the binary's
-  path, size, modification time and sha256 in `.gc/cache/bd-inventory.json`,
-  so the walk runs once per binary; a changed binary is walked again.
-  `gc doctor --fix` writes a vouch, `[storage] gc_bd_inventory =
-  "<inventory>@sha256:<hex>"`, after walking the city's bd and only if its
-  tree matches. A binary with that sha256 is then accepted without a walk;
-  any other binary is walked as usual.
+- **The walk is isolated and must be conclusive.** gc runs each
+  `bd <path> --help` in a scratch directory with only `PATH`, `HOME` and
+  `TMPDIR` set, so a caller's environment (`CLICOLOR_FORCE`, `BD_NAME`,
+  `BEADS_DIR`) cannot change what it reads. Each run is killed with its
+  process group after 20 seconds, and the whole walk after two minutes. The
+  binary must also be a Go build of bd's `cmd/bd` with the cobra and pflag
+  versions the matched inventory records, which rejects a mise or asdf shim
+  or a wrapper script: point `PATH` at the real binary.
+- **Only conclusive verdicts are cached.** gc keys a verdict by the binary's
+  resolved path, device, inode, size, modification time and change time, and
+  by the set of inventories this gc embeds, in `.gc/cache/bd-inventory.json`
+  (locked across processes, so a cold cache costs one walk). Any replacement
+  (`cp`, `cp -p`, `install -p`, `rsync -t`, `tar`, a rename into place) and
+  any gc upgrade that changes the inventories re-judges the binary. A walk
+  that fails, times out or reads a root with no commands is reported as an
+  error and remembered for a minute; it is never cached as a refusal.
+- **The vouch is a convenience.** `gc doctor --fix` writes
+  `[storage] gc_bd_inventory = "<inventory>@sha256:<hex>"` after walking the
+  city's bd, only if its tree matches, and only if the edited city.toml
+  decodes to the same configuration plus the vouch (otherwise it refuses and
+  says what to add by hand). A binary with that sha256 is admitted without a
+  walk, and each such admission records a `gc_bd.vouch_used` event. Anyone
+  who can write city.toml can write a vouch, so `gc doctor` re-walks vouched
+  binaries and reports a mismatch. A malformed value is ignored with a
+  doctor warning; it never fails the config load.
 - **gc resolves the command exactly as bd does,** with a mirror of that tree
   under the same cobra and pflag versions. It refuses any argv where cobra's
   command lookup and pflag's flag parse disagree about which arguments name
@@ -298,10 +316,13 @@ gc serves its own `release-if-current` itself.
   from a `--parent` (unless `--no-inherit-labels`). An `--id` inside a class
   binding's reserved namespace is refused. `create --graph` is refused: a
   graph plan mints a bead per node and no shipped workflow uses it.
-- `delete` (positionals and `--from-file`): refused when a class-binding bead
-  depends on one of the beads, because that dependency would dangle.
-  `--gc-allow-dangling-edges` (gc's own flag; bd never sees it) deletes
-  anyway.
+- `delete` (positionals and `--from-file`): every id must name exactly one
+  bead of the work store (bd would delete whatever bead a short id
+  prefixes). Refused when a class-binding bead depends on one of the beads,
+  or an open cross-store drain gate waits on it (`gc.cross_store_blocker`),
+  because that edge or gate would dangle; `--gc-allow-dangling-edges` (gc's
+  own flag; bd never sees it) overrides that check, not the id check.
+  `--cascade` is refused.
 - `init`: a `--prefix` inside a class binding's reserved namespace is
   refused.
 - `update`, `label add`, `label remove`, `tag` and `set-state`: the write is
