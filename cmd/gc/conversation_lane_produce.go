@@ -44,6 +44,11 @@ type cliLaneProduction struct {
 	req opjournal.Request
 	// sessionScoped scopes the op to the session's current generation.
 	sessionScoped bool
+	// renew makes req's key coalesce a notice only while its op is open:
+	// one the key names already closed, or an earlier request the key no
+	// longer matches (another generation's, KeyReuseError), is proposed
+	// again under a minted key, so a repeated event is delivered again.
+	renew bool
 	// inline runs the content-only inline pass after the Propose.
 	inline bool
 	// warn takes the inline pass's warnings; nil discards them.
@@ -107,8 +112,16 @@ func cliLaneProduce(ctx context.Context, p cliLaneProduction) (cliLaneProduced, 
 		req.Scope = opjournal.Scope{Kind: opjournal.ScopeSession, Generation: view.Generation}
 	}
 	op, created, err := st.Propose(req)
+	var reuse *opjournal.KeyReuseError
+	if p.renew && !req.MintedKey && (err == nil && !created && op.Status == opjournal.StatusClosed || errors.As(err, &reuse)) {
+		key, kerr := legacyop.MintKey()
+		if kerr != nil {
+			return unavailable(kerr)
+		}
+		req.ClientKey, req.MintedKey = key, true
+		op, created, err = st.Propose(req)
+	}
 	if err != nil {
-		var reuse *opjournal.KeyReuseError
 		if errors.As(err, &reuse) {
 			return cliLaneProduced{handled: true}, fmt.Errorf("the key %q names a different request (op %s)", req.ClientKey, reuse.Existing.ID)
 		}

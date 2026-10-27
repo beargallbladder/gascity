@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/api"
+	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/mail"
+	"github.com/gastownhall/gascity/internal/mail/beadmail"
 	"github.com/gastownhall/gascity/internal/opjournal"
 	"github.com/gastownhall/gascity/internal/session"
 )
@@ -174,6 +178,84 @@ func TestMailReadCancelsItsNotice(t *testing.T) {
 	}
 }
 
+// The city's bead mail provider keeps every capability its readers ask for
+// (the session inbox, the handoff archive) under the withdrawal, and each of
+// its reads and archives withdraws the message's open lane notices.
+func TestBeadMailReadCancelsItsNotice(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		do   func(p mail.Provider, id string) error
+	}{
+		{"read", func(p mail.Provider, id string) error { _, err := p.Read(id); return err }},
+		{"mark read", func(p mail.Provider, id string) error { return p.MarkRead(id) }},
+		{"archive", func(p mail.Provider, id string) error { return p.Archive(id) }},
+		{"archive many", func(p mail.Provider, id string) error { _, err := p.ArchiveMany([]string{id}); return err }},
+		{"archive matching", func(p mail.Provider, _ string) error {
+			_, _, err := p.(*beadmail.Provider).ArchiveMatching(beadmail.ArchiveFilter{From: "alice", IncludeRead: true})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCLILaneCity(t)
+			inner := beadmail.New(c.store)
+			msg, err := inner.Send("alice", c.target.agentKey(), "hi", "body")
+			if err != nil {
+				t.Fatal(err)
+			}
+			opID, err := sendMailNotifyWithOp(c.target, c.store, c.sp, "alice", msg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var warn bytes.Buffer
+			p := withMailNoticeWithdrawal(inner, c.store, c.cfg, &warn)
+			if _, reads := p.(beadmail.SessionInboxReader); !reads {
+				t.Fatalf("the withdrawal hides beadmail.SessionInboxReader (%T)", p)
+			}
+			if _, archives := p.(inboxAutoHandoffArchiver); !archives {
+				t.Fatalf("the withdrawal hides the handoff archive (%T)", p)
+			}
+			if err := tc.do(p, msg.ID); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			op := c.get(t, c.laneStore(t), opID)
+			if op.Status != opjournal.StatusClosed || op.Outcome.Arm != opjournal.ArmCanceled {
+				t.Fatalf("notice after %s = %s %+v, want it canceled; warnings %s", tc.name, op.Status, op.Outcome, warn.String())
+			}
+		})
+	}
+}
+
+// With message listed, an injected auto-handoff is still archived after its
+// injection, so the next prompt's mail check does not inject it again.
+func TestMailNoticeWithdrawalKeepsTheHandoffArchive(t *testing.T) {
+	for _, listed := range []bool{false, true} {
+		store := beads.NewMemStore()
+		cfg := &config.City{}
+		if listed {
+			cfg.Ops.Authoritative = []string{"message"}
+		}
+		mp := withMailNoticeWithdrawal(beadmail.New(store), store, cfg, io.Discard)
+		auto, err := store.Create(beads.Bead{
+			Title: "context cycle", Type: "message", Assignee: "mayor", From: "mayor",
+			Labels: []string{mail.AutoHandoffLabel, mail.ArchiveAfterInjectLabel},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var first, second bytes.Buffer
+		if code := doMailCheck(mp, "mayor", true, &first, io.Discard); code != 0 {
+			t.Fatalf("message listed %v: first mail check = %d", listed, code)
+		}
+		if !bytes.Contains(first.Bytes(), []byte(auto.ID)) {
+			t.Fatalf("message listed %v: the handoff %s was not injected: %s", listed, auto.ID, first.String())
+		}
+		_ = doMailCheck(mp, "mayor", true, &second, io.Discard)
+		if b, _ := store.Get(auto.ID); b.Status != "closed" || bytes.Contains(second.Bytes(), []byte(auto.ID)) {
+			t.Fatalf("message listed %v: handoff %s is %s after its injection and injected again: %v", listed, auto.ID, b.Status, bytes.Contains(second.Bytes(), []byte(auto.ID)))
+		}
+	}
+}
+
 func TestSlingNudgeUnderLaneProposesANotice(t *testing.T) {
 	c := newCLILaneCity(t)
 	var stdout, stderr bytes.Buffer
@@ -185,6 +267,87 @@ func TestSlingNudgeUnderLaneProposesANotice(t *testing.T) {
 	assertLaneNotice(t, op, slingNoticePrincipal, opjournal.WakeIfNeeded, reminderGolden("sling", slingNudgeText))
 	if n := len(c.nudges()); n != 0 || c.queuedItems(t) != 0 {
 		t.Fatalf("legacy delivery ran: %d nudges, %d queued", n, c.queuedItems(t))
+	}
+}
+
+// A second gc sling --nudge of the same bead to the same session, after the
+// first notice closed, proposes a new notice under a minted key rather than
+// finding the closed one and reporting a nudge it never queued; while the
+// first is still open the second coalesces into it.
+func TestSlingNudgeUnderLaneReslingAfterTheNoticeClosed(t *testing.T) {
+	c := newCLILaneCity(t)
+	var stdout, stderr bytes.Buffer
+	deliverSlingNudge(c.target, c.sp, c.store, c.dir, "gc-bead-1", &stdout, &stderr)
+	first := c.laneOpByKey(t, slingNoticePrincipal, "sling:gc-bead-1")
+	stdout.Reset()
+	deliverSlingNudge(c.target, c.sp, c.store, c.dir, "gc-bead-1", &stdout, &stderr)
+	if n := len(c.ops(t)); n != 1 {
+		t.Fatalf("re-sling with the notice open wrote %d ops, want the one it coalesces into", n)
+	}
+	if _, err := c.laneStore(t).Close(first.ID, opjournal.Outcome{Arm: opjournal.ArmSucceeded}, "lane:test"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	deliverSlingNudge(c.target, c.sp, c.store, c.dir, "gc-bead-1", &stdout, &stderr)
+	if !strings.Contains(stdout.String(), "in the conversation lane") || stderr.Len() != 0 {
+		t.Fatalf("stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+	var open []opjournal.Op
+	for _, op := range c.ops(t) {
+		if op.Status != opjournal.StatusClosed {
+			open = append(open, op)
+		}
+	}
+	if len(open) != 1 || open[0].ID == first.ID || open[0].ClientKey == first.ClientKey || open[0].Causation != "gc-bead-1" {
+		t.Fatalf("open ops after the re-sling = %+v, want one new notice caused by the bead", open)
+	}
+	assertLaneNotice(t, open[0], slingNoticePrincipal, opjournal.WakeIfNeeded, reminderGolden("sling", slingNudgeText))
+	if n := len(c.nudges()); n != 0 || c.queuedItems(t) != 0 {
+		t.Fatalf("legacy delivery ran: %d nudges, %d queued", n, c.queuedItems(t))
+	}
+}
+
+// The hook-claim continuation of the same root again, in a later generation
+// of the session (the generation is in the request's digest, not its key) or
+// after the first notice closed, is a new lane notice under a minted key,
+// never the legacy queue.
+func TestHookClaimContinuationUnderLaneRenews(t *testing.T) {
+	for _, nextGeneration := range []bool{false, true} {
+		c := newCLILaneCity(t)
+		if !continuationLaneNotice(c.target, c.store, c.sp, "gc-root-1") {
+			t.Fatal("first continuation did not propose")
+		}
+		first := c.laneOpByKey(t, hookClaimContinuationPrincipal, "hook-claim:gc-root-1")
+		if _, err := c.laneStore(t).Close(first.ID, opjournal.Outcome{Arm: opjournal.ArmSucceeded}, "lane:test"); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		target := c.target
+		if nextGeneration {
+			if err := c.store.SetMetadata(c.id, "generation", "2"); err != nil {
+				t.Fatalf("bump generation: %v", err)
+			}
+			target = resolveNudgeTargetFromSessionInfo(c.dir, c.cfg, c.rowInfo(t))
+		}
+		if !continuationLaneNotice(target, c.store, c.sp, "gc-root-1") {
+			t.Fatalf("next generation %v: the continuation was not proposed on the lane", nextGeneration)
+		}
+		var open []opjournal.Op
+		for _, op := range c.ops(t) {
+			if op.Status != opjournal.StatusClosed {
+				open = append(open, op)
+			}
+		}
+		wantGen := int64(1)
+		if nextGeneration {
+			wantGen = 2
+		}
+		if len(open) != 1 || open[0].ID == first.ID || open[0].Causation != "gc-root-1" || open[0].Scope.Generation != wantGen {
+			t.Fatalf("next generation %v: open ops = %+v, want one new notice for generation %d", nextGeneration, open, wantGen)
+		}
+		if c.queuedItems(t) != 0 {
+			t.Fatalf("next generation %v: the continuation was queued on the legacy queue", nextGeneration)
+		}
 	}
 }
 

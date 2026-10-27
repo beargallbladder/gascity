@@ -1699,7 +1699,9 @@ const slingNudgeText = "Work slung. Check your hook."
 // its notice says whether it recorded one. When [ops] authoritative lists
 // message and a lane serves the target's session, the nudge is a lane notice
 // from gc:sling, keyed sling:<bead id> (minted with no bead), which the
-// controller's lane host delivers, waking the session if needed.
+// controller's lane host delivers, waking the session if needed. The key
+// coalesces a re-sling only while the bead's notice is open; once it closed,
+// a re-sling is a new notice under a minted key.
 func deliverSlingNudge(target nudgeTarget, sp runtime.Provider, store beads.Store, cityPath, beadID string, stdout, stderr io.Writer) {
 	const msg = slingNudgeText
 	if !onWorkerSite(target.cityPath) {
@@ -1709,7 +1711,8 @@ func deliverSlingNudge(target nudgeTarget, sp runtime.Provider, store beads.Stor
 		}
 		prod, err := cliLaneProduce(context.Background(), cliLaneProduction{
 			target: target, store: store, sp: sp,
-			req: cliLaneNotice(slingNoticePrincipal, key, beadID, msg, opjournal.WakeIfNeeded),
+			req:   cliLaneNotice(slingNoticePrincipal, key, beadID, msg, opjournal.WakeIfNeeded),
+			renew: true,
 		})
 		switch {
 		case !prod.handled:

@@ -3959,12 +3959,16 @@ func continuationLaneNoticeIn(cityPath string, cfg *config.City, target nudgeTar
 // continuationLaneNotice proposes the hook-claim continuation for rootID as a
 // lane notice to target's session (continuationNudgeEnqueueAt), and reports
 // whether it did; false leaves the legacy queue path, nothing written, or
-// after a proposal that failed.
+// after a proposal that failed. Its key, hook-claim:<root id>, coalesces a
+// continuation only while its notice is open: a later claim of the root,
+// after that notice closed or in a later generation, is a new notice under a
+// minted key.
 func continuationLaneNotice(target nudgeTarget, store beads.Store, sp runtime.Provider, rootID string) bool {
 	prod, err := cliLaneProduce(context.Background(), cliLaneProduction{
 		target: target, store: store, sp: sp,
 		req:           cliLaneNotice(hookClaimContinuationPrincipal, "hook-claim:"+rootID, rootID, hookClaimContinuationText, opjournal.WakeLiveOnly),
 		sessionScoped: true,
+		renew:         true,
 	})
 	return prod.handled && err == nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/gastownhall/gascity/internal/clock"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/mail"
+	"github.com/gastownhall/gascity/internal/mail/beadmail"
 	"github.com/gastownhall/gascity/internal/opjournal"
 )
 
@@ -24,17 +25,27 @@ import (
 // records.
 const mailNoticeWithdrawReason = "the mail it announces was read or archived"
 
-// withMailNoticeWithdrawal wraps p so that a read, mark-read, archive or
-// delete of a message cancels the open lane notices it caused, when cfg's
-// [ops] authoritative lists message; otherwise it returns p unchanged.
-// sessions is the sessions-class store the notices live in. Failures are
-// logged to warn and never fail the mail operation. The wrapper keeps p's
-// optional extensions (mail.DedupSender, mail.MultiRecipientInboxer).
+// withMailNoticeWithdrawal makes a read, mark-read, archive or delete of a
+// message through p cancel the open lane notices it caused, when cfg's [ops]
+// authoritative lists message; otherwise it returns p unchanged. sessions is
+// the sessions-class store the notices live in. Failures are logged to warn
+// and never fail the mail operation.
+//
+// The city's bead mail provider is returned as itself with the withdrawal
+// registered as its consumed hook (beadmail.Provider.OnConsumed), so every
+// capability its readers assert (beadmail.SessionInboxReader, the handoff
+// archives, mail.DedupSender, mail.MultiRecipientInboxer) stays visible and
+// its handoff archives withdraw too. Any other provider is wrapped, keeping
+// its optional mail.DedupSender and mail.MultiRecipientInboxer.
 func withMailNoticeWithdrawal(p mail.Provider, sessions beads.Store, cfg *config.City, warn io.Writer) mail.Provider {
 	if p == nil || isNilBeadStore(sessions) || !cliLaneExecutesMessage(cfg) {
 		return p
 	}
 	w := &mailNoticeWithdrawer{Provider: p, sessions: sessions, warn: warn}
+	if bp, ok := p.(*beadmail.Provider); ok {
+		bp.OnConsumed(w.withdraw)
+		return bp
+	}
 	dedup, isDedup := p.(mail.DedupSender)
 	inboxer, isInboxer := p.(mail.MultiRecipientInboxer)
 	switch {
@@ -59,7 +70,8 @@ func withMailNoticeWithdrawal(p mail.Provider, sessions beads.Store, cfg *config
 }
 
 // mailNoticeWithdrawer is a mail.Provider that withdraws a message's lane
-// notices after the message is read or archived.
+// notices after the message is read or archived. It wraps providers other
+// than beadmail's, which call withdraw from their consumed hook instead.
 type mailNoticeWithdrawer struct {
 	mail.Provider
 	sessions beads.Store

@@ -50,6 +50,9 @@ type Provider struct {
 	// sender is the calling session, already resolved by the command; see
 	// PinSender.
 	sender *session.Info
+	// onConsumed, when set, is told each message a read, mark-read or
+	// archive consumed; see OnConsumed.
+	onConsumed func(id string)
 }
 
 type sessionInfoCache struct {
@@ -337,6 +340,23 @@ func (p *Provider) PinSender(info session.Info) {
 	p.sender = &pinned
 }
 
+// OnConsumed registers fn to be told the id of each message a call consumed:
+// a successful Read, MarkRead, Archive (Delete, ArchiveMany and DeleteMany
+// included), ArchiveMatching, or archive of an injected auto-handoff
+// (ArchiveInjectedAutoHandoffs, ArchiveInjectedAutoHandoffsFromInbox). fn
+// runs after the write, on the caller's goroutine, and cannot fail the call.
+// Register it before the provider is shared; a later call replaces it.
+func (p *Provider) OnConsumed(fn func(id string)) {
+	p.onConsumed = fn
+}
+
+// consumed reports id to the OnConsumed hook, if any.
+func (p *Provider) consumed(id string) {
+	if p.onConsumed != nil {
+		p.onConsumed(id)
+	}
+}
+
 // pinnedSenderFor returns the pinned sender when from names it.
 func (p *Provider) pinnedSenderFor(from string) (session.Info, bool) {
 	if p.sender == nil || from == "" {
@@ -445,6 +465,7 @@ func (p *Provider) Read(id string) (mail.Message, error) {
 			return mail.Message{}, fmt.Errorf("beadmail read: marking as read: %w", err)
 		}
 	}
+	p.consumed(id)
 	msg := beadToMessage(b)
 	msg.Read = true
 	return msg, nil
@@ -459,10 +480,14 @@ func (p *Provider) MarkRead(id string) error {
 	if isRemovedMessageBead(b) {
 		return beadmailError("mark-read", beads.ErrNotFound)
 	}
-	return p.store.Update(id, beads.UpdateOpts{
+	if err := p.store.Update(id, beads.UpdateOpts{
 		Labels:   []string{"read"},
 		Metadata: map[string]string{"mail.read": "true"},
-	})
+	}); err != nil {
+		return err
+	}
+	p.consumed(id)
+	return nil
 }
 
 // MarkUnread marks a message as unread (removes "read" label).
@@ -518,6 +543,7 @@ func (p *Provider) Archive(id string) error {
 		}
 		return fmt.Errorf("beadmail archive: %w", err)
 	}
+	p.consumed(id)
 	return nil
 }
 
@@ -604,7 +630,9 @@ func (p *Provider) ArchiveMatching(filter ArchiveFilter) ([]mail.Message, []mail
 				continue
 			}
 			results[i].Err = fmt.Errorf("beadmail archive: %w", err)
+			continue
 		}
+		p.consumed(id)
 	}
 	return candidates, results, nil
 }
@@ -699,6 +727,7 @@ func (p *Provider) archiveInjectedAutoHandoffs(ids []string, mayLabel func() boo
 			continue
 		}
 		closed = append(closed, id)
+		p.consumed(id)
 	}
 	for _, id := range closed {
 		if mayLabel != nil && !mayLabel() {
