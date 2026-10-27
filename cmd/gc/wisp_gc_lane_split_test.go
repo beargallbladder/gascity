@@ -490,3 +490,46 @@ func TestOrderGateRemembersACompileFailure(t *testing.T) {
 		t.Fatalf("compiled %d time(s), want 1: the failure must be remembered for a while", compiles)
 	}
 }
+
+// close_memo_off: once busy molecules are found not closable, the next pass
+// does not walk them again (their outcome is remembered), whatever the cursor.
+func TestWorkArmRemembersNotClosableRoots(t *testing.T) {
+	store := newBatchDeleteWorkStore()
+	for i := 0; i < 3; i++ {
+		busy := stepless(t, store, beads.Bead{Title: fmt.Sprintf("busy-%d", i), Type: "molecule"})
+		stepless(t, store, beads.Bead{Title: "live step", Type: "step", ParentID: busy.ID})
+	}
+	e, legs := laneLegs(t, store)
+	gc := newWorkMoleculeGC()
+	now := time.Now().Add(30 * time.Minute)
+	var first, second string
+	enforcedLane(t, func() {
+		first = runLane(t, gc, legs, e.graphStore(), now)
+		second = runLane(t, gc, legs, e.graphStore(), now)
+	})
+	if !strings.Contains(first, "walked 3 root(s)") {
+		t.Fatalf("first pass did not walk the 3 busy roots:\n%s", first)
+	}
+	if strings.Contains(second, "walked") {
+		t.Fatalf("second pass re-walked roots already found not closable:\n%s", second)
+	}
+}
+
+// fail_memo_off: a root whose delete failed is not attempted again on the
+// next pass.
+func TestWorkArmDoesNotRetryAFailedDeleteEveryPass(t *testing.T) {
+	var asked []string
+	inner := newBatchDeleteWorkStore()
+	store := laneFailingDeleteStore{batchDeleteWorkStore: inner, asked: &asked}
+	closedPoured(t, inner, "a")
+	e, legs := laneLegs(t, store)
+	gc := newWorkMoleculeGC()
+	now := time.Now().Add(2 * time.Hour)
+	enforcedLane(t, func() {
+		runLane(t, gc, legs, e.graphStore(), now)
+		runLane(t, gc, legs, e.graphStore(), now)
+	})
+	if len(asked) != 2 { // root + step, one attempt
+		t.Fatalf("delete attempts %v over two passes, want one attempt", asked)
+	}
+}

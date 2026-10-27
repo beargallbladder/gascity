@@ -564,6 +564,9 @@ func TestBurnGuardEdges(t *testing.T) {
 		if !errors.As(err, &molErr) || len(result.AutoBurned) != 0 {
 			t.Fatalf("burn with an unreadable subtree: err=%v burned=%v, want a refusal", err, result.AutoBurned)
 		}
+		if !strings.Contains(err.Error(), "subtree unreadable") {
+			t.Fatalf("refusal does not say the guard could not read the subtree (it must fail closed on that, not on a failed burn): %v", err)
+		}
 	})
 	t.Run("hooked-step", func(t *testing.T) {
 		work, src, root := mkAttached(t, "hooked")
