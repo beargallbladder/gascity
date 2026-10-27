@@ -3072,8 +3072,8 @@ func TestReleaseCrossStoreGatesKeepsAGateWhoseBlockerNoStoreHolds(t *testing.T) 
 		t.Fatal(err)
 	}
 	report, err = ReleaseCrossStoreGates(graph, none)
-	if err != nil || len(report.Released) != 1 {
-		t.Fatalf("release after the drain control closed = %+v, %v; want the gate released", report, err)
+	if err != nil || len(report.Retired) != 1 {
+		t.Fatalf("release after the drain control closed = %+v, %v; want the gate retired", report, err)
 	}
 }
 
@@ -3563,5 +3563,140 @@ func TestProcessDrainDoesNotFlapAClosedCrossRigBlocker(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// splitSQLiteDrain seeds a split drain whose graph store is a real SQLite
+// binding, returning the graph store, the drain control, its members and the
+// formula dir.
+func splitSQLiteDrain(t *testing.T, work beads.Store) (beads.Store, beads.Bead, []string, string) {
+	t.Helper()
+	formulatest.EnableV2ForTest(t)
+	dir := t.TempDir()
+	writeDrainItemFormula(t, dir)
+	var graph beads.Store
+	drain, memberIDs := seedSplitClassDrainWorkflowIn(t, work, false, func(_ []beads.Bead) beads.Store {
+		store, err := beads.OpenSQLiteStore(t.TempDir(), beads.WithSQLiteStoreIDPrefix("gcg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.(interface{ CloseStore() error }).CloseStore() })
+		graph = store
+		return store
+	})
+	return graph, drain, memberIDs, dir
+}
+
+func drainRowRunnable(t *testing.T, graph beads.Store, drainID string) bool {
+	t.Helper()
+	manifest := mustDrainManifest(t, mustGetBead(t, graph, drainID))
+	ready, err := graph.Ready()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, b := range ready {
+		ids[b.ID] = true
+	}
+	for _, id := range itemWorkflowBeadIDs(t, graph, manifest.Rows[0].ItemRootID) {
+		if ids[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// TestProcessDrainHonorsAnOperatorCloseWithAReason: an operator overrides a
+// gate with `gc bd close <gate> --reason ...` (CloseAll stamping close_reason)
+// or the API close with a reason, while the blocker is still open. That close
+// is final: neither the drain nor the release pass reopens it.
+func TestProcessDrainHonorsAnOperatorCloseWithAReason(t *testing.T) {
+	for _, viaAPI := range []bool{false, true} {
+		name := map[bool]string{false: "gc bd close --reason", true: "API close with a reason"}[viaAPI]
+		t.Run(name, func(t *testing.T) {
+			work := beads.NewMemStore()
+			graph, drain, memberIDs, dir := splitSQLiteDrain(t, work)
+			blocker, err := work.Create(beads.Bead{Title: "open blocker", Type: "task"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustDepAdd(t, work, memberIDs[0], blocker.ID, "blocks")
+			opts := ProcessOptions{FormulaSearchPaths: []string{dir}, MemberStores: []beads.Store{work}}
+			if _, err := ProcessControl(graph, drain, opts); err != nil && !errors.Is(err, ErrControlPending) {
+				t.Fatal(err)
+			}
+			gates := crossStoreGatesIn(t, graph)
+			if len(gates) != 1 || drainRowRunnable(t, graph, drain.ID) {
+				t.Fatalf("setup: gates = %d, runnable = %v", len(gates), drainRowRunnable(t, graph, drain.ID))
+			}
+			gateID := gates[0].ID
+			if viaAPI {
+				if err := graph.SetMetadata(gateID, "close_reason", "operator: blocker irrelevant"); err != nil {
+					t.Fatal(err)
+				}
+				if err := graph.Close(gateID); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := graph.CloseAll([]string{gateID}, map[string]string{"close_reason": "operator: blocker irrelevant"}); err != nil {
+				t.Fatal(err)
+			}
+			for tick := 0; tick < 2; tick++ {
+				if _, err := ProcessControl(graph, mustGetBead(t, graph, drain.ID), opts); err != nil && !errors.Is(err, ErrControlPending) {
+					t.Fatal(err)
+				}
+				if _, err := ReleaseCrossStoreGates(graph, storesResolver(work)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if g := mustGetBead(t, graph, gateID); g.Status != "closed" || g.Metadata[beadmeta.CrossStoreGateStateMetadataKey] != CrossStoreGateStateOverridden {
+				t.Fatalf("gate = %s/%q; want the operator's close kept and recorded as overridden", g.Status, g.Metadata[beadmeta.CrossStoreGateStateMetadataKey])
+			}
+			if !drainRowRunnable(t, graph, drain.ID) {
+				t.Fatal("the item is held again although the operator overrode its gate")
+			}
+		})
+	}
+}
+
+// TestProcessDrainReHoldsAReopenedControlsItemBehindARetiredGate: a drain
+// control closed mid-flight (its gate retired) is reopened by an operator
+// while its cross-rig blocker is still open. The drain cannot see the rig, so
+// it hands the retired gate back to the release pass, which reads the rig and
+// holds the item again.
+func TestProcessDrainReHoldsAReopenedControlsItemBehindARetiredGate(t *testing.T) {
+	work := beads.NewMemStore()
+	rig := beads.NewMemStore()
+	rig.HonorExplicitIDs = true
+	if _, err := rig.Create(beads.Bead{ID: "rg-77", Title: "rig blocker", Type: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	graph, drain, memberIDs, dir := splitSQLiteDrain(t, work)
+	mustDepAdd(t, work, memberIDs[0], "rg-77", "blocks")
+	opts := ProcessOptions{FormulaSearchPaths: []string{dir}, MemberStores: []beads.Store{work}}
+	if _, err := ProcessControl(graph, drain, opts); err != nil && !errors.Is(err, ErrControlPending) {
+		t.Fatal(err)
+	}
+	if drainRowRunnable(t, graph, drain.ID) {
+		t.Fatal("setup: the item runs while rg-77 is open")
+	}
+	if err := graph.Close(drain.ID); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := ReleaseCrossStoreGates(graph, storesResolver(work, rig)); err != nil || len(report.Retired) != 1 {
+		t.Fatalf("control closed: %+v, %v; want the gate retired", report, err)
+	}
+	if err := graph.Reopen(drain.ID); err != nil {
+		t.Fatal(err)
+	}
+	for tick := 0; tick < 2; tick++ {
+		if _, err := ProcessControl(graph, mustGetBead(t, graph, drain.ID), opts); err != nil && !errors.Is(err, ErrControlPending) {
+			t.Fatal(err)
+		}
+		if _, err := ReleaseCrossStoreGates(graph, storesResolver(work, rig)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if drainRowRunnable(t, graph, drain.ID) {
+		t.Fatal("the control was reopened with rg-77 still open, yet its item stays runnable")
 	}
 }

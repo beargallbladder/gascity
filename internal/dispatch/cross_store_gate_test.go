@@ -9,6 +9,9 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/splittest"
+	"github.com/gastownhall/gascity/internal/molecule"
+	"github.com/gastownhall/gascity/internal/rollout/gate"
 )
 
 // sqliteGraphStore opens a real SQLite binding minting gcg-.
@@ -65,13 +68,29 @@ func TestEnsureCrossStoreGateIsIdempotentUnderARace(t *testing.T) {
 	}
 }
 
-// gateStores are the two gate-identity paths: a store that pins the derived id
-// (SQLite) and one that mints its own and is found by metadata (MemStore).
+// gateStores are the stores a gate lives in: the two engines a binding is
+// served from (SQLite; the native Dolt workspace engine, which refuses
+// removing a metadata key in an update), both pinning the derived id; a store
+// that mints its own id and is found by metadata (MemStore); and one whose
+// conditional writes are resolved, so every gate write is a revision CAS.
 func gateStores(t *testing.T) map[string]beads.Store {
 	return map[string]beads.Store{
-		"sqlite (pinned id)":    sqliteGraphStore(t),
-		"memstore (minted ids)": beads.NewMemStoreFrom(1000, nil, nil),
+		"sqlite (pinned id)":          sqliteGraphStore(t),
+		"native dolt (pinned id)":     splittest.NewNativeWorkStore(t, "gcw"),
+		"memstore (minted ids)":       beads.NewMemStoreFrom(1000, nil, nil),
+		"memstore (conditional, CAS)": conditionalMemStore(t),
 	}
+}
+
+// conditionalMemStore is a MemStore whose conditional writes resolve
+// (beads.conditional_writes = require), so gate writes take the CAS path.
+func conditionalMemStore(t *testing.T) beads.Store {
+	t.Helper()
+	store := beads.NewMemStoreFrom(1000, nil, nil)
+	if err := beads.StampOpenedStore(store, "MemStore", gate.Require, false, nil, nil); err != nil {
+		t.Fatalf("stamping conditional writes: %v", err)
+	}
+	return store
 }
 
 // TestEnsureCrossStoreGateReopensAGateTheControllerReleased: the drain asks for
@@ -339,8 +358,11 @@ func TestReleaseCrossStoreGatesReleasesAGateWhoseControlIsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, err := ReleaseCrossStoreGates(graph, storesResolver())
-	if err != nil || !slices.Equal(report.Released, []string{gateID}) {
-		t.Fatalf("release = %+v, %v; want gate %s released", report, err, gateID)
+	if err != nil || !slices.Equal(report.Retired, []string{gateID}) || len(report.Released) != 0 {
+		t.Fatalf("release = %+v, %v; want gate %s retired (its drain control is gone)", report, err, gateID)
+	}
+	if state := mustGetBead(t, graph, gateID).Metadata[beadmeta.CrossStoreGateStateMetadataKey]; state != CrossStoreGateStateRetired {
+		t.Fatalf("gate state = %q, want retired", state)
 	}
 }
 
@@ -495,13 +517,15 @@ func TestReopenIsOneWriteSoAFailureLeavesNoHalfState(t *testing.T) {
 	if g.Status != "closed" || g.Metadata[beadmeta.CrossStoreGateStateMetadataKey] != CrossStoreGateStateReleased {
 		t.Fatalf("gate after a failed reopen = %s/%q; want closed/released, untouched", g.Status, g.Metadata[beadmeta.CrossStoreGateStateMetadataKey])
 	}
-	// The next pass reopens it, and the marker is REMOVED, not left empty.
+	// The next pass reopens it, and clears the marker and the close reason
+	// (empty or absent: some engines refuse removing a key in an update, so
+	// the reopen sets them empty in the same write).
 	if _, err := ReleaseCrossStoreGates(inner, storesResolver(work)); err != nil {
 		t.Fatal(err)
 	}
 	g = mustGetBead(t, inner, gateID)
-	if _, present := g.Metadata[beadmeta.CrossStoreGateStateMetadataKey]; g.Status == "closed" || present {
-		t.Fatalf("gate after the reopen = %s with metadata %v; want open with the state key removed", g.Status, g.Metadata)
+	if g.Status == "closed" || g.Metadata[beadmeta.CrossStoreGateStateMetadataKey] != "" || g.Metadata["close_reason"] != "" {
+		t.Fatalf("gate after the reopen = %s with metadata %v; want open with no state and no close reason", g.Status, g.Metadata)
 	}
 }
 
@@ -599,7 +623,7 @@ func TestEnsureCrossStoreGateTreatsATeardownCloseAsTheControllers(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := graph.CloseAll([]string{gateID}, map[string]string{"close_reason": "workflow subtree closed"}); err != nil {
+	if _, err := graph.CloseAll([]string{gateID}, map[string]string{"close_reason": molecule.SubtreeClosedReason}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := ensureCrossStoreGate(graph, control, "gc-7", false); err != nil || got != "" {
@@ -635,5 +659,265 @@ func TestReleaseCrossStoreGatesStampsWhenAGateWasFirstFoundUnresolved(t *testing
 	}
 	if got := mustGetBead(t, graph, gateID).Metadata[beadmeta.CrossStoreGateUnresolvedAtMetadataKey]; got != first.Format(time.RFC3339) {
 		t.Fatalf("unresolved_at = %q, want the first pass's %q", got, first.Format(time.RFC3339))
+	}
+}
+
+// TestCrossStoreGateLifecycleOnEveryGateStore runs the whole gate cycle on
+// every store a gate lives in: mint, release when the blocker closes, reopen
+// when it reopens (with the marker and close reason cleared), retire when the
+// drain finishes.
+func TestCrossStoreGateLifecycleOnEveryGateStore(t *testing.T) {
+	for name, graph := range gateStores(t) {
+		t.Run(name, func(t *testing.T) {
+			work := honoringMem()
+			control, gateID := releasedGate(t, graph, work)
+			if err := work.Reopen("gc-7"); err != nil {
+				t.Fatal(err)
+			}
+			report, err := ReleaseCrossStoreGates(graph, storesResolver(work))
+			if err != nil || !slices.Equal(report.Reopened, []string{gateID}) {
+				t.Fatalf("reopen pass = %+v, %v; want gate %s reopened", report, err, gateID)
+			}
+			g := mustGetBead(t, graph, gateID)
+			if g.Status == "closed" || g.Metadata[beadmeta.CrossStoreGateStateMetadataKey] != "" || g.Metadata["close_reason"] != "" {
+				t.Fatalf("reopened gate = %s %v; want open with no state and no close reason", g.Status, g.Metadata)
+			}
+			if err := work.Close("gc-7"); err != nil {
+				t.Fatal(err)
+			}
+			if report, err := ReleaseCrossStoreGates(graph, storesResolver(work)); err != nil || !slices.Equal(report.Released, []string{gateID}) {
+				t.Fatalf("release pass = %+v, %v", report, err)
+			}
+			if err := graph.Close(control.ID); err != nil {
+				t.Fatal(err)
+			}
+			if report, err := ReleaseCrossStoreGates(graph, storesResolver(work)); err != nil || !slices.Equal(report.Retired, []string{gateID}) {
+				t.Fatalf("retire pass = %+v, %v", report, err)
+			}
+		})
+	}
+}
+
+// TestEnsureCrossStoreGateReopensARetiredGateFoundOpen: a retired gate is the
+// controller's close, so a retried drain that FINDS the blocker open reopens
+// it rather than reading it as an operator override.
+func TestEnsureCrossStoreGateReopensARetiredGateFoundOpen(t *testing.T) {
+	graph := beads.NewMemStoreFrom(1000, nil, nil)
+	work := honoringMem()
+	control, gateID := releasedGate(t, graph, work)
+	if err := graph.Close(control.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReleaseCrossStoreGates(graph, storesResolver(work)); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Reopen(control.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ensureCrossStoreGate(graph, control, "gc-7", true)
+	if err != nil || got != gateID {
+		t.Fatalf("ensureCrossStoreGate(found open) on a retired gate = %q, %v; want %s reopened", got, err, gateID)
+	}
+}
+
+// TestEnsureCrossStoreGateHandsARetiredGateBackToTheReleasePass: a retired
+// gate met by a live drain that does not find the blocker is marked released
+// again, so the release pass — which reads every store — re-judges it.
+func TestEnsureCrossStoreGateHandsARetiredGateBackToTheReleasePass(t *testing.T) {
+	graph := beads.NewMemStoreFrom(1000, nil, nil)
+	work := honoringMem()
+	control, gateID := releasedGate(t, graph, work)
+	if err := graph.Close(control.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReleaseCrossStoreGates(graph, storesResolver(work)); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Reopen(control.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ensureCrossStoreGate(graph, control, "gc-7", false); err != nil || got != "" {
+		t.Fatalf("ensureCrossStoreGate(not found) = %q, %v; want no gate yet", got, err)
+	}
+	if state := mustGetBead(t, graph, gateID).Metadata[beadmeta.CrossStoreGateStateMetadataKey]; state != CrossStoreGateStateReleased {
+		t.Fatalf("gate state = %q, want released (handed back to the pass)", state)
+	}
+	if err := work.Reopen("gc-7"); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := ReleaseCrossStoreGates(graph, storesResolver(work)); err != nil || !slices.Equal(report.Reopened, []string{gateID}) {
+		t.Fatalf("pass = %+v, %v; want the handed-back gate reopened (its blocker is open)", report, err)
+	}
+}
+
+// writeCounting counts the writes made to one bead id.
+type writeCounting struct {
+	beads.Store
+	id     string
+	writes int
+}
+
+func (s *writeCounting) Update(id string, opts beads.UpdateOpts) error {
+	if id == s.id {
+		s.writes++
+	}
+	return s.Store.Update(id, opts)
+}
+
+func (s *writeCounting) Close(id string) error {
+	if id == s.id {
+		s.writes++
+	}
+	return s.Store.Close(id)
+}
+
+func (s *writeCounting) SetMetadata(id, k, v string) error {
+	if id == s.id {
+		s.writes++
+	}
+	return s.Store.SetMetadata(id, k, v)
+}
+
+func (s *writeCounting) SetMetadataBatch(id string, kvs map[string]string) error {
+	if id == s.id {
+		s.writes++
+	}
+	return s.Store.SetMetadataBatch(id, kvs)
+}
+
+// TestReleaseIsOneWrite: the release closes the gate and records its state
+// and reason in a single write.
+func TestReleaseIsOneWrite(t *testing.T) {
+	inner := beads.NewMemStoreFrom(1000, nil, nil)
+	work := honoringMem()
+	if _, err := work.Create(beads.Bead{ID: "gc-7", Title: "blocker", Type: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	gateID, err := ensureCrossStoreGate(inner, newGateControl(t, inner), "gc-7", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Close("gc-7"); err != nil {
+		t.Fatal(err)
+	}
+	counting := &writeCounting{Store: inner, id: gateID}
+	if report, err := ReleaseCrossStoreGates(counting, storesResolver(work)); err != nil || len(report.Released) != 1 {
+		t.Fatalf("release = %+v, %v", report, err)
+	}
+	if counting.writes != 1 {
+		t.Fatalf("the release made %d writes to the gate, want exactly 1", counting.writes)
+	}
+}
+
+// operatorClosesOnList closes the gate (an operator's close) right after the
+// pass lists the open gates, before the pass writes.
+type operatorClosesOnList struct {
+	beads.Store
+	gateID string
+	done   bool
+}
+
+func (s *operatorClosesOnList) List(q beads.ListQuery) ([]beads.Bead, error) {
+	rows, err := s.Store.List(q)
+	if !s.done && q.Label == CrossStoreGateLabel && q.Status == "open" {
+		s.done = true
+		if cerr := s.Close(s.gateID); cerr != nil {
+			return nil, cerr
+		}
+	}
+	return rows, err
+}
+
+// TestReleaseNeverOverwritesAnOperatorCloseThatRacedThePass: an operator
+// closes the gate between the pass's listing and its write. The pass re-reads
+// the gate live and leaves the operator's close alone — it is not stamped as a
+// controller release, so the drain still reads it as an override.
+func TestReleaseNeverOverwritesAnOperatorCloseThatRacedThePass(t *testing.T) {
+	for name, mk := range map[string]func() beads.Store{
+		"live re-check":    func() beads.Store { return beads.NewMemStoreFrom(1000, nil, nil) },
+		"conditional, CAS": func() beads.Store { return conditionalMemStore(t) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner := mk()
+			work := honoringMem()
+			if _, err := work.Create(beads.Bead{ID: "gc-7", Title: "blocker", Type: "task"}); err != nil {
+				t.Fatal(err)
+			}
+			control := newGateControl(t, inner)
+			gateID, err := ensureCrossStoreGate(inner, control, "gc-7", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := work.Close("gc-7"); err != nil {
+				t.Fatal(err)
+			}
+			race := &operatorClosesOnList{Store: inner, gateID: gateID}
+			report, err := ReleaseCrossStoreGates(race, storesResolver(work))
+			if err != nil || len(report.Released) != 0 {
+				t.Fatalf("pass = %+v, %v; want nothing released over the operator's close", report, err)
+			}
+			if state := mustGetBead(t, inner, gateID).Metadata[beadmeta.CrossStoreGateStateMetadataKey]; state != "" {
+				t.Fatalf("gate state = %q; the operator's close was stamped by the controller", state)
+			}
+			if got, err := ensureCrossStoreGate(inner, control, "gc-7", true); err != nil || got != "" {
+				t.Fatalf("drain after the race = %q, %v; want the operator's override honored", got, err)
+			}
+		})
+	}
+}
+
+// casRace serves one stale read of a gate: the live re-read returns the gate
+// open, and an operator closes it right after, before the pass's write. Only
+// the write's revision check can see that.
+type casRace struct {
+	*beads.MemStore
+	id    string
+	fired bool
+}
+
+func (s *casRace) Get(id string) (beads.Bead, error) {
+	b, err := s.MemStore.Get(id)
+	if err == nil && id == s.id && !s.fired && b.Status != "closed" {
+		s.fired = true
+		if cerr := s.Close(id); cerr != nil {
+			return beads.Bead{}, cerr
+		}
+	}
+	return b, err
+}
+
+// TestReleaseCASRefusesAWriteOverAnOperatorClose: with conditional writes
+// resolved, an operator close that lands between the pass's live re-read and
+// its write fails the write's revision check; the pass re-reads, sees the
+// operator's close, and leaves it alone.
+func TestReleaseCASRefusesAWriteOverAnOperatorClose(t *testing.T) {
+	mem := beads.NewMemStoreFrom(1000, nil, nil)
+	if err := beads.StampOpenedStore(mem, "MemStore", gate.Require, false, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	work := honoringMem()
+	if _, err := work.Create(beads.Bead{ID: "gc-7", Title: "blocker", Type: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	gateID, err := ensureCrossStoreGate(mem, newGateControl(t, mem), "gc-7", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Close("gc-7"); err != nil {
+		t.Fatal(err)
+	}
+	race := &casRace{MemStore: mem, id: gateID}
+	if writer, _, err := beads.ResolveConditionalWriter(race); err != nil || writer == nil {
+		t.Fatalf("fixture: conditional writes do not resolve (%v, %v)", writer, err)
+	}
+	report, err := ReleaseCrossStoreGates(race, storesResolver(work))
+	if err != nil || len(report.Released) != 0 {
+		t.Fatalf("pass = %+v, %v; want the CAS to refuse the release", report, err)
+	}
+	if !race.fired {
+		t.Fatal("fixture: the stale read never happened")
+	}
+	if state := mustGetBead(t, mem, gateID).Metadata[beadmeta.CrossStoreGateStateMetadataKey]; state != "" {
+		t.Fatalf("gate state = %q; a release was written over the operator's close", state)
 	}
 }

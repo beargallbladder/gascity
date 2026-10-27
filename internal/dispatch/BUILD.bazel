@@ -79,6 +79,7 @@ go_test(
         "//internal/beadmeta",
         "//internal/beads",
         "//internal/beads/beadstest",
+        "//internal/beads/splittest",
         "//internal/config",
         "//internal/convergence",
         "//internal/convoy",

@@ -13,6 +13,8 @@ import (
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	convoycore "github.com/gastownhall/gascity/internal/convoy"
+	"github.com/gastownhall/gascity/internal/molecule"
+	"github.com/gastownhall/gascity/internal/sourceworkflow"
 )
 
 // Cross-store gates: how a drain item waits for a blocker held in another
@@ -74,15 +76,23 @@ import (
 //     that is simply gone (deleted, purged after closing) reopens nothing.
 //
 // A gate is controller-closed when it carries gc.cross_store_gate_state
-// released or retired, or a close_reason a controller sweep stamped (a
-// workflow teardown's CloseSubtree). Any other closed gate was closed by an
-// operator: that close is final, and it is recorded as overridden the first
-// time the drain sees it.
+// released or retired, or one of the exact close reasons a workflow teardown
+// stamps (controllerCloseReasons). Any other closed gate — including one closed
+// with an operator's reason — was closed by an operator: that close is final,
+// and it is recorded as overridden the first time the drain sees it.
+//
+// A drain control that is reopened after its gates were retired meets them
+// again: a retired gate whose blocker the drain does not find is handed back
+// to the release pass (marked released) so the pass, which reads every store,
+// re-judges it.
 //
 // Every state change — release, reopen, retire — is ONE write carrying the
 // status and the marker together, so no failure between two writes can leave
 // an "open but released" gate whose later operator close would read as a
-// controller release.
+// controller release. Each is made only while its premise still holds for the
+// gate's live row, as a revision CAS where the store resolves conditional
+// writes (writeGateIfStill), so an operator close that lands between the
+// pass's listing and its write is never overwritten.
 //
 // # Released gates of finished drains
 //
@@ -153,6 +163,17 @@ func crossStoreGateID(store beads.Store, control beads.Bead, blockerID string) s
 	return prefix + "-xsg-" + hex.EncodeToString(sum[:6])
 }
 
+// controllerCloseReasons are the close reasons a controller teardown stamps on
+// every bead of a workflow subtree it closes. A gate closed with one of these,
+// and no state marker, was closed by the controller. Any other reason —
+// `gc bd close <gate> --reason ...`, an API close with a reason — is an
+// operator's.
+var controllerCloseReasons = map[string]bool{
+	molecule.SubtreeClosedReason:               true,
+	sourceworkflow.WorkflowSubtreeClosedReason: true,
+	sourceworkflow.WorkflowSkippedCloseReason:  true,
+}
+
 // controllerClosed reports whether a closed gate was closed by the controller
 // (a release, a retire, or a workflow teardown's stamped close) rather than by
 // an operator.
@@ -163,66 +184,140 @@ func controllerClosed(gate beads.Bead) bool {
 	case CrossStoreGateStateOverridden:
 		return false
 	}
-	return strings.TrimSpace(gate.Metadata["close_reason"]) != ""
+	return controllerCloseReasons[strings.TrimSpace(gate.Metadata["close_reason"])]
 }
 
 // gateAnswer settles an existing gate for a blocker the drain needs held:
 // foundOpen reports whether the drain FOUND the blocker open (rather than not
 // finding it at all). An open gate holds. A controller-closed gate is reopened
-// only on that evidence, and otherwise left as the release pass left it. An
-// operator-closed gate is final, and its override is recorded the first time
-// it is seen. It returns the gate's id when it holds the item, "" when it does
-// not.
+// only on that evidence; otherwise it is left as the release pass left it — a
+// RETIRED gate, whose drain is live again, is handed back to the release pass
+// (marked released) so the pass re-judges its blocker. An operator-closed gate
+// is final, and its override is recorded the first time it is seen. It returns
+// the gate's id when it holds the item, "" when it does not.
 func gateAnswer(store beads.Store, gate beads.Bead, foundOpen bool) (string, error) {
 	if gate.Status != "closed" {
 		return gate.ID, nil
 	}
 	if controllerClosed(gate) {
 		if !foundOpen {
+			if gate.Metadata[beadmeta.CrossStoreGateStateMetadataKey] == CrossStoreGateStateRetired {
+				if _, err := writeGateIfStill(store, gate.ID, func(b beads.Bead) bool {
+					return b.Status == "closed" && b.Metadata[beadmeta.CrossStoreGateStateMetadataKey] == CrossStoreGateStateRetired
+				}, beads.UpdateOpts{Metadata: map[string]string{beadmeta.CrossStoreGateStateMetadataKey: CrossStoreGateStateReleased}}, false); err != nil {
+					return "", fmt.Errorf("handing retired cross-store gate %s back to the release pass: %w", gate.ID, err)
+				}
+			}
 			return "", nil
 		}
-		if err := reopenCrossStoreGate(store, gate.ID); err != nil {
+		wrote, err := reopenCrossStoreGate(store, gate.ID)
+		if err != nil {
 			return "", err
+		}
+		if !wrote {
+			return reReadGateAnswer(store, gate.ID)
 		}
 		return gate.ID, nil
 	}
 	if gate.Metadata[beadmeta.CrossStoreGateStateMetadataKey] == CrossStoreGateStateOverridden {
 		return "", nil
 	}
-	if err := store.SetMetadata(gate.ID, beadmeta.CrossStoreGateStateMetadataKey, CrossStoreGateStateOverridden); err != nil {
+	if _, err := writeGateIfStill(store, gate.ID, func(b beads.Bead) bool {
+		return b.Status == "closed" && !controllerClosed(b)
+	}, beads.UpdateOpts{Metadata: map[string]string{beadmeta.CrossStoreGateStateMetadataKey: CrossStoreGateStateOverridden}}, false); err != nil {
 		return "", fmt.Errorf("recording the operator override of cross-store gate %s: %w", gate.ID, err)
 	}
 	return "", nil
 }
 
-// reopenCrossStoreGate reopens a controller-closed gate in ONE write that
-// also removes its state marker and close reason, so it holds its items again
-// and reads as an ordinary open gate.
-func reopenCrossStoreGate(store beads.Store, id string) error {
-	open := "open"
-	if err := store.Update(id, beads.UpdateOpts{
-		Status:        &open,
-		UnsetMetadata: []string{beadmeta.CrossStoreGateStateMetadataKey, "close_reason"},
-	}); err != nil {
-		return fmt.Errorf("reopening cross-store gate %s: %w", id, err)
+// reReadGateAnswer answers from the gate's live row after a write whose
+// premise moved under it: an open gate holds, a closed one does not.
+func reReadGateAnswer(store beads.Store, id string) (string, error) {
+	fresh, err := beads.HandlesFor(store).Live.Get(id)
+	if err != nil {
+		return "", fmt.Errorf("re-reading cross-store gate %s: %w", id, err)
 	}
-	return nil
+	if fresh.Status != "closed" {
+		return fresh.ID, nil
+	}
+	return "", nil
 }
 
-// closeCrossStoreGate closes a gate in ONE write carrying its controller
-// state (released or retired) and why.
-func closeCrossStoreGate(store beads.Store, id, state, reason string) error {
+// writeGateIfStill applies opts to the gate in ONE write, and only while still
+// holds for its LIVE row, so a change made between the caller's read and this
+// write — an operator closing the gate, another pass reopening it — is never
+// overwritten. Where the store resolves conditional writes the write is a CAS
+// on the re-read revision (a close uses the store's atomic close-with-metadata
+// when it has one); a lost CAS re-reads and re-decides once, and a second loss
+// leaves the gate for the next pass. Where conditional writes are off (the
+// city's beads.conditional_writes, or a store with none) the live re-check is
+// the guard, as for every other controller close (autocloseCloseIfStill). It
+// reports whether it wrote.
+func writeGateIfStill(store beads.Store, id string, still func(beads.Bead) bool, opts beads.UpdateOpts, closing bool) (bool, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		fresh, err := beads.HandlesFor(store).Live.Get(id)
+		if err != nil {
+			return false, err
+		}
+		if !still(fresh) {
+			return false, nil
+		}
+		writer, _, err := beads.ResolveConditionalWriter(store)
+		if err != nil {
+			return false, err
+		}
+		if writer == nil {
+			return true, store.Update(id, opts)
+		}
+		if closer, ok := beads.AtomicConditionalCloserFor(store); closing && ok {
+			_, err = closer.CloseWithMetadataIfMatch(id, fresh.Revision, opts.Metadata)
+		} else {
+			err = writer.UpdateIfMatch(id, fresh.Revision, opts)
+		}
+		if beads.IsPreconditionFailed(err) {
+			continue
+		}
+		return err == nil, err
+	}
+	return false, nil
+}
+
+// reopenCrossStoreGate reopens a controller-closed gate in ONE write that
+// also clears its state marker and close reason (set empty: every engine
+// takes that in the same write, where removing a key is refused by some), so
+// it holds its items again and reads as an ordinary open gate.
+func reopenCrossStoreGate(store beads.Store, id string) (bool, error) {
+	open := "open"
+	wrote, err := writeGateIfStill(store, id, func(b beads.Bead) bool {
+		return b.Status == "closed" && controllerClosed(b)
+	}, beads.UpdateOpts{
+		Status: &open,
+		Metadata: map[string]string{
+			beadmeta.CrossStoreGateStateMetadataKey: "",
+			"close_reason":                          "",
+		},
+	}, false)
+	if err != nil {
+		return false, fmt.Errorf("reopening cross-store gate %s: %w", id, err)
+	}
+	return wrote, nil
+}
+
+// closeCrossStoreGate closes an open gate in ONE write carrying its
+// controller state (released or retired) and why.
+func closeCrossStoreGate(store beads.Store, id, state, reason string) (bool, error) {
 	closed := "closed"
-	if err := store.Update(id, beads.UpdateOpts{
+	wrote, err := writeGateIfStill(store, id, func(b beads.Bead) bool { return b.Status != "closed" }, beads.UpdateOpts{
 		Status: &closed,
 		Metadata: map[string]string{
 			beadmeta.CrossStoreGateStateMetadataKey: state,
 			"close_reason":                          reason,
 		},
-	}); err != nil {
-		return fmt.Errorf("closing cross-store gate %s: %w", id, err)
+	}, true)
+	if err != nil {
+		return false, fmt.Errorf("closing cross-store gate %s: %w", id, err)
 	}
-	return nil
+	return wrote, nil
 }
 
 // ensureCrossStoreGate returns the open gate in store that holds control's work
@@ -324,8 +419,9 @@ type CrossStoreGateReport struct {
 	// Reopened are released gates of a live drain the pass reopened because
 	// their blocker opened again, by id.
 	Reopened []string
-	// Retired are released gates whose drain control the pass found closed or
-	// gone, now marked retired and out of every later pass's listing, by id.
+	// Retired are gates whose drain control the pass found closed or gone —
+	// open ones it closed and released ones it re-marked — now retired and out
+	// of every later pass's listing, by id.
 	Retired []string
 }
 
@@ -387,11 +483,16 @@ func ReleaseCrossStoreGates(store beads.Store, resolve CrossStoreBlockerResolver
 			reopenable = append(reopenable, gate)
 			continue
 		}
-		if err := store.SetMetadata(gate.ID, beadmeta.CrossStoreGateStateMetadataKey, CrossStoreGateStateRetired); err != nil {
+		wrote, err := writeGateIfStill(store, gate.ID, func(b beads.Bead) bool {
+			return b.Status == "closed" && b.Metadata[beadmeta.CrossStoreGateStateMetadataKey] == CrossStoreGateStateReleased
+		}, beads.UpdateOpts{Metadata: map[string]string{beadmeta.CrossStoreGateStateMetadataKey: CrossStoreGateStateRetired}}, false)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("gate %s: retiring: %w", gate.ID, err))
 			continue
 		}
-		report.Retired = append(report.Retired, gate.ID)
+		if wrote {
+			report.Retired = append(report.Retired, gate.ID)
+		}
 	}
 	blockerSet := make(map[string]bool)
 	for _, gate := range append(slices.Clone(open), reopenable...) {
@@ -421,11 +522,14 @@ func ReleaseCrossStoreGates(store beads.Store, resolve CrossStoreBlockerResolver
 		if blockerID == "" || undecided[blockerID] || len(copies[blockerID]) == 0 || blockerReleased(copies[blockerID]) {
 			continue
 		}
-		if err := reopenCrossStoreGate(store, gate.ID); err != nil {
+		wrote, err := reopenCrossStoreGate(store, gate.ID)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("gate %s: %w", gate.ID, err))
 			continue
 		}
-		report.Reopened = append(report.Reopened, gate.ID)
+		if wrote {
+			report.Reopened = append(report.Reopened, gate.ID)
+		}
 	}
 	for _, gate := range open {
 		state, reason, unresolved := judgeCrossStoreGate(gate, controls, copies, undecided)
@@ -450,11 +554,18 @@ func ReleaseCrossStoreGates(store beads.Store, resolve CrossStoreBlockerResolver
 			gate.Metadata[beadmeta.CrossStoreGateUnresolvedAtMetadataKey] = at
 			report.NewlyUnresolved = append(report.NewlyUnresolved, gate)
 		case state != "":
-			if err := closeCrossStoreGate(store, gate.ID, state, reason); err != nil {
+			wrote, err := closeCrossStoreGate(store, gate.ID, state, reason)
+			if err != nil {
 				errs = append(errs, fmt.Errorf("gate %s: %w", gate.ID, err))
 				continue
 			}
-			report.Released = append(report.Released, gate.ID)
+			switch {
+			case !wrote:
+			case state == CrossStoreGateStateRetired:
+				report.Retired = append(report.Retired, gate.ID)
+			default:
+				report.Released = append(report.Released, gate.ID)
+			}
 		}
 	}
 	return report, errors.Join(errs...)
